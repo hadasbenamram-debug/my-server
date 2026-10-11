@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+  </Folder>
+  <Project Path="BLL/BLL.csproj" />
+  <Project Path="DAL/DAL.csproj" />
+  <Project Path="DTOs/DTOs.csproj" Id="58342c9c-a0d4-48c5-bf7d-6f27be8271cf" />
+  <Project Path="FoodRescue/FoodRescue.csproj" />
+</Solution>

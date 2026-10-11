@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UserSecretsId>9d298646-7cfb-4298-b391-690dcc8dc912</UserSecretsId>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="AutoMapper" Version="16.2.0" />
+		<PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
+		<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
+			<PrivateAssets>all</PrivateAssets>
+			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+		</PackageReference>
+		<PackageReference Include="Swashbuckle.AspNetCore" Version="10.3.0" />
+		<PackageReference Include="Hangfire" Version="1.8.25" />
+		<PackageReference Include="Hangfire.AspNetCore" Version="1.8.25" />
+		<PackageReference Include="Hangfire.SqlServer" Version="1.8.25" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\BLL\BLL.csproj" />
+		<ProjectReference Include="..\DAL\DAL.csproj" />
+		<ProjectReference Include="..\DTOs\DTOs.csproj" />
+	</ItemGroup>
+</Project>
