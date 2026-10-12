@@ -5,10 +5,10 @@ using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
 using BLL.Repositories;
 using BLL.Services;
+using BLL.Mappings;
 using DAL;
 using DAL.Classes;
 using FoodRescue.Hubs;
-using FoodRescue.Mappings;
 using FoodRescue.Middlewares;
 using Hangfire;
 using Hangfire.SqlServer;
@@ -69,7 +69,10 @@ builder.Services.AddScoped<VolunteerRankingService>();
 builder.Services.AddScoped<BLL.Services.MatchCreationService>();
 builder.Services.AddScoped<BLL.Services.AdminEscalationService>();
 builder.Services.AddSingleton<DistanceMemoizationService>();
-
+builder.Services.AddAutoMapper(
+    cfg => { },
+    typeof(BLL.Mappings.MappingProfile).Assembly
+); 
 builder.Services.AddScoped<CommentService>();
 
 builder.Services.AddScoped<BacktrackingAssignmentService>(sp =>

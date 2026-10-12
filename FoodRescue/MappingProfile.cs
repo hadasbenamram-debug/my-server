@@ -4,7 +4,7 @@ using DAL.Classes;
 using FoodRescue.DTOs;
 using DTOs.DTOs; // ודא שמרחב השמות של CommentDto1 ממופה כאן
 
-namespace FoodRescue.Mappings
+namespace FoodRescue.BLL.Mappings
 {
     public class MappingProfile : Profile
     {
