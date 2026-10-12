@@ -98,7 +98,7 @@ namespace FoodRescue.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult<SupplierResponseDto>> CreateSupplier([FromBody] CreateSupplierDto supplierDto)
+        public async Task<ActionResult<SupplierResponseDto>> CreateSupplier([FromForm] CreateSupplierDto supplierDto)
         {
             if (!ModelState.IsValid) return BadRequest(ModelState);
 
@@ -114,29 +114,47 @@ namespace FoodRescue.Controllers
             if (existing != null)
                 return Conflict(new { message = "למשתמש זה כבר קיים פרופיל ספק." });
 
-            if (_googleMapsService != null)
+            // טיפול ושמירת קובץ הרישיון בתיקיית Files ייעודית
+            string relativePath = string.Empty;
+            if (supplierDto.LicenseFile != null && supplierDto.LicenseFile.Length > 0)
             {
-                try
-                {
-                    var (distance, reachable) = await _googleMapsService.GetDrivingDistanceAsync(
-                        supplierDto.Latitude, supplierDto.Longitude,
-                        supplierDto.Latitude, supplierDto.Longitude);
+                // בדיקת סיומות מותרות (לדוגמה: PDF ותמונות בלבד)
+                var allowedExtensions = new[] { ".pdf", ".jpg", ".jpeg", ".png" };
+                string extension = Path.GetExtension(supplierDto.LicenseFile.FileName).ToLowerInvariant();
 
-                    if (supplierDto.Latitude < 29.0 || supplierDto.Latitude > 33.5 ||
-                        supplierDto.Longitude < 34.0 || supplierDto.Longitude > 35.9)
-                    {
-                        return BadRequest(new { message = "המיקום הגיאוגרפי שצוין חורג מהגבולות המותרים במערכת." });
-                    }
-                }
-                catch
+                if (Array.Exists(allowedExtensions, ext => ext == extension) == false)
                 {
-                    return BadRequest(new { message = "אימות מיקום העסק מול שירות המפות נכשל. אנא ודא את הכתובת והקואורדינטות." });
+                    return BadRequest(new { message = "סיומת קובץ לא חוקית. יש להעלות קובץ PDF או תמונה בלבד." });
                 }
+
+                // הגדרת תיקיית Files תחת wwwroot
+                string uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "Files", "licenses");
+                if (!Directory.Exists(uploadsFolder))
+                {
+                    Directory.CreateDirectory(uploadsFolder);
+                }
+
+                // יצירת שם ייחודי לקובץ למניעת התנגשויות
+                string uniqueFileName = Guid.NewGuid().ToString() + extension;
+                string filePath = Path.Combine(uploadsFolder, uniqueFileName);
+
+                using (var fileStream = new FileStream(filePath, FileMode.Create))
+                {
+                    await supplierDto.LicenseFile.CopyToAsync(fileStream);
+                }
+
+                // שמירת הנתיב היחסי כמחרוזת (STRING) שתישמר במסד הנתונים
+                relativePath = "/Files/licenses/" + uniqueFileName;
+            }
+            else
+            {
+                return BadRequest(new { message = "חובה לצרף קובץ רישיון עסק." });
             }
 
             var supplierEntity = _mapper.Map<Supplier>(supplierDto);
 
             supplierEntity.UserId = userId;
+            supplierEntity.BusinessLicenseFilePath = relativePath; // השמת הנתיב הטקסטואלי במסד הנתונים
             supplierEntity.ApprovalStatus = DAL.Classes.ApprovalStatus.Pending;
             supplierEntity.GooglePlaceId = "N/A";
 
@@ -157,7 +175,6 @@ namespace FoodRescue.Controllers
             var createdDto = _mapper.Map<SupplierResponseDto>(supplierEntity);
             return Ok(createdDto);
         }
-
         [HttpPost("{id}/reject")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> RejectSupplier(int id, [FromBody] string reason)

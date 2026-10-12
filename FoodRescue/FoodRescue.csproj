@@ -24,4 +24,7 @@
 		<ProjectReference Include="..\DAL\DAL.csproj" />
 		<ProjectReference Include="..\DTOs\DTOs.csproj" />
 	</ItemGroup>
+	<ItemGroup>
+	  <Folder Include="wwwroot\Files\licenses\" />
+	</ItemGroup>
 </Project>

@@ -1,7 +1,8 @@
 ﻿using AutoMapper;
 using BLL.Algorithms;
-using BLL.Interfaces;
 using BLL.Configuration;
+using BLL.Interfaces;
+using DAL;
 using DAL.Classes;
 using FoodRescue.DTOs;
 using FoodRescue.Security;
@@ -21,6 +22,8 @@ namespace FoodRescue.Controllers
     [ApiController]
     public class DonationsController : ControllerBase
     {
+
+        private readonly FoodRescueDbContext _context; // הוספת ה-Context לשליפה מדויקת
         private readonly IDonationRepository _donationRepository;
         private readonly ISupplierRepository _supplierRepository;
         private readonly INgoRepository _ngoRepository;
@@ -29,12 +32,13 @@ namespace FoodRescue.Controllers
         private readonly IMapper _mapper;
 
         public DonationsController(
-            IDonationRepository donationRepository,
-            ISupplierRepository supplierRepository,
-            INgoRepository ngoRepository,
-            IMatchRepository matchRepository,
-            CallerProfileService caller,
-            IMapper mapper)
+               IDonationRepository donationRepository,
+               ISupplierRepository supplierRepository,
+               INgoRepository ngoRepository,
+               IMatchRepository matchRepository,
+               CallerProfileService caller,
+               IMapper mapper,
+               FoodRescueDbContext context)
         {
             _caller = caller;
             _donationRepository = donationRepository;
@@ -42,10 +46,11 @@ namespace FoodRescue.Controllers
             _ngoRepository = ngoRepository;
             _matchRepository = matchRepository;
             _mapper = mapper;
+            _context = context;
         }
 
         [HttpGet("my-supplier-donations")]
-        public async Task<ActionResult<IEnumerable<DonationResponseDto>>> GetMySupplierDonations()
+        public async Task<IActionResult> GetMySupplierDonations()
         {
             var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!int.TryParse(userIdClaim, out int userId))
@@ -55,10 +60,21 @@ namespace FoodRescue.Controllers
             if (supplier == null)
                 return NotFound(new { message = "לא נמצא פרופיל ספק עבור משתמש זה." });
 
-            var donations = await _donationRepository.GetAllWithCategoriesAsync();
-            var supplierDonations = donations.Where(d => d.SupplierId == supplier.Id).ToList();
+            var donations = await _context.Donations
+                .Include(d => d.Region)
+                .Where(d => d.SupplierId == supplier.Id)
+                .ToListAsync();
 
-            var donationDtos = _mapper.Map<IEnumerable<DonationResponseDto>>(supplierDonations);
+            var donationDtos = donations.Select(d => new
+            {
+                id = d.Id,
+                status = d.Status.ToString(),
+                regionId = d.RegionId,
+                regionName = d.Region != null ? d.Region.RegionName : "אזור כללי",
+                priorityScore = d.PriorityScore,
+                createdAt = d.CreatedAt
+            });
+
             return Ok(donationDtos);
         }
 
@@ -116,16 +132,29 @@ namespace FoodRescue.Controllers
 
             return Ok(new { message = "התרומה בוטלה בהצלחה בהתערבות מנהל." });
         }
-
         [HttpGet]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<IEnumerable<DonationResponseDto>>> GetDonations()
+        public async Task<IActionResult> GetDonations()
         {
-            var donations = await _donationRepository.GetAllWithCategoriesAsync();
-            var donationDtos = _mapper.Map<IEnumerable<DonationResponseDto>>(donations);
+            // שליפה ישירה הכוללת טעינה של הספק המקושר
+            var donations = await _context.Donations
+                .Include(d => d.Supplier)
+                .ToListAsync();
+
+            var donationDtos = donations.Select(d => new
+            {
+                id = d.Id,
+                status = d.Status.ToString(),
+                supplierId = d.SupplierId,
+                supplierName = d.Supplier != null ? d.Supplier.BusinessName : "לא ידוע",
+                createdAt = d.CreatedAt,
+                expirationTime = d.ExpirationTime,
+                urgencyScore = d.UrgencyScore,
+                priorityScore = d.PriorityScore
+            });
+
             return Ok(donationDtos);
         }
-
         [HttpGet("{id}")]
         public async Task<ActionResult<DonationResponseDto>> GetDonation(int id)
         {

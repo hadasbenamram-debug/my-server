@@ -1,8 +1,8 @@
 ﻿using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Http; // דרוש עבור IFormFile
 
 namespace FoodRescue.DTOs
 {
-    // DTO ליצירת ספק חדש (ללא מזהה שנקבע בצורה מאובטחת בשרת)
     public class CreateSupplierDto
     {
         [Required(ErrorMessage = "שם העסק הוא שדה חובה.")]
@@ -22,12 +22,11 @@ namespace FoodRescue.DTOs
         [StringLength(50, ErrorMessage = "מספר ח.פ. / עוסק מורשה יכול להכיל עד 50 תווים.")]
         public string TaxId { get; set; }
 
-        // שדה חובה בישות Supplier — בלעדיו השמירה למסד נכשלת
-        [Required(ErrorMessage = "רישיון עסק הוא שדה חובה.")]
-        public string BusinessLicenseFilePath { get; set; }
+        // קבלת הקובץ מהקליינט במקום נתיב טקסטואלי ידני
+        [Required(ErrorMessage = "קובץ רישיון עסק הוא שדה חובה.")]
+        public IFormFile LicenseFile { get; set; }
     }
 
-    // DTO מלא להצגה בשרת
     public class SupplierResponseDto
     {
         public int Id { get; set; }
@@ -36,6 +35,7 @@ namespace FoodRescue.DTOs
         public double Latitude { get; set; }
         public double Longitude { get; set; }
         public string TaxId { get; set; }
+        public string BusinessLicenseFilePath { get; set; }
         public int ApprovalStatus { get; set; }
     }
 }

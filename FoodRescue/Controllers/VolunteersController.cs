@@ -162,16 +162,30 @@ namespace FoodRescue.Controllers
 
         [HttpGet]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<IEnumerable<VolunteerResponseDto>>> GetVolunteers()
+        public async Task<IActionResult> GetVolunteers()
         {
-            // אין צורך ב-Include! ה-ProjectTo מטפל בחיבור הטבלאות אוטומטית.
-            var volunteerDtos = await _context.Volunteers
-                .ProjectTo<VolunteerResponseDto>(_mapper.ConfigurationProvider)
+            var volunteers = await _context.Volunteers
+                .Include(v => v.User)
+                .Select(v => new
+                {
+                    id = v.Id,
+                    userId = v.UserId,
+                    name = v.User != null ? v.User.Name : "מתנדב",
+                    phone = v.User != null ? v.User.Phone : null,
+                    email = v.User != null ? v.User.Email : null,
+                    vehicleType = v.VehicleType,
+                    maxCapacityKg = v.MaxCapacityKg,
+                    isAvailable = v.IsAvailable,
+                    idNumber = v.IdNumber,
+                    driverLicenseNumber = v.DriverLicenseNumber,
+                    dateOfBirth = v.DateOfBirth,
+                    reliabilityScore = v.ReliabilityScore,
+                    status = v.ApprovalStatus.ToString()
+                })
                 .ToListAsync();
 
-            return Ok(volunteerDtos);
+            return Ok(volunteers);
         }
-
         [HttpPost("{id}/approve")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> ApproveVolunteer(int id)
