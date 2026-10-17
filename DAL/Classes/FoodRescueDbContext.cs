@@ -28,6 +28,8 @@ namespace DAL
         public DbSet<AvailabilitySlot> AvailabilitySlots { get; set; }
         public DbSet<Notification> Notifications { get; set; }
         public DbSet<LoginAttempt> LoginAttempts { get; set; }
+        public DbSet<ActionToken> ActionTokens { get; set; }
+        public DbSet<SystemSetting> SystemSettings { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -59,7 +61,17 @@ namespace DAL
                 .WithMany()
                 .HasForeignKey(a => a.ToRegionId)
                 .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Ngo>()
+    .HasOne(n => n.Region)
+    .WithMany(r => r.Ngos)
+    .HasForeignKey(n => n.RegionId)
+    .OnDelete(DeleteBehavior.Restrict);
 
+            modelBuilder.Entity<Donation>()
+                .HasOne(d => d.Region)
+                .WithMany(r => r.Donations)
+                .HasForeignKey(d => d.RegionId)
+                .OnDelete(DeleteBehavior.Restrict);
             // Unique constraint על אימייל
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.Email)
@@ -101,6 +113,40 @@ namespace DAL
                 .WithMany()
                 .HasForeignKey(l => l.UserId)
                 .OnDelete(DeleteBehavior.SetNull);
+
+            // ===== טוקנים חד-פעמיים (קודי אימות, איפוס סיסמה, קישורי תגובה לשיבוץ) =====
+            modelBuilder.Entity<ActionToken>()
+                .HasIndex(t => new { t.Purpose, t.TokenHash });
+
+            modelBuilder.Entity<ActionToken>()
+                .HasIndex(t => new { t.UserId, t.Purpose, t.CreatedAt });
+
+            modelBuilder.Entity<ActionToken>()
+                .HasOne(t => t.User)
+                .WithMany()
+                .HasForeignKey(t => t.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // ===== התראות: תור השליחה ומרכז ההתראות =====
+            // UserId אופציונלי (פנייה מאורח / מייל לתיבת התמיכה). מחיקת משתמש מוחקת את ההתראות שלו (כמו קודם).
+            modelBuilder.Entity<Notification>()
+                .HasOne(n => n.User)
+                .WithMany(u => u.Notifications)
+                .HasForeignKey(n => n.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<Notification>()
+                .HasIndex(n => new { n.Status, n.NextAttemptAt });
+
+            modelBuilder.Entity<Notification>()
+                .HasIndex(n => new { n.UserId, n.Channel, n.CreatedAt });
+
+            // ===== שאילתות המנוע: שידוכים פעילים וטיימאאוטים =====
+            modelBuilder.Entity<Match>()
+                .HasIndex(m => new { m.Status, m.ResponseDeadline });
+
+            modelBuilder.Entity<Match>()
+                .HasIndex(m => new { m.VolunteerId, m.IsActive });
         }
     }
 }

@@ -12,6 +12,7 @@ namespace DAL.Classes
         public int SupplierId { get; set; }
         public Supplier Supplier { get; set; }
 
+        public string? ImageFilePath { get; set; }
         public int RegionId { get; set; }
         public Region Region { get; set; }
 
@@ -38,6 +39,9 @@ namespace DAL.Classes
 
         [Required]
         public DonationStatus Status { get; set; } = DonationStatus.Pending;
+
+        // מתי העמותה אישרה שקיבלה את התרומה
+        public DateTime? ReceivedAt { get; set; }
 
         // קשר טבלאות
         public ICollection<DonationFoodCategory> DonationFoodCategories { get; set; }

@@ -1,208 +1,183 @@
 using BLL.Algorithms;
-using DAL.Classes;
+using BLL.Configuration;
 using DAL;
+using DAL.Classes;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace FoodRescue.Tests
 {
+    // תוקן: הבנאי קיבל 3 פרמטרים בטסטים הישנים והמתודה שונתה לגרסה אסינכרונית - הטסטים לא עברו קומפילציה.
+    // כל הזמנים כאן מוגדרים בשעון ישראל ומומרים ל-UTC (כמו במערכת עצמה).
     public class DonationMatchingOrchestratorTests
     {
-        private Donation MakeDonation(int id, double lat, double lon, DateTime createdAt, TimeSpan latestPickupOffset)
+        // יום שני, 09:00 שעון מקומי
+        private static readonly DateTime LocalStart = new(2026, 10, 19, 9, 0, 0);
+        private static DateTime Utc(DateTime local) => LocalClock.ToUtc(local);
+        private static readonly DateTime StartUtc;
+
+        static DonationMatchingOrchestratorTests()
         {
-            return new Donation
+            LocalClock.Configure("Asia/Jerusalem");
+            StartUtc = Utc(LocalStart);
+        }
+
+        private static Donation MakeDonation(int id, double lat, double lon, TimeSpan latestPickupAfterStart, double weightKg = 1.0) => new()
+        {
+            Id = id,
+            CreatedAt = StartUtc.AddMinutes(-5),
+            Latitude = lat,
+            Longitude = lon,
+            RegionId = 1,
+            LatestPickupTime = (LocalStart + latestPickupAfterStart).TimeOfDay,
+            ExpirationTime = StartUtc + TimeSpan.FromHours(6),
+            DonationFoodCategories = new List<DonationFoodCategory>
             {
-                Id = id,
-                CreatedAt = createdAt,
-                Latitude = lat,
-                Longitude = lon,
-                RegionId = 1,
-                LatestPickupTime = (createdAt + latestPickupOffset).TimeOfDay,
-                ExpirationTime = createdAt + TimeSpan.FromHours(6),
-                DonationFoodCategories = new List<DonationFoodCategory>
+                new() { CategoryId = 1, WeightKg = weightKg, Quantity = 1 }
+            },
+            Status = DonationStatus.Pending,
+            PriorityScore = 1.0
+        };
+
+        private static Volunteer MakeVolunteer(double capacityKg, TimeSpan? slotEnd = null) => new()
+        {
+            Id = 1,
+            MaxCapacityKg = capacityKg,
+            AvailabilitySlots = new List<AvailabilitySlot>
+            {
+                new() { RegionId = 1, Day = LocalStart.DayOfWeek, StartTime = TimeSpan.Zero, EndTime = slotEnd ?? new TimeSpan(23, 59, 0) }
+            }
+        };
+
+        private static Ngo MakeNgo(TimeSpan? close = null) => new()
+        {
+            Id = 1, RegionId = 1, Latitude = 32.0, Longitude = 34.0,
+            SunToThuOpenTime = TimeSpan.Zero, SunToThuCloseTime = close ?? new TimeSpan(23, 59, 0)
+        };
+
+        // שירות מסלול מדומה: כל תחנה מגיעה אחרי "minutesPerStop" דקות, והקטע לעמותה לוקח 10 דקות
+        private static Mock<IRouteOptimizationService> RouteService(double minutesPerStop)
+        {
+            var mock = new Mock<IRouteOptimizationService>();
+            mock.Setup(s => s.OptimizeRouteWithGoogleMapsAsync(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(),
+                    It.IsAny<DateTime>(), It.IsAny<Func<PickupStop, DateTime, bool>?>()))
+                .Returns((GeoCoordinate start, List<PickupStop> stops, DateTime t, Func<PickupStop, DateTime, bool>? ok) =>
                 {
-                    new DonationFoodCategory { CategoryId = 1, WeightKg = 1.0, Quantity = 1 }
-                },
-                Status = DonationStatus.Pending,
-                PriorityScore = 1.0
-            };
-        }
-
-        private Volunteer MakeVolunteer(int id, double capacityKg)
-        {
-            return new Volunteer
-            {
-                Id = id,
-                MaxCapacityKg = capacityKg,
-                AvailabilitySlots = new List<AvailabilitySlot> { new AvailabilitySlot { RegionId = 1, Day = DateTime.UtcNow.DayOfWeek, StartTime = TimeSpan.FromHours(0), EndTime = TimeSpan.FromHours(23) } }
-            };
-        }
-
-        private Ngo MakeOpenNgo()
-        {
-            return new Ngo { Id = 1, RegionId = 1, Latitude = 32.0, Longitude = 34.0, SunToThuOpenTime = TimeSpan.FromHours(0), SunToThuCloseTime = TimeSpan.FromHours(23) };
-        }
-
-        [Fact]
-        public void Orchestrator_PassingCase_ReturnsRoute()
-        {
-            // test label
-            // Arrange
-            var asOf = DateTime.UtcNow.Date.AddHours(9);
-            var d1 = MakeDonation(1, 32.001, 34.001, asOf, TimeSpan.FromHours(2));
-            var volunteer = MakeVolunteer(1, 50);
-            var ngo = MakeOpenNgo();
-
-            var mockRoute = new List<PickupStop>
-            {
-                new PickupStop { DonationId = 1, Location = new GeoCoordinate { Latitude = d1.Latitude, Longitude = d1.Longitude }, EstimatedArrival = asOf.AddMinutes(30) }
-            };
-
-            var mockRouteSvc = new Mock<IRouteOptimizationService>();
-            mockRouteSvc.Setup(s => s.OptimizeRoute(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(), It.IsAny<DateTime>())).Returns(mockRoute);
-
-            var loggerMock = new Moq.Mock<Microsoft.Extensions.Logging.ILogger<BLL.Algorithms.DonationMatchingOrchestrator>>();
-            var orchestrator = new DonationMatchingOrchestrator(new KnapsackSolver(), mockRouteSvc.Object, loggerMock.Object);
-
-            // Act
-            var route = orchestrator.ProcessVolunteerRouteAssignment(volunteer, new List<Donation> { d1 }, new GeoCoordinate { Latitude = 32.0, Longitude = 34.0 }, ngo, asOf);
-
-            // Assert
-            Assert.NotNull(route);
-            Assert.NotEmpty(route);
-            Assert.Contains(route, s => s.DonationId == d1.Id);
-        }
-
-        [Fact]
-        public void Orchestrator_SingleNgoFiltering_ExcludesIncompatibleDonations()
-        {
-            // test label
-            // Arrange
-            var asOf = DateTime.UtcNow.Date.AddHours(9);
-            var compatible = MakeDonation(1, 32.0, 34.0, asOf, TimeSpan.FromHours(2));
-            var incompatible = MakeDonation(2, 40.0, 40.0, asOf, TimeSpan.FromHours(2));
-            var volunteer = MakeVolunteer(1, 50);
-            var ngo = MakeOpenNgo();
-
-            var mockRouteSvc = new Mock<IRouteOptimizationService>();
-            mockRouteSvc.Setup(s => s.OptimizeRoute(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(), It.IsAny<DateTime>()))
-                .Returns((GeoCoordinate start, List<PickupStop> stops, DateTime t) => {
-                    // Ensure returned stops contain deterministic ETAs so orchestrator checks can run
-                    var eta = t.AddMinutes(30);
+                    var eta = t;
                     foreach (var st in stops)
+                    {
+                        eta = eta.AddMinutes(minutesPerStop);
                         st.EstimatedArrival = eta;
-                    return stops;
+                        st.LegDistanceKm = 1;
+                        st.LegDurationMinutes = minutesPerStop;
+                    }
+                    return Task.FromResult(stops);
                 });
+            mock.Setup(s => s.EstimateLegAsync(It.IsAny<GeoCoordinate>(), It.IsAny<GeoCoordinate>()))
+                .Returns(Task.FromResult((1.0, 10.0)));
+            return mock;
+        }
 
-            var loggerMock = new Moq.Mock<Microsoft.Extensions.Logging.ILogger<BLL.Algorithms.DonationMatchingOrchestrator>>();
-            var orchestrator = new DonationMatchingOrchestrator(new KnapsackSolver(), mockRouteSvc.Object, loggerMock.Object);
+        private static DonationMatchingOrchestrator Create(Mock<IRouteOptimizationService> routeService) =>
+            new(new KnapsackSolver(), routeService.Object, new StaticMatchingPolicyProvider(),
+                NullLogger<DonationMatchingOrchestrator>.Instance);
 
-            // Act
-            var route = orchestrator.ProcessVolunteerRouteAssignment(volunteer, new List<Donation> { compatible, incompatible }, new GeoCoordinate { Latitude = 32.0, Longitude = 34.0 }, ngo, asOf);
+        private static readonly GeoCoordinate Start = new() { Latitude = 32.0, Longitude = 34.0 };
 
-            // Assert: only compatible donation appears
-            Assert.NotNull(route);
-            Assert.All(route, s => Assert.NotEqual(incompatible.Id, s.DonationId));
-            Assert.Contains(route, s => s.DonationId == compatible.Id);
+        [Fact]
+        public async Task PassingCase_ReturnsRoute_WithNgoArrivalAndTotals()
+        {
+            var d1 = MakeDonation(1, 32.001, 34.001, TimeSpan.FromHours(2));
+
+            var plan = await Create(RouteService(30)).BuildRouteAsync(MakeVolunteer(50), new List<Donation> { d1 }, Start, MakeNgo(), StartUtc);
+
+            Assert.NotNull(plan);
+            Assert.Contains(plan!.Stops, s => s.DonationId == d1.Id);
+            Assert.True(plan.NgoArrival > plan.Stops.Last().EstimatedArrival);
+            Assert.Equal(1.0, plan.TotalWeightKg, 3);
+            Assert.True(plan.TotalDistanceKm > 0);
         }
 
         [Fact]
-        public void Orchestrator_NgoClosedAtArrival_ReturnsEmpty()
+        public async Task FarAwayDonation_IsNotPartOfTheRoute()
         {
-            // Arrange
-            var asOf = DateTime.UtcNow.Date.AddHours(9);
-            var d1 = MakeDonation(1, 32.001, 34.001, asOf, TimeSpan.FromHours(1));
-            var volunteer = MakeVolunteer(1, 50);
-            var ngo = new Ngo { Id = 1, RegionId = 1, Latitude = 32.0, Longitude = 34.0, SunToThuOpenTime = TimeSpan.FromHours(0), SunToThuCloseTime = TimeSpan.FromHours(1) };
+            var compatible = MakeDonation(1, 32.0, 34.0, TimeSpan.FromHours(2));
+            var farAway = MakeDonation(2, 40.0, 40.0, TimeSpan.FromHours(2));
 
-            var mockRoute = new List<PickupStop>
-            {
-                new PickupStop { DonationId = 1, Location = new GeoCoordinate { Latitude = d1.Latitude, Longitude = d1.Longitude }, EstimatedArrival = asOf.AddHours(2) }
-            };
+            var stops = await Create(RouteService(30)).ProcessVolunteerRouteAssignmentAsync(
+                MakeVolunteer(50), new List<Donation> { compatible, farAway }, Start, MakeNgo(), StartUtc);
 
-            var mockRouteSvc = new Mock<IRouteOptimizationService>();
-            mockRouteSvc.Setup(s => s.OptimizeRoute(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(), It.IsAny<DateTime>())).Returns(mockRoute);
-
-            var loggerMock = new Moq.Mock<Microsoft.Extensions.Logging.ILogger<BLL.Algorithms.DonationMatchingOrchestrator>>();
-            var orchestrator = new DonationMatchingOrchestrator(new KnapsackSolver(), mockRouteSvc.Object, loggerMock.Object);
-
-            // Act
-            var route = orchestrator.ProcessVolunteerRouteAssignment(volunteer, new List<Donation> { d1 }, new GeoCoordinate { Latitude = 32.0, Longitude = 34.0 }, ngo, asOf);
-
-            // Assert: NGO closed at arrival -> empty route
-            Assert.Empty(route);
+            Assert.Contains(stops, s => s.DonationId == compatible.Id);
+            Assert.DoesNotContain(stops, s => s.DonationId == farAway.Id);
         }
 
         [Fact]
-        public void Orchestrator_DonationLatestPickupEarlierThanEta_ReturnsEmpty()
+        public async Task CapacityIsRespected_ByTheKnapsack()
         {
-            // Arrange
-            var asOf = DateTime.UtcNow.Date.AddHours(9);
-            var d1 = MakeDonation(1, 32.001, 34.001, asOf, TimeSpan.FromHours(1));
-            var volunteer = MakeVolunteer(1, 50);
-            var ngo = MakeOpenNgo();
+            var d1 = MakeDonation(1, 32.001, 34.001, TimeSpan.FromHours(3), weightKg: 8);
+            var d2 = MakeDonation(2, 32.002, 34.002, TimeSpan.FromHours(3), weightKg: 8);
 
-            var mockRoute = new List<PickupStop>
-            {
-                // ETA intentionally after the donation's pickup date/time
-                new PickupStop { DonationId = 1, Location = new GeoCoordinate { Latitude = d1.Latitude, Longitude = d1.Longitude }, EstimatedArrival = asOf.AddHours(3) }
-            };
+            var plan = await Create(RouteService(10)).BuildRouteAsync(MakeVolunteer(10), new List<Donation> { d1, d2 }, Start, MakeNgo(), StartUtc);
 
-            var mockRouteSvc = new Mock<IRouteOptimizationService>();
-            mockRouteSvc.Setup(s => s.OptimizeRoute(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(), It.IsAny<DateTime>())).Returns(mockRoute);
-
-            var loggerMock = new Moq.Mock<Microsoft.Extensions.Logging.ILogger<BLL.Algorithms.DonationMatchingOrchestrator>>();
-            var orchestrator = new DonationMatchingOrchestrator(new KnapsackSolver(), mockRouteSvc.Object, loggerMock.Object);
-
-            // Unit-test the internal pickup-deadline check in isolation via InternalsVisibleTo
-            var stop = mockRoute[0];
-            var compatibleDonations = new List<Donation> { d1 };
-            // When ETA is after pickup deadline the internal check should reject
-            var withinDeadline = orchestrator.IsWithinPickupDeadline(stop, d1);
-            Assert.False(withinDeadline);
-
-            // Integration-level assertion: pipeline still returns empty route
-            var route = orchestrator.ProcessVolunteerRouteAssignment(volunteer, new List<Donation> { d1 }, new GeoCoordinate { Latitude = 32.0, Longitude = 34.0 }, ngo);
-            Assert.Empty(route);
+            Assert.NotNull(plan);
+            Assert.Single(plan!.Stops);
+            Assert.True(plan.TotalWeightKg <= 10);
         }
 
         [Fact]
-        public void Orchestrator_VolunteerAvailabilityDoesNotCoverRoute_ReturnsEmpty()
+        public async Task NgoClosedAtArrival_ReturnsNoRoute()
         {
-            // Arrange
-            var asOf = DateTime.UtcNow.Date.AddHours(9);
-            var d1 = MakeDonation(1, 32.001, 34.001, asOf, TimeSpan.FromHours(2));
-            var volunteer = new Volunteer
-            {
-                Id = 1,
-                MaxCapacityKg = 50,
-                AvailabilitySlots = new List<AvailabilitySlot> { new AvailabilitySlot { RegionId = 1, Day = asOf.DayOfWeek, StartTime = TimeSpan.FromHours(0), EndTime = TimeSpan.FromHours(9) } }
-            };
-            var ngo = MakeOpenNgo();
+            var d1 = MakeDonation(1, 32.001, 34.001, TimeSpan.FromHours(3));
+            // העמותה נסגרת ב-09:30, וההגעה אליה רק אחרי 60+5+10 דקות
+            var ngo = MakeNgo(close: new TimeSpan(9, 30, 0));
 
-            var mockRoute = new List<PickupStop>
-            {
-                new PickupStop { DonationId = 1, Location = new GeoCoordinate { Latitude = d1.Latitude, Longitude = d1.Longitude }, EstimatedArrival = asOf.AddHours(2) }
-            };
+            var plan = await Create(RouteService(60)).BuildRouteAsync(MakeVolunteer(50), new List<Donation> { d1 }, Start, ngo, StartUtc);
 
-            var mockRouteSvc = new Mock<IRouteOptimizationService>();
-            mockRouteSvc.Setup(s => s.OptimizeRoute(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(), It.IsAny<DateTime>())).Returns(mockRoute);
+            Assert.Null(plan);
+        }
 
-            var loggerMock = new Moq.Mock<Microsoft.Extensions.Logging.ILogger<BLL.Algorithms.DonationMatchingOrchestrator>>();
-            var orchestrator = new DonationMatchingOrchestrator(new KnapsackSolver(), mockRouteSvc.Object, loggerMock.Object);
+        [Fact]
+        public async Task PickupDeadlineBeforeEta_ReturnsNoRoute()
+        {
+            var d1 = MakeDonation(1, 32.001, 34.001, TimeSpan.FromHours(1));
+            var orchestrator = Create(RouteService(90));   // ETA אחרי 90 דקות, האיסוף האחרון אחרי 60
 
-            // Unit-test the internal volunteer-availability check in isolation via InternalsVisibleTo
-            var routeStart = asOf;
-            var routeEnd = mockRoute[0].EstimatedArrival.Value;
-            var compatibleDonations = new List<Donation> { d1 };
-            var covers = orchestrator.VolunteerAvailabilityCoversRoute(volunteer, routeStart, routeEnd, compatibleDonations, ngo);
-            Assert.False(covers);
+            var stop = new PickupStop { DonationId = 1, EstimatedArrival = StartUtc.AddMinutes(90) };
+            Assert.False(orchestrator.IsWithinPickupDeadline(stop, d1));
+            Assert.True(orchestrator.IsWithinPickupDeadline(new PickupStop { DonationId = 1, EstimatedArrival = StartUtc.AddMinutes(30) }, d1));
 
-            // Integration-level assertion: pipeline still returns empty route
-            var route = orchestrator.ProcessVolunteerRouteAssignment(volunteer, new List<Donation> { d1 }, new GeoCoordinate { Latitude = 32.0, Longitude = 34.0 }, ngo);
-            Assert.Empty(route);
+            Assert.Null(await orchestrator.BuildRouteAsync(MakeVolunteer(50), new List<Donation> { d1 }, Start, MakeNgo(), StartUtc));
+        }
+
+        [Fact]
+        public async Task VolunteerAvailabilityMustCoverTheWholeRoute()
+        {
+            var d1 = MakeDonation(1, 32.001, 34.001, TimeSpan.FromHours(3));
+            // המתנדב זמין עד 09:30 בלבד; המסלול מסתיים אחרי 09:30
+            var volunteer = MakeVolunteer(50, slotEnd: new TimeSpan(9, 30, 0));
+            var orchestrator = Create(RouteService(60));
+
+            Assert.False(orchestrator.VolunteerAvailabilityCoversRoute(volunteer, StartUtc, StartUtc.AddMinutes(75), new List<Donation> { d1 }, MakeNgo()));
+            Assert.True(orchestrator.VolunteerAvailabilityCoversRoute(volunteer, StartUtc, StartUtc.AddMinutes(20), new List<Donation> { d1 }, MakeNgo()));
+
+            Assert.Null(await orchestrator.BuildRouteAsync(volunteer, new List<Donation> { d1 }, Start, MakeNgo(), StartUtc));
+        }
+
+        [Fact]
+        public async Task AnchorDonation_MustBeInTheRoute()
+        {
+            var anchor = MakeDonation(1, 32.001, 34.001, TimeSpan.FromHours(3));
+            var other = MakeDonation(2, 32.002, 34.002, TimeSpan.FromHours(3));
+
+            var plan = await Create(RouteService(10)).BuildRouteAsync(MakeVolunteer(50), new List<Donation> { anchor, other }, Start, MakeNgo(), StartUtc, anchorDonationId: 1);
+
+            Assert.NotNull(plan);
+            Assert.Contains(plan!.Stops, s => s.DonationId == 1);
         }
     }
 }

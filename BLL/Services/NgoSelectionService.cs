@@ -1,10 +1,8 @@
 ﻿using BLL.Algorithms;
 using BLL.Configuration;
-using DAL;
 using DAL.Classes;
-using Microsoft.EntityFrameworkCore;
+using DAL.Interfaces;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -14,16 +12,19 @@ namespace BLL.Algoritems
 {
     public class NgoSelectionService : INgoSelectionService
     {
-        private readonly FoodRescueDbContext _context;
-        private readonly MatchingPolicyOptions _policy;
+        private readonly IMatchRepository _matchRepository;
         private readonly ILogger<NgoSelectionService> _logger;
 
-        public NgoSelectionService(FoodRescueDbContext context, IOptions<MatchingPolicyOptions> policy, ILogger<NgoSelectionService> logger)
+        private readonly IMatchingPolicyProvider _policyProvider;
+
+        public NgoSelectionService(IMatchRepository matchRepository, IMatchingPolicyProvider policy, ILogger<NgoSelectionService> logger)
         {
-            _context = context;
-            _policy = policy?.Value ?? new MatchingPolicyOptions();
+            _matchRepository = matchRepository;
+            _policyProvider = policy;
             _logger = logger;
         }
+
+        private MatchingPolicyOptions _policy => _policyProvider.Current;
 
         public async Task<(Ngo Ngo, double DistanceKm, DateTime EstimatedArrival)?> SelectBestNgoAsync(
             Donation donation, IEnumerable<Ngo> candidateNgos, DateTime pickupDateTime)
@@ -36,15 +37,11 @@ namespace BLL.Algoritems
             }
 
             var ids = ngos.Select(n => n.Id).ToList();
-            var today = pickupDateTime.Date;
+            var localDay = LocalClock.ToLocal(pickupDateTime).Date;
 
-            var loadList = await _context.Matches
-                .Where(m => ids.Contains(m.NgoId) && m.AssignedAt.Date == today)
-                .GroupBy(m => m.NgoId)
-                .Select(g => new { NgoId = g.Key, Count = g.Count() })
-                .ToListAsync();
-
-            var loadByNgoId = loadList.ToDictionary(x => x.NgoId, x => x.Count);
+            // כמה שידוכים כבר יש לכל עמותה היום (היום המקומי) - לחישוב העומס שלה
+            var loadByNgoId = await _matchRepository.CountByNgoOnDateAsync(
+                ids, LocalClock.ToUtc(localDay), LocalClock.ToUtc(localDay.AddDays(1)));
 
             Ngo? best = null;
             double bestScore = double.MinValue, bestDistance = double.MaxValue;
@@ -78,12 +75,12 @@ namespace BLL.Algoritems
                 // שימוש ב-Logger כדי שהפלט יופיע בדיוק כמו שאר הלוגים שלך
                 var localEarliestArrival = LocalClock.ToLocal(earliestArrival);
                 var localLatestArrival = LocalClock.ToLocal(latestArrival);
-                _logger.LogInformation("NgoSelectionService [DEBUG Window]: Donation {DonationId} -> NGO {NgoId} | Local Earliest: {LocalEarliest} | Local Latest: {LocalLatest}",
+                _logger.LogDebug("NgoSelectionService [Window]: Donation {DonationId} -> NGO {NgoId} | Local Earliest: {LocalEarliest} | Local Latest: {LocalLatest}",
                     donation.Id, ngo.Id, localEarliestArrival, localLatestArrival);
 
                 if (earliestArrival > latestArrival)
                 {
-                    _logger.LogInformation("NgoSelectionService: NGO {NgoId} rejected for donation {DonationId} because arrival window is invalid.", ngo.Id, donation.Id);
+                    _logger.LogDebug("NgoSelectionService: NGO {NgoId} rejected for donation {DonationId} because arrival window is invalid.", ngo.Id, donation.Id);
                     continue;
                 }
 
@@ -91,7 +88,7 @@ namespace BLL.Algoritems
                 var validArrival = NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, earliestArrival, latestArrival);
                 if (!validArrival.HasValue)
                 {
-                    _logger.LogInformation("NgoSelectionService: NGO {NgoId} rejected for donation {DonationId} because NGO is closed during the arrival window.", ngo.Id, donation.Id);
+                    _logger.LogDebug("NgoSelectionService: NGO {NgoId} rejected for donation {DonationId} because NGO is closed during the arrival window.", ngo.Id, donation.Id);
                     continue;
                 }
 

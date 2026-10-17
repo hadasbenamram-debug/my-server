@@ -1,28 +1,51 @@
+﻿using BLL.Algorithms;
 using BLL.Algoritems;
-using BLL.Algorithms;
 using BLL.Configuration;
 using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
-using BLL.Repositories;
-using BLL.Services;
 using BLL.Mappings;
+using BLL.Notifications;
+using BLL.Security;
+using BLL.Services;
 using DAL;
-using DAL.Classes;
+using DAL.Interfaces;
+using DAL.Repositories;
 using FoodRescue.Hubs;
+using FoodRescue.Infrastructure;
 using FoodRescue.Middlewares;
+using FoodRescue.Security;
 using Hangfire;
 using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
+using System;
+using System.IO;
+using System.Linq;
+using System.Net;
 using System.Text;
+using System.Threading.RateLimiting;
+using System.Threading.Tasks;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// הגדרת אזור הזמן המקומי (Asia/Jerusalem כברירת מחדל) עבור כל הבדיקות התלויות בשעון קיר
-BLL.Algorithms.LocalClock.Configure(builder.Configuration["MatchingPolicy:TimeZoneId"] ?? "Asia/Jerusalem");
+// =========================================================
+// הגדרות כלליות
+// =========================================================
 
-// רישום Repositories
+// אזור זמן: התרומות שייכות ליום המקומי (ישראל), במסד הכל נשמר ב-UTC
+LocalClock.Configure(builder.Configuration["MatchingPolicy:TimeZoneId"] ?? "Asia/Jerusalem");
+
+builder.Services.AddSingleton(TimeProvider.System);
+
+// =========================================================
+// Repositories (DAL) - גישה לנתונים בלבד.
+// ה-API מפנה ל-DAL רק בשביל הרישום הזה ל-DI; הקונטרולרים עצמם לא משתמשים ב-Repositories.
+// =========================================================
+
 builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IDonationRepository, DonationRepository>();
@@ -34,138 +57,280 @@ builder.Services.AddScoped<IFoodCategoryRepository, FoodCategoryRepository>();
 builder.Services.AddScoped<IRegionRepository, RegionRepository>();
 builder.Services.AddScoped<IApprovalRequestRepository, ApprovalRequestRepository>();
 builder.Services.AddScoped<IManagerRepository, ManagerRepository>();
+builder.Services.AddScoped<IAvailabilitySlotRepository, AvailabilitySlotRepository>();
+builder.Services.AddScoped<ICommentRepository, CommentRepository>();
+builder.Services.AddScoped<IDeliveryLogRepository, DeliveryLogRepository>();
+builder.Services.AddScoped<IFeedbackRepository, FeedbackRepository>();
+builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
+builder.Services.AddScoped<IVolunteerRouteRepository, VolunteerRouteRepository>();
+builder.Services.AddScoped<IActionTokenRepository, ActionTokenRepository>();
+builder.Services.AddScoped<ILoginAttemptRepository, LoginAttemptRepository>();
+builder.Services.AddScoped<ISystemSettingRepository, SystemSettingRepository>();
+builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+// =========================================================
+// מדיניות השידוך: ברירות מחדל מ-appsettings + שינויים של מנהל מהמסד (api/settings)
+// =========================================================
+
 builder.Services.Configure<MatchingPolicyOptions>(
     builder.Configuration.GetSection(MatchingPolicyOptions.SectionName));
-builder.Services.AddSignalR();
-// רישום שירות ה-Google Maps עם כתובת הבסיס המעודכנת ל-Google Routes API
-builder.Services.AddHttpClient<
-    BLL.Integrations.GoogleMaps.IGoogleMapsDistanceService,
-    BLL.Integrations.GoogleMaps.GoogleMapsDistanceService>(client =>
+builder.Services.AddSingleton<IMatchingPolicyProvider, MatchingPolicyProvider>();
+builder.Services.AddScoped<ISettingsService, SettingsService>();
+
+// =========================================================
+// Controllers, Swagger, SignalR
+// =========================================================
+
+builder.Services.AddControllers()
+    .ConfigureApiBehaviorOptions(options =>
     {
-        client.BaseAddress = new Uri("https://routes.googleapis.com/");
-        client.Timeout = TimeSpan.FromSeconds(10);
+        // שגיאות ולידציה באותו מבנה אחיד כמו כל שאר השגיאות: { status, message, code, errors }
+        options.InvalidModelStateResponseFactory = context =>
+            new BadRequestObjectResult(ApiError.FromModelState(context.ModelState, context.HttpContext.TraceIdentifier));
     });
-
-builder.Services.AddSignalR();
-
-// Add services to the container.
-builder.Services.AddControllers();
-builder.Services.AddScoped<DonationMatchingOrchestrator>();
-builder.Services.AddScoped<IEmailService, EmailService>();
-builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<FoodRescue.Security.CallerProfileService>();
-
-// הוספת שירותי Swagger עם מניעת התנגשויות שמות (SchemaId)
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddScoped<PriorityDecayScheduler>();
+
+builder.Services.AddHsts(options =>
+{
+    options.MaxAge = TimeSpan.FromDays(365);
+    options.IncludeSubDomains = true;
+});
+
 builder.Services.AddSwaggerGen(c =>
 {
     c.CustomSchemaIds(type => type.FullName?.Replace('+', '.'));
 });
 
-// רישום שירותי הליבה של שכבת ה-BLL
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<IRealtimeNotifier, SignalRRealtimeNotifier>();
+builder.Services.AddHttpContextAccessor();
+
+// =========================================================
+// Reverse proxy: כתובת ה-IP האמיתית של הלקוח (חשובה לנעילת התחברות לפי IP ולהגבלת קצב).
+// כברירת מחדל סומכים רק על פרוקסי מקומי (127.0.0.1 / ::1); אפשר להוסיף ForwardedHeaders:KnownProxies.
+// =========================================================
+
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    foreach (var proxy in builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? Array.Empty<string>())
+    {
+        if (IPAddress.TryParse(proxy, out var address))
+            options.KnownProxies.Add(address);
+    }
+});
+
+// =========================================================
+// Rate limiting
+// =========================================================
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = (context, _) => new ValueTask(new ApiError
+    {
+        Status = StatusCodes.Status429TooManyRequests,
+        Code = "TooManyRequests",
+        Message = "בוצעו יותר מדי בקשות. נסו שוב בעוד דקה."
+    }.WriteAsync(context.HttpContext));
+
+    // ניתוח תמונות (AI) - עד 5 בדקה למשתמש
+    options.AddPolicy("image-analysis", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.User.GetUserId()?.ToString() ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
+    // טופס צור קשר - פתוח לאורחים, לכן מוגבל לפי IP: עד 3 פניות ב-10 דקות
+    options.AddPolicy("contact-form", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 3,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
+    // התחברות / הרשמה / איפוס סיסמה / קישורים מהמייל - עד 20 בקשות בדקה לכל IP
+    // (בנוסף לנעילה לפי מייל+IP שנשמרת במסד)
+    options.AddPolicy("auth", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 20,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
+
+// =========================================================
+// Google Maps Routes API
+// מרחקים נשמרים במטמון (DistanceCacheMinutes, ברירת מחדל 3 שעות) לפי קואורדינטות מעוגלות,
+// כך שהמנוע לא פונה ל-Google בכל ריצה (בעבר: ריצה כל 2 דקות ומטמון של 2 דקות).
+// =========================================================
+
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<RouteLegCache>();
+builder.Services.AddHttpClient<IGoogleRoutesClient, GoogleRoutesClient>(client =>
+{
+    client.BaseAddress = new Uri("https://routes.googleapis.com/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+builder.Services.AddScoped<IGoogleMapsDistanceService, GoogleMapsDistanceService>();
+
+// =========================================================
+// התראות: מייל / SMS נשמרים בתור (Outbox) ונשלחים ברקע עם ניסיונות חוזרים.
+// גוף ההודעה נשמר מוצפן (AES-GCM) ונמחק אחרי השליחה.
+// =========================================================
+
+builder.Services.AddSingleton<IPayloadProtector, AesGcmPayloadProtector>();
+builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+builder.Services.AddHttpClient<ISmsSender, SmsSender>(client => client.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<IUserNotificationService, UserNotificationService>();
+builder.Services.AddScoped<NotificationDispatcher>();
+
+// =========================================================
+// אבטחה: טוקנים חד-פעמיים (איפוס סיסמה, קודים, קישורי תגובה) ונעילת התחברות - במסד ולא בזיכרון
+// =========================================================
+
+builder.Services.AddSingleton<ITokenService, TokenService>();
+builder.Services.AddScoped<IActionTokenService, ActionTokenService>();
+builder.Services.AddScoped<ILoginLockoutService, LoginLockoutService>();
+builder.Services.AddScoped<IUserService, UserService>();
+
+builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
+
+// =========================================================
+// Services עסקיים (BLL) - הקונטרולרים עובדים רק מולם
+// =========================================================
+
+builder.Services.AddScoped<CallerProfileService>();
+builder.Services.AddScoped<IDonationService, DonationService>();
+builder.Services.AddScoped<ISupplierService, SupplierService>();
+builder.Services.AddScoped<INgoService, NgoService>();
+builder.Services.AddScoped<IVolunteerService, VolunteerService>();
+builder.Services.AddScoped<IMatchService, MatchService>();
+builder.Services.AddScoped<IApprovalRequestService, ApprovalRequestService>();
+builder.Services.AddScoped<ICommentService, CommentService>();
+builder.Services.AddScoped<CommentTreeService>();
+builder.Services.AddScoped<IFoodCategoryService, FoodCategoryService>();
+builder.Services.AddScoped<IRegionService, RegionService>();
+builder.Services.AddScoped<IMapService, MapService>();
+builder.Services.AddScoped<IDeliveryLogService, DeliveryLogService>();
+builder.Services.AddScoped<IFeedbackService, FeedbackService>();
+builder.Services.AddScoped<ISupportService, SupportService>();
+builder.Services.AddScoped<IAdminReportService, AdminReportService>();
+builder.Services.AddScoped<IValidationService, ValidationService>();
+builder.Services.AddScoped<AdminSeedService>();
+builder.Services.AddScoped<FoodCategorySeedService>();
+builder.Services.AddScoped<RegionSeedService>();
+
+// =========================================================
+// מנוע השידוכים - מסלול אחד (DonationMatchingBatchService) לריצה המתוזמנת, להפעלה ידנית,
+// לשיבוץ ידני ולשיבוץ מחדש. (בעבר היו שלושה מסלולים שונים, אחד מהם הוזרק כאן כ-delegate.)
+// =========================================================
+
+builder.Services.AddSingleton<EngineRunState>();
+builder.Services.AddSingleton<IEngineLock>(sp => new HangfireEngineLock(sp.GetRequiredService<JobStorage>()));
+builder.Services.AddScoped<KnapsackSolver>();
+builder.Services.AddScoped<IRouteOptimizationService, RouteOptimizationService>();
+builder.Services.AddScoped<DonationMatchingOrchestrator>();
+builder.Services.AddScoped<RegionAvailabilityMatchingService>();
 builder.Services.AddScoped<VolunteerMatchScorer>();
 builder.Services.AddScoped<VolunteerRankingService>();
-builder.Services.AddScoped<BLL.Services.MatchCreationService>();
-builder.Services.AddScoped<BLL.Services.AdminEscalationService>();
-builder.Services.AddSingleton<DistanceMemoizationService>();
-builder.Services.AddAutoMapper(
-    cfg => { },
-    typeof(BLL.Mappings.MappingProfile).Assembly
-); 
-builder.Services.AddScoped<CommentService>();
-
-builder.Services.AddScoped<BacktrackingAssignmentService>(sp =>
-    new BacktrackingAssignmentService(
-        maxSearchRadiusKm: sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<MatchingPolicyOptions>>().Value.MaxSearchRadiusKm,
-        sendRequestToVolunteer: async (volunteer, donation, targetNgo) =>
-        {
-            var matchCreationService = sp.GetService<BLL.Services.MatchCreationService>();
-            var emailService = sp.GetService<IEmailService>();
-            var logger = sp.GetService<Microsoft.Extensions.Logging.ILogger<BLL.Algorithms.BacktrackingAssignmentService>>();
-            try
-            {
-                if (matchCreationService != null)
-                {
-                    var (success, _) = await matchCreationService.CreateMatchAsync(donation, targetNgo, volunteer);
-                    if (!success)
-                    {
-                        logger?.LogWarning("BacktrackingAssignmentService: CreateMatchAsync failed for donation {DonationId}", donation?.Id);
-                        return;
-                    }
-                }
-
-                if (volunteer?.User?.Email != null && emailService != null)
-                {
-                    await emailService.SendEmailAsync(
-                        volunteer.UserId,
-                        volunteer.User.Email,
-                        "New donation available",
-                        $"A donation (id={donation?.Id}) is available for pickup. Please respond in the app.");
-                }
-            }
-            catch (System.Exception ex)
-            {
-                logger?.LogError(ex, "BacktrackingAssignmentService: failed to send notification to volunteer {VolunteerId}", volunteer?.Id);
-            }
-        },
-        triggerEscalation: async (donation, outcome) =>
-        {
-            var escalationService = sp.GetRequiredService<BLL.Services.AdminEscalationService>();
-            await escalationService.NotifyAdminsAsync(donation, outcome);
-        }));
-
-builder.Services.AddScoped<IRouteOptimizationService, RouteOptimizationService>();
-builder.Services.AddScoped<KnapsackSolver>();
-builder.Services.AddScoped<RegionAvailabilityMatchingService>();
-builder.Services.AddScoped<CommentTreeService>();
-
-builder.Services.AddScoped<BLL.Interfaces.IDonationAssignmentService, DonationAssignmentService>(sp =>
-    new DonationAssignmentService(
-        sp.GetRequiredService<RegionAvailabilityMatchingService>(),
-        sp.GetRequiredService<VolunteerRankingService>(),
-        sp.GetRequiredService<BacktrackingAssignmentService>(),
-        sp.GetRequiredService<IVolunteerRepository>(),
-        sp.GetRequiredService<DistanceMemoizationService>(),
-        sp.GetService<IGoogleMapsDistanceService>(),
-        sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<MatchingPolicyOptions>>().Value.MaxSearchRadiusKm));
-
-builder.Services.AddScoped<PriorityHeapService<Donation, int>>(sp => new PriorityHeapService<Donation, int>(d => d.Id));
-
-// רישום שירותי Background / Timeout
-builder.Services.AddScoped<MatchTimeoutService>();
-builder.Services.AddScoped<DonationMatchingBatchService>();
+builder.Services.AddScoped<BacktrackingAssignmentService>();
 builder.Services.AddScoped<INgoSelectionService, NgoSelectionService>();
-builder.Services.AddMemoryCache();
+builder.Services.AddScoped<MatchCreationService>();
+builder.Services.AddScoped<AdminEscalationService>();
+builder.Services.AddScoped<RouteWorkflowService>();
+builder.Services.AddScoped<VolunteerReliabilityService>();
+builder.Services.AddScoped<DonationMatchingBatchService>();
 
-// רישום AutoMapper לפי ה-Assembly של המחלקה MappingProfile
-builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile));
+// ג'ובים ברקע
+builder.Services.AddScoped<MatchTimeoutService>();
+builder.Services.AddScoped<PriorityDecayScheduler>();
+builder.Services.AddScoped<MaintenanceJobs>();
 
-builder.Services.AddDbContext<FoodRescueDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+// =========================================================
+// Database
+// =========================================================
 
-// Hangfire configuration
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+    throw new InvalidOperationException("ConnectionStrings:DefaultConnection is not configured.");
+
+builder.Services.AddDbContext<FoodRescueDbContext>(options => options.UseSqlServer(connectionString));
+
+// =========================================================
+// קבצים: תמונות תרומה (ציבורי, /images) ורישיונות עסק (תיקייה פרטית מחוץ ל-wwwroot)
+// =========================================================
+
+var configuredLicensesFolder = builder.Configuration["LicensesFolder"];
+if (string.IsNullOrWhiteSpace(configuredLicensesFolder))
+    throw new InvalidOperationException("LicensesFolder is not configured.");
+
+var licensesFolder = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, configuredLicensesFolder));
+
+builder.Services.AddScoped<ILicenseFileService>(sp =>
+    new LicenseFileService(licensesFolder, sp.GetRequiredService<ILogger<LicenseFileService>>()));
+
+var configuredImagesFolder = builder.Configuration["ImagesFolder"];
+if (string.IsNullOrWhiteSpace(configuredImagesFolder))
+    throw new InvalidOperationException("ImagesFolder is not configured.");
+
+var imagesFolder = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, configuredImagesFolder));
+Directory.CreateDirectory(imagesFolder);
+
+builder.Services.AddScoped<IImageService>(sp =>
+    new ImageService(imagesFolder, sp.GetRequiredService<ILogger<ImageService>>()));
+builder.Services.AddScoped(sp => new OrphanImageCleanupService(
+    sp.GetRequiredService<IDonationRepository>(),
+    imagesFolder,
+    sp.GetRequiredService<ILogger<OrphanImageCleanupService>>()));
+
+builder.Services.AddHttpClient<IImageAnalysisService, GeminiImageAnalysisService>(client =>
+{
+    client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/");
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
+
+// =========================================================
+// Hangfire
+// =========================================================
+
 builder.Services.AddHangfire(config =>
     config.SetDataCompatibilityLevel(CompatibilityLevel.Version_170)
           .UseSimpleAssemblyNameTypeSerializer()
           .UseRecommendedSerializerSettings()
-          .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection")));
+          .UseSqlServerStorage(connectionString));
 
 builder.Services.AddHangfireServer();
 
-// Register JWT authentication
+// =========================================================
+// JWT Authentication
+// =========================================================
+
 var jwtSection = builder.Configuration.GetSection("JwtSettings");
 var jwtSecret = jwtSection["Secret"];
-if (string.IsNullOrEmpty(jwtSecret))
-{
-    throw new InvalidOperationException("JwtSettings:Secret is not configured. Set it via user-secrets or environment variables.");
-}
-if (Encoding.UTF8.GetByteCount(jwtSecret) < 32)
-{
-    throw new InvalidOperationException("JwtSettings:Secret must be at least 32 bytes long (use a random 256-bit value).");
-}
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+if (string.IsNullOrWhiteSpace(jwtSecret))
+    throw new InvalidOperationException("JwtSettings:Secret is not configured. Set it via user-secrets or environment variables.");
+
+if (Encoding.UTF8.GetByteCount(jwtSecret) < 32)
+    throw new InvalidOperationException("JwtSettings:Secret must be at least 32 bytes long (use a random 256-bit value).");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
@@ -176,132 +341,172 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = jwtSection["Issuer"],
             ValidAudience = jwtSection["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+            // ברירת המחדל היא 5 דקות נוספות אחרי פקיעת הטוקן - מבטלים.
+            ClockSkew = TimeSpan.Zero
         };
 
-        // הוספת חילוץ הטוקן מתוך שורת הכתובת עבור חיבורי SignalR
         options.Events = new JwtBearerEvents
         {
+            // SignalR שולח את הטוקן ב-query string (WebSocket לא תומך בכותרות)
             OnMessageReceived = context =>
             {
                 var accessToken = context.Request.Query["access_token"];
-                var path = context.HttpContext.Request.Path;
-
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/notificationHub"))
+                if (!string.IsNullOrEmpty(accessToken) &&
+                    context.HttpContext.Request.Path.StartsWithSegments("/notificationHub"))
                 {
                     context.Token = accessToken;
                 }
                 return Task.CompletedTask;
-            }
+            },
+
+            // חותמת אבטחה (טוקנים ישנים אחרי שינוי סיסמה נדחים), תפקיד עדכני מהמסד, וסימון סיסמה זמנית
+            OnTokenValidated = SecurityStampValidator.ValidateAsync
         };
     });
-// הגדרת CORS מותאמת כולל AllowCredentials עבור SignalR ובקשות מאומתות
+
+// =========================================================
+// Frontend links + CORS (כתובות מתוך הגדרות, לא בקוד)
+// =========================================================
+
+if (string.IsNullOrWhiteSpace(builder.Configuration["App:FrontendBaseUrl"]))
+    throw new InvalidOperationException("App:FrontendBaseUrl is not configured (e.g. App__FrontendBaseUrl=https://app.example.com).");
+
+var allowedOrigins = (builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>())
+    .Where(o => !string.IsNullOrWhiteSpace(o))
+    .Select(o => o.Trim().TrimEnd('/'))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray();
+
+if (allowedOrigins.Length == 0)
+{
+    throw new InvalidOperationException(
+        "Cors:AllowedOrigins is empty. Configure at least one origin " +
+        "(appsettings.Development.json, or env vars Cors__AllowedOrigins__0, Cors__AllowedOrigins__1, ...).");
+}
+
+foreach (var origin in allowedOrigins)
+{
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+        (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+        origin == "*")
+    {
+        throw new InvalidOperationException($"Cors:AllowedOrigins contains an invalid origin: '{origin}'.");
+    }
+}
+
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowReactApp",
-        policy =>
-        {
-            policy.WithOrigins("http://localhost:5174")
-                  .AllowAnyHeader()
-                  .AllowAnyMethod()
-                  .AllowCredentials(); // חובה לעבודה תקינה עם SignalR ו-Credentials
-        });
+    options.AddPolicy("AllowReactApp", policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials()
+              // סך הרשומות ברשימות מעומדות
+              .WithExposedHeaders(FoodRescue.Controllers.ApiControllerBase.TotalCountHeader);
+    });
 });
+
+// =========================================================
+// Build
+// =========================================================
 
 var app = builder.Build();
 
-app.UseCors("AllowReactApp");
+app.UseForwardedHeaders();
 
-// Configure the HTTP request pipeline.
+// טיפול מרכזי בשגיאות - ראשון בצינור, כדי לתפוס שגיאות מכל השלבים שאחריו
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+if (!app.Environment.IsDevelopment())
+    app.UseHsts();
+
+app.UseHttpsRedirection();
+
+app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(imagesFolder),
+    RequestPath = "/images"
+});
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI(c =>
-    {
-        c.SwaggerEndpoint("/swagger/v1/swagger.json", "FoodRescue API V1");
-    });
+    app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "FoodRescue API V1"));
 }
 
-using (var scope = app.Services.CreateScope())
-{
-    var dbContext = scope.ServiceProvider.GetRequiredService<FoodRescueDbContext>();
-    var configuration = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+app.UseCors("AllowReactApp");
 
-    string adminEmail = configuration["AdminSeed:Email"] ?? "admin@foodrescue.com";
-    string adminPassword = configuration["AdminSeed:Password"] ?? "DefaultSecurePassword123!";
-    string adminName = configuration["AdminSeed:Name"] ?? "מנהל ראשי";
-    string adminPhone = configuration["AdminSeed:Phone"] ?? "0500000000";
-    string adminDepartment = configuration["AdminSeed:Department"] ?? "הנהלה ראשית";
-
-    var existingUser = await dbContext.Users.FirstOrDefaultAsync(u => u.Email == adminEmail);
-
-    if (existingUser == null)
-    {
-        existingUser = new User
-        {
-            Name = adminName,
-            Email = adminEmail,
-            Phone = adminPhone,
-            PasswordHash = BLL.Algorithms.PasswordHasher.Hash(adminPassword),
-            Role = UserRole.Admin,
-            IsEmailVerified = true,
-            IsPhoneVerified = true,
-            CreatedAt = DateTime.UtcNow
-        };
-
-        dbContext.Users.Add(existingUser);
-        await dbContext.SaveChangesAsync();
-    }
-
-    var existingManager = await dbContext.Managers.AnyAsync(m => m.UserId == existingUser.Id);
-    if (!existingManager)
-    {
-        var managerProfile = new Manager
-        {
-            UserId = existingUser.Id,
-            Department = adminDepartment
-        };
-
-        dbContext.Managers.Add(managerProfile);
-        await dbContext.SaveChangesAsync();
-    }
-}
-
-// הפעלת טיפול גלובלי בשגיאות
-app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseAuthentication();
+app.UseMiddleware<PasswordChangeRequiredMiddleware>();
 app.UseAuthorization();
-app.MapHub<NotificationHub>("/notificationHub");
+app.UseRateLimiter();
+
+// =========================================================
+// אתחול: מנהל ראשי, קטגוריות ואזורים בסיסיים, ומדיניות השידוך מהמסד
+// =========================================================
+
 using (var scope = app.Services.CreateScope())
 {
-    var recurringJobManager = scope.ServiceProvider.GetRequiredService<Hangfire.IRecurringJobManager>();
-
-    recurringJobManager.AddOrUpdate<BLL.Algorithms.PriorityDecayScheduler>(
-        "priority-decay-scheduler",
-        service => service.ProcessPriorityDecay(),
-        "*/2 * * * *");
-
-    recurringJobManager.AddOrUpdate<BLL.Algorithms.DonationMatchingBatchService>(
-        "hourly-donation-matching",
-        service => service.RunBatchAsync(),
-        "*/2 * * * *");
-
-    RecurringJob.AddOrUpdate<MatchTimeoutService>(
-        "process-match-timeouts",
-        service => service.ProcessTimeoutsAndNoShowsAsync(DateTime.UtcNow),
-        Cron.Minutely);
+    await scope.ServiceProvider.GetRequiredService<AdminSeedService>().SeedAdminAsync();
+    await scope.ServiceProvider.GetRequiredService<FoodCategorySeedService>().SeedCategoriesAsync();
+    await scope.ServiceProvider.GetRequiredService<RegionSeedService>().SeedRegionsAsync();
 }
 
-if (app.Environment.IsDevelopment())
+await app.Services.GetRequiredService<IMatchingPolicyProvider>().ReloadAsync();
+
+// =========================================================
+// SignalR
+// =========================================================
+
+app.MapHub<NotificationHub>("/notificationHub");
+
+// =========================================================
+// Hangfire recurring jobs
+// תוקן: ה-timeout רשם DateTime.UtcNow פעם אחת בזמן הרישום (הערך "קפא"), כך ששידוכים לא פגו אף פעם.
+// עכשיו כל ריצה לוקחת את השעה הנוכחית בעצמה.
+// =========================================================
+
+var policy = app.Services.GetRequiredService<IMatchingPolicyProvider>().Current;
+var recurringJobs = app.Services.GetRequiredService<IRecurringJobManager>();
+var localZone = new RecurringJobOptions { TimeZone = LocalClock.Zone };
+
+// המנוע: ברירת מחדל פעם בשעה (MatchingPolicy:EngineCron). הריצה נעולה (DisableConcurrentExecution + נעילה מבוזרת).
+recurringJobs.AddOrUpdate<DonationMatchingBatchService>(
+    "hourly-donation-matching", s => s.RunScheduledAsync(), policy.EngineCron, localZone);
+
+recurringJobs.AddOrUpdate<MatchTimeoutService>(
+    "process-match-timeouts", s => s.ProcessTimeoutsAsync(), Cron.Minutely());
+
+recurringJobs.AddOrUpdate<MatchTimeoutService>(
+    "process-no-shows", s => s.ProcessNoShowsAsync(), "*/5 * * * *");
+
+recurringJobs.AddOrUpdate<MaintenanceJobs>(
+    "expire-donations", s => s.ExpireDonationsAsync(), "*/10 * * * *");
+
+recurringJobs.AddOrUpdate<PriorityDecayScheduler>(
+    "priority-decay-scheduler", s => s.ProcessPriorityDecay(), "*/10 * * * *");
+
+recurringJobs.AddOrUpdate<NotificationDispatcher>(
+    "notification-sweep", s => s.SweepAsync(), Cron.Minutely());
+
+recurringJobs.AddOrUpdate<OrphanImageCleanupService>(
+    "orphan-image-cleanup", s => s.CleanupAsync(), Cron.Hourly());
+
+recurringJobs.AddOrUpdate<MaintenanceJobs>(
+    "maintenance-cleanup", s => s.CleanupAsync(), Cron.Daily(3), localZone);
+
+// Dashboard - Admin בלבד, בכל הסביבות (כולל Development).
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
 {
-    app.UseHangfireDashboard();
-}
-else
-{
-    app.UseWhen(context => context.User?.IsInRole("Admin") == true, appBuilder => appBuilder.UseHangfireDashboard());
-}
+    Authorization = new[] { new HangfireAdminAuthorizationFilter() }
+});
 
 app.MapControllers();
 
-
 app.Run();
+
+// נחשף לבדיקות אינטגרציה (WebApplicationFactory)
+public partial class Program { }

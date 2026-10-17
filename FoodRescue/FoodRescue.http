@@ -1,6 +1,301 @@
-@FoodRescue_HostAddress = http://localhost:5007
+﻿### =====================================================================
+### FoodRescue API - manual security test file (Visual Studio / Rider / VS Code REST Client)
+###
+### Passwords are NEVER stored in this file. Create a git-ignored file next to it,
+### FoodRescue/http-client.env.json   (already listed in .gitignore):
+###
+###   {
+###     "dev": {
+###       "adminEmail": "<the AdminSeed:Email you configured>",
+###       "adminPassword": "<the AdminSeed:Password you configured>"
+###     }
+###   }
+###
+### Run the requests from top to bottom. Expected status is written above each request.
+### ===================================================================== 
 
-GET {{FoodRescue_HostAddress}}/weatherforecast/
-Accept: application/json
+@host = https://localhost:7295
+@httpHost = http://localhost:5007
+@password = Test-Passw0rd-123!
+
+### ---------------------------------------------------------------------
+### 0. HTTPS: plain HTTP must be redirected (307/308) to https://localhost:7295
+### EXPECT: 307 or 308, Location header starts with https://
+### (turn off "follow redirects" in the client to see it)
+GET {{httpHost}}/api/region
+
+### ---------------------------------------------------------------------
+### 1. Registration (EXPECT 200 first time, 409 when the e-mail already exists)
+### Role is not part of the request - the server always creates Role=User.
+# @name registerA
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test User A",
+  "email": "  User.A@Example.com ",
+  "phone": "0501111111",
+  "password": "{{password}}"
+}
 
 ###
+# EXPECT: 200 first time / 409 afterwards (same e-mail, different casing & spaces = same account)
+# @name registerB
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Test User B",
+  "email": "user.b@example.com",
+  "phone": "0502222222",
+  "password": "{{password}}"
+}
+
+### Validation: short password -> 400 (with a "message" field), invalid e-mail -> 400
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "name": "X Y", "email": "not-an-email", "phone": "0503333333", "password": "short" }
+
+### Mass-assignment: an extra "role" field must be ignored (user is created as Role=User)
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "name": "Hacker", "email": "hacker@example.com", "phone": "0504444444", "password": "{{password}}", "role": "Admin" }
+
+### ---------------------------------------------------------------------
+### 2. Login (EXPECT 200 + token, role, expiresAt)
+# @name loginA
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "USER.A@example.com", "password": "{{password}}" }
+
+###
+@tokenA = {{loginA.response.body.$.token}}
+
+# @name loginB
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "user.b@example.com", "password": "{{password}}" }
+
+###
+@tokenB = {{loginB.response.body.$.token}}
+
+# @name loginAdmin
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}", "password": "{{adminPassword}}" }
+
+###
+@adminToken = {{loginAdmin.response.body.$.token}}
+
+### Wrong password -> 401 { "message": "שם משתמש או סיסמה שגויים." } (same text for unknown e-mail)
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "user.a@example.com", "password": "wrong-password" }
+
+### ---------------------------------------------------------------------
+### 3. No token -> 401
+### EXPECT: 401
+GET {{host}}/api/donations/my-supplier-donations
+
+###
+### EXPECT: 401
+DELETE {{host}}/api/region/1
+
+###
+### EXPECT: 401
+POST {{host}}/api/donations/analyze-image
+
+### Public on purpose (registration forms) -> 200
+GET {{host}}/api/region
+
+### ---------------------------------------------------------------------
+### 4. Regular user on Admin endpoints -> 403
+### EXPECT: 403
+DELETE {{host}}/api/region/1
+Authorization: Bearer {{tokenA}}
+
+###
+### EXPECT: 403
+POST {{host}}/api/ngos/1/reject
+Authorization: Bearer {{tokenA}}
+Content-Type: application/json
+
+"reason"
+
+###
+### EXPECT: 403
+GET {{host}}/api/matches
+Authorization: Bearer {{tokenA}}
+
+###
+### EXPECT: 403 (map shows addresses/coordinates of everybody - Admin only)
+GET {{host}}/api/map/all-entities
+Authorization: Bearer {{tokenA}}
+
+###
+### EXPECT: 403 (NGO list is for Admin / approved volunteers only)
+GET {{host}}/api/ngos
+Authorization: Bearer {{tokenA}}
+
+### Same endpoints as Admin -> 200 / 204 / 404 (never 401/403)
+### EXPECT: 200
+GET {{host}}/api/ngos
+Authorization: Bearer {{adminToken}}
+
+###
+### EXPECT: 200
+GET {{host}}/api/map/all-entities
+Authorization: Bearer {{adminToken}}
+
+### ---------------------------------------------------------------------
+### 5. IDOR - two users. A creates a volunteer profile, B (no profile) must get 404, never 403/200.
+### EXPECT: 200 first time / 409 afterwards
+# @name createVolunteerA
+POST {{host}}/api/volunteers
+Authorization: Bearer {{tokenA}}
+Content-Type: application/json
+
+{
+  "vehicleType": "Car",
+  "maxCapacityKg": 50,
+  "isAvailable": true,
+  "currentLatitude": 32.08,
+  "currentLongitude": 34.78,
+  "idNumber": "000000018",
+  "dateOfBirth": "1990-01-01",
+  "driverLicenseNumber": "1234567",
+  "driverLicenseExpiry": "2030-01-01"
+}
+
+###
+### If you got 409, read the id once with: GET /api/volunteers/{any id} as user A and paste it here.
+@volunteerAId = {{createVolunteerA.response.body.$.id}}
+
+### A reads own profile -> 200
+GET {{host}}/api/volunteers/{{volunteerAId}}
+Authorization: Bearer {{tokenA}}
+
+###
+### B reads A's profile -> EXPECT: 404
+GET {{host}}/api/volunteers/{{volunteerAId}}
+Authorization: Bearer {{tokenB}}
+
+###
+### B reads A's availability -> EXPECT: 404
+GET {{host}}/api/volunteers/{{volunteerAId}}/availability
+Authorization: Bearer {{tokenB}}
+
+###
+### B overwrites A's availability -> EXPECT: 404
+POST {{host}}/api/volunteers/{{volunteerAId}}/availability
+Authorization: Bearer {{tokenB}}
+Content-Type: application/json
+
+[]
+
+###
+### B asks for a supplier profile that is not B's -> EXPECT: 404 (same as an id that does not exist)
+GET {{host}}/api/suppliers/1
+Authorization: Bearer {{tokenB}}
+
+###
+### Set these two in http-client.env.json if you have data: an existing donation and match
+### (@donationId / @matchId), then B (not related to them, not an approved volunteer) -> EXPECT: 404
+@donationId = 1
+@matchId = 1
+
+GET {{host}}/api/donations/{{donationId}}
+Authorization: Bearer {{tokenB}}
+
+###
+### EXPECT: 404
+GET {{host}}/api/matches/{{matchId}}
+Authorization: Bearer {{tokenB}}
+
+###
+### EXPECT: 404
+POST {{host}}/api/matches/{{matchId}}/accept
+Authorization: Bearer {{tokenB}}
+
+### ---------------------------------------------------------------------
+### 6. Comments: author/createdAt/id from the client are ignored; target is checked
+### EXPECT: 400 (both donationId and matchId)
+POST {{host}}/api/comments
+Authorization: Bearer {{tokenA}}
+Content-Type: application/json
+
+{ "content": "hi", "donationId": 1, "matchId": 1 }
+
+###
+### EXPECT: 404 (user A is not related to the donation) - "author": "Someone Else" is ignored
+POST {{host}}/api/comments
+Authorization: Bearer {{tokenA}}
+Content-Type: application/json
+
+{ "id": 99, "author": "Someone Else", "createdAt": "2000-01-01T00:00:00Z", "content": "hi", "donationId": {{donationId}} }
+
+###
+### EXPECT: 200 - only comments the user is allowed to see
+GET {{host}}/api/comments/tree
+Authorization: Bearer {{tokenA}}
+
+###
+### EXPECT: 403
+GET {{host}}/api/comments
+Authorization: Bearer {{tokenA}}
+
+### ---------------------------------------------------------------------
+### 7. Unified error shape: every error is { status, message, code, errors? }
+### EXPECT: 400 with code "ValidationFailed" and errors.idNumber (check digit)
+POST {{host}}/api/volunteers/register
+Content-Type: application/json
+
+{
+  "name": "Bad Id",
+  "email": "bad.id@example.com",
+  "phone": "0501234567",
+  "vehicleType": "Car",
+  "maxCapacityKg": 50,
+  "idNumber": "123456789",
+  "driverLicenseNumber": "1234567",
+  "driverLicenseExpiry": "2030-01-01",
+  "dateOfBirth": "1990-01-01"
+}
+
+### ---------------------------------------------------------------------
+### 8. E-mail link for a volunteer request: one-time token, no login JWT
+### EXPECT: 404 for a wrong / used token
+POST {{host}}/api/matches/by-link
+Content-Type: application/json
+
+{ "token": "not-a-real-token" }
+
+### ---------------------------------------------------------------------
+### 9. Admin: engine status (real numbers) and settings (stored in the DB, used by the engine)
+### EXPECT: 200
+GET {{host}}/api/matches/engine-status
+Authorization: Bearer {{adminToken}}
+
+###
+GET {{host}}/api/settings
+Authorization: Bearer {{adminToken}}
+
+###
+### EXPECT: 200 - the next engine run uses the new timeout
+PUT {{host}}/api/settings
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{ "matchingTimeoutMinutes": 7 }
+
+### ---------------------------------------------------------------------
+### 10. Notification center of the logged-in user
+### EXPECT: 200 (array; total in the X-Total-Count header)
+GET {{host}}/api/notifications?page=1&pageSize=20
+Authorization: Bearer {{tokenA}}

@@ -1,104 +1,48 @@
-﻿using DAL;
+using BLL.Exceptions;
+using BLL.Interfaces;
+using FoodRescue.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using System;
-using System.Linq;
+using System.Collections.Generic;
 using System.Threading.Tasks;
-[ApiController]
-[Route("api/[controller]")]
-public class RegionController : ControllerBase
+
+namespace FoodRescue.Controllers
 {
-    private readonly FoodRescueDbContext _context;
-
-    public RegionController(FoodRescueDbContext context)
+    // אזורי פעילות. אוחד עם api/lookups/regions (שהוסר) - נתיב אחד לכל משאב.
+    [Authorize]
+    [Route("api/[controller]")]
+    public class RegionController : ApiControllerBase
     {
-        _context = context;
-    }
+        private readonly IRegionService _regionService;
 
-    /// <summary>
-    /// שליפת כל האזורים במערכת
-    /// </summary>
-    [HttpGet]
-    public async Task<IActionResult> GetAllRegions()
-    {
-        var regions = await _context.Regions.ToListAsync();
-        return Ok(regions);
-    }
-
-    /// <summary>
-    /// שליפת אזור ספציפי לפי מזהה
-    /// </summary>
-    [HttpGet("{id}")]
-    public async Task<IActionResult> GetRegionById(int id)
-    {
-        var region = await _context.Regions.FindAsync(id);
-
-        if (region == null)
+        public RegionController(IRegionService regionService)
         {
-            return NotFound(new { message = "האזור המבוקש לא נמצא." });
+            _regionService = regionService;
         }
 
-        return Ok(region);
-    }
+        // פתוח למשתמשים לא מחוברים - טפסי ההרשמה טוענים את האזורים
+        [HttpGet]
+        [AllowAnonymous]
+        public async Task<ActionResult<IEnumerable<RegionResponseDto>>> GetAllRegions() =>
+            Ok(await _regionService.GetAllAsync());
 
-    ///// <summary>
-    ///// הוספת אזור חדש
-    ///// </summary>
-    //[HttpPost]
-    //public async Task<IActionResult> CreateRegion([FromBody] Region region)
-    //{
-    //    if (region == null)
-    //    {
-    //        return BadRequest(new { message = "נתוני האזור שגויים." });
-    //    }
+        [HttpGet("{id:int}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<RegionResponseDto>> GetRegionById(int id) =>
+            Ok(await _regionService.GetByIdAsync(id) ?? throw new NotFoundException("האזור המבוקש לא נמצא."));
 
-    //    _context.Regions.Add(region);
-    //    await _context.SaveChangesAsync();
+        [HttpPost]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<RegionResponseDto>> AddRegion([FromBody] CreateRegionDto dto) =>
+            Ok(await _regionService.AddAsync(dto));
 
-    //    return CreatedAtAction(nameof(GetRegionById), new { id = region.Id }, region);
-    //}
-
-    /// <summary>
-    /// עדכון אזור קיים
-    /// </summary>
-    //[HttpPut("{id}")]
-    //public async Task<IActionResult> UpdateRegion(int id, [FromBody] Region updatedRegion)
-    //{
-    //    if (updatedRegion == null || id != updatedRegion.Id)
-    //    {
-    //        return BadRequest(new { message = "מזהה האזור אינו תואם." });
-    //    }
-
-    //    var region = await _context.Regions.FindAsync(id);
-    //    if (region == null)
-    //    {
-    //        return NotFound(new { message = "האזור לעדכון לא נמצא." });
-    //    }
-
-    //    // עדכון השדות הרלוונטיים (בהתאם למבנה המחלקה במסד הנתונים)
-    //    region.Name = updatedRegion.Name;
-
-    //    await _context.SaveChangesAsync();
-
-    //    return NoContent();
-    //}
-
-    /// <summary>
-    /// מחיקת אזור
-    /// </summary>
-    [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteRegion(int id)
-    {
-        var region = await _context.Regions.FindAsync(id);
-        if (region == null)
+        // מחיקה - מנהלים בלבד. אזור שבשימוש (עמותה / תרומה / משבצת זמינות) מחזיר 409.
+        [HttpDelete("{id:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> DeleteRegion(int id)
         {
-            return NotFound(new { message = "האזור למחיקה לא נמצא." });
+            await _regionService.DeleteAsync(id);
+            return NoContent();
         }
-
-        _context.Regions.Remove(region);
-        await _context.SaveChangesAsync();
-
-        return NoContent();
     }
 }

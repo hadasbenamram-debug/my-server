@@ -1,9 +1,6 @@
-﻿using BLL.Algorithms;
 using BLL.Configuration;
-using BLL.Interfaces; // ודא שקיים עבור IDonationRepository וכו'
 using DAL.Classes;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,32 +8,47 @@ using System.Threading.Tasks;
 
 namespace BLL.Algorithms
 {
+    // מסלול מוצע למתנדב: כמה תורמים -> עמותה אחת
+    public sealed class RoutePlan
+    {
+        public List<PickupStop> Stops { get; init; } = new();
+        public GeoCoordinate StartLocation { get; init; } = new();
+        public DateTime StartTime { get; init; }
+        public DateTime NgoArrival { get; init; }
+        public double NgoLegDistanceKm { get; init; }
+        public double NgoLegDurationMinutes { get; init; }
+        public double TotalDistanceKm { get; init; }
+        public double TotalDurationMinutes { get; init; }
+        public double TotalWeightKg { get; init; }
+        public double KnapsackValue { get; init; }
+    }
+
+    /// <summary>
+    /// בונה מסלול אפשרי אחד למתנדב ולעמותה נתונים: Knapsack (קיבולת, תרומה במלואה) + VRP (סדר התחנות)
+    /// ובדיקת כל האילוצים הקשים: זמן האיסוף האחרון של כל תרומה, תפוגה, שעות הקבלה של העמותה בזמן
+    /// ההגעה בפועל, וזמינות המתנדב לכל משך המסלול.
+    ///
+    /// תוקן: (1) זמן ההגעה לעמותה חושב בעבר כזמן ההגעה לתחנת האיסוף האחרונה (בלי הנסיעה לעמותה).
+    /// (2) הוסרה הפונקציה RunMatchingCycleAsync - מסלול שידוך שלישי שהתחיל מנקודה (0,0), בחר תמיד את
+    /// העמותה הראשונה ולא שמר כלום. כל השידוכים עוברים עכשיו דרך DonationMatchingBatchService.
+    /// </summary>
     public class DonationMatchingOrchestrator
     {
-        private readonly IDonationRepository _donationRepository;
-        private readonly IVolunteerRepository _volunteerRepository;
-        private readonly INgoRepository _ngoRepository;
         private readonly KnapsackSolver _knapsackSolver;
         private readonly IRouteOptimizationService _routeOptimizationService;
-        private readonly MatchingPolicyOptions _policyOptions;
+        private readonly IMatchingPolicyProvider _policy;
         private readonly ILogger<DonationMatchingOrchestrator> _logger;
 
         public DonationMatchingOrchestrator(
             KnapsackSolver knapsackSolver,
             IRouteOptimizationService routeOptimizationService,
-            IOptions<MatchingPolicyOptions> policyOptions,
-            ILogger<DonationMatchingOrchestrator> logger,
-            IDonationRepository donationRepository,
-            IVolunteerRepository volunteerRepository,
-            INgoRepository ngoRepository)
+            IMatchingPolicyProvider policy,
+            ILogger<DonationMatchingOrchestrator> logger)
         {
             _knapsackSolver = knapsackSolver;
             _routeOptimizationService = routeOptimizationService;
-            _policyOptions = policyOptions?.Value ?? new MatchingPolicyOptions();
+            _policy = policy;
             _logger = logger;
-            _donationRepository = donationRepository;
-            _volunteerRepository = volunteerRepository;
-            _ngoRepository = ngoRepository;
         }
 
         internal bool IsWithinPickupDeadline(PickupStop stop, Donation donation)
@@ -47,52 +59,15 @@ namespace BLL.Algorithms
             return stop.EstimatedArrival.Value <= pickupDateTime;
         }
 
-        internal bool VolunteerAvailabilityCoversRoute(Volunteer volunteer, DateTime routeStart, DateTime routeEnd, List<Donation> compatibleDonations, Ngo targetNgo)
+        internal bool VolunteerAvailabilityCoversRoute(Volunteer volunteer, DateTime routeStart, DateTime routeEnd, List<Donation> routeDonations, Ngo targetNgo)
         {
-            if (compatibleDonations == null || compatibleDonations.Count == 0) return false;
+            if (routeDonations == null || routeDonations.Count == 0) return false;
 
-            var donationRegionIds = compatibleDonations.Select(d => d.RegionId).Distinct().ToList();
+            var donationRegionIds = routeDonations.Select(d => d.RegionId).Distinct().ToList();
             return AvailabilityHelper.CoversRoute(volunteer, routeStart, routeEnd, donationRegionIds, targetNgo.RegionId);
         }
 
-        public async Task RunMatchingCycleAsync()
-        {
-            _logger?.LogInformation("Manual matching cycle triggered.");
-
-            var availableDonations = await _donationRepository.GetAvailableDonationsAsync();
-            if (availableDonations == null || !availableDonations.Any())
-            {
-                _logger?.LogInformation("Matching cycle: No available donations found.");
-                return;
-            }
-
-            var volunteers = await _volunteerRepository.GetAllAsync();
-            var ngos = await _ngoRepository.GetAllAsync();
-            var targetNgo = ngos.FirstOrDefault();
-
-            if (targetNgo == null)
-            {
-                _logger?.LogWarning("Matching cycle: No target NGO found.");
-                return;
-            }
-
-            foreach (var volunteer in volunteers)
-            {
-                var startLocation = new GeoCoordinate { Latitude = 0, Longitude = 0 };
-
-                var route = await ProcessVolunteerRouteAssignmentAsync(
-                    volunteer,
-                    availableDonations.ToList(),
-                    startLocation,
-                    targetNgo);
-
-                if (route != null && route.Any())
-                {
-                    _logger?.LogInformation("Matching cycle: Route generated successfully for volunteer {Id}.", volunteer.Id);
-                }
-            }
-        }
-
+        // תאימות: מחזיר רק את התחנות (רשימה ריקה = אין מסלול אפשרי)
         public async Task<List<PickupStop>> ProcessVolunteerRouteAssignmentAsync(
             Volunteer volunteer,
             List<Donation> availableDonations,
@@ -101,127 +76,140 @@ namespace BLL.Algorithms
             DateTime? startTime = null,
             int? anchorDonationId = null)
         {
+            var plan = await BuildRouteAsync(volunteer, availableDonations, volunteerStartLocation, targetNgo, startTime, anchorDonationId);
+            return plan?.Stops ?? new List<PickupStop>();
+        }
+
+        public async Task<RoutePlan?> BuildRouteAsync(
+            Volunteer volunteer,
+            List<Donation> availableDonations,
+            GeoCoordinate volunteerStartLocation,
+            Ngo targetNgo,
+            DateTime? startTime = null,
+            int? anchorDonationId = null)
+        {
+            if (volunteer == null) throw new ArgumentNullException(nameof(volunteer));
             if (targetNgo == null) throw new ArgumentNullException(nameof(targetNgo));
 
-            var effectiveStartLocation = volunteerStartLocation;
-            if (effectiveStartLocation == null || (effectiveStartLocation.Latitude == 0 && effectiveStartLocation.Longitude == 0))
-            {
-                var currentDay = DateTime.UtcNow.DayOfWeek;
-                var slot = volunteer.AvailabilitySlots?.FirstOrDefault(a => a.Day == currentDay);
-
-                if (slot != null && slot.RegionId > 0)
-                {
-                    _logger?.LogInformation("Orchestrator [Volunteer {VolunteerId}]: Volunteer has 0,0 location. Fallback logic triggered for RegionId {RegionId}.", volunteer.Id, slot.RegionId);
-                }
-
-                if (effectiveStartLocation == null)
-                {
-                    effectiveStartLocation = new GeoCoordinate { Latitude = 0, Longitude = 0 };
-                }
-            }
-
-            var compatibleDonations = availableDonations.Where(d => NgoAvailabilityHelper.CanNgoReceiveDonation(targetNgo, d)).ToList();
-
+            var policy = _policy.Current;
+            var start = volunteerStartLocation ?? new GeoCoordinate();
             var startTimeValue = startTime ?? DateTime.UtcNow;
+
+            // אילוץ קשה: העמותה יכולה לקבל את התרומה בזמן (פתוחה בזמן ההגעה האפשרי ולפני התפוגה)
+            var compatibleDonations = availableDonations
+                .Where(d => d.Status == DonationStatus.Pending &&
+                            NgoAvailabilityHelper.CanNgoReceiveDonation(targetNgo, d, policy, startTimeValue))
+                .ToList();
 
             var anchorDonation = anchorDonationId.HasValue
                 ? compatibleDonations.FirstOrDefault(d => d.Id == anchorDonationId.Value)
                 : null;
 
-            double centerLat = anchorDonation?.Latitude ?? effectiveStartLocation.Latitude;
-            double centerLon = anchorDonation?.Longitude ?? effectiveStartLocation.Longitude;
-            double clusterRadiusKm = anchorDonation != null ? _policyOptions.ClusterRadiusKm : _policyOptions.MaxSearchRadiusKm;
+            if (anchorDonationId.HasValue && anchorDonation == null)
+            {
+                _logger.LogDebug("Orchestrator: anchor donation {DonationId} cannot reach NGO {NgoId} in time.", anchorDonationId, targetNgo.Id);
+                return null;
+            }
 
+            double centerLat = anchorDonation?.Latitude ?? start.Latitude;
+            double centerLon = anchorDonation?.Longitude ?? start.Longitude;
+            double clusterRadiusKm = anchorDonation != null ? policy.ClusterRadiusKm : policy.MaxSearchRadiusKm;
+
+            // Knapsack 0/1: כל תרומה נכנסת במלואה או לא נכנסת, במסגרת קיבולת הרכב
             var knapsackItems = KnapsackItem.CreateItems(
                 compatibleDonations,
                 centerLat, centerLon,
                 clusterRadiusKm,
-                _policyOptions.DistancePenaltyCoefficient,
+                policy.DistancePenaltyCoefficient,
                 startTimeValue,
-                _policyOptions.UnitSizeGrams,
-                _policyOptions.UrgencyTimeConstantMinutes,
+                policy.UnitSizeGrams,
+                policy.UrgencyTimeConstantMinutes,
                 anchorDonationId);
 
-            int maxCapacityUnits = (int)((volunteer.MaxCapacityKg * 1000) / _policyOptions.UnitSizeGrams);
-            int maxItemsPerCategory = _policyOptions.MaxItemsPerCategory;
-
-            var knapsackResult = _knapsackSolver.Solve(knapsackItems, maxCapacityUnits, maxItemsPerCategory, anchorDonationId);
+            int maxCapacityUnits = (int)((volunteer.MaxCapacityKg * 1000) / Math.Max(1, policy.UnitSizeGrams));
+            var knapsackResult = _knapsackSolver.Solve(knapsackItems, maxCapacityUnits, policy.MaxItemsPerCategory, anchorDonationId);
             var selectedDonations = knapsackResult.SelectedDonations;
 
             if (selectedDonations.Count == 0)
-            {
-                _logger?.LogInformation("Orchestrator [Volunteer {VolunteerId}, Anchor {AnchorId}]: Knapsack selected count: 0 — early exit.", volunteer.Id, anchorDonationId ?? -1);
-                return new List<PickupStop>();
-            }
+                return null;
 
             var stops = selectedDonations.Select(d => new PickupStop
             {
                 DonationId = d.Id,
-                Location = new GeoCoordinate
-                {
-                    Latitude = d.Latitude,
-                    Longitude = d.Longitude
-                }
+                Location = new GeoCoordinate { Latitude = d.Latitude, Longitude = d.Longitude }
             }).ToList();
 
             List<PickupStop> optimizedRoute;
-
             try
             {
                 optimizedRoute = await _routeOptimizationService.OptimizeRouteWithGoogleMapsAsync(
-                    effectiveStartLocation, stops, startTimeValue,
+                    start, stops, startTimeValue,
                     (stop, eta) =>
                     {
                         var d = compatibleDonations.FirstOrDefault(x => x.Id == stop.DonationId);
-                        var deadline = d != null ? NgoAvailabilityHelper.GetPickupDateTime(d) : (DateTime?)null;
-                        return d != null && eta <= deadline;
+                        return d != null && eta <= NgoAvailabilityHelper.GetPickupDateTime(d);
                     });
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Google Maps route optimization failed for volunteer {VolunteerId}. Falling back.", volunteer.Id);
-                optimizedRoute = _routeOptimizationService.OptimizeRoute(effectiveStartLocation, stops, startTimeValue);
+                _logger.LogWarning(ex, "Route optimization with Google failed for volunteer {VolunteerId}. Falling back.", volunteer.Id);
+                optimizedRoute = _routeOptimizationService.OptimizeRoute(start, stops, startTimeValue);
             }
 
             if (optimizedRoute == null || optimizedRoute.Count == 0)
-            {
-                return new List<PickupStop>();
-            }
+                return null;
 
-            var lastStop = optimizedRoute.Last();
-            if (!lastStop.EstimatedArrival.HasValue)
-            {
-                return new List<PickupStop>();
-            }
-            var ngoArrival = lastStop.EstimatedArrival.Value;
-            if (!NgoAvailabilityHelper.IsNgoOpenAt(targetNgo, ngoArrival))
-            {
-                return new List<PickupStop>();
-            }
+            if (anchorDonationId.HasValue && !optimizedRoute.Any(s => s.DonationId == anchorDonationId.Value))
+                return null;
 
+            // כל תחנה במסלול: לפני זמן האיסוף האחרון של התרומה שלה
+            var routeDonations = new List<Donation>(optimizedRoute.Count);
             foreach (var stop in optimizedRoute)
             {
                 var donation = compatibleDonations.FirstOrDefault(d => d.Id == stop.DonationId);
-                if (donation == null || !stop.EstimatedArrival.HasValue || !IsWithinPickupDeadline(stop, donation))
-                {
-                    return new List<PickupStop>();
-                }
+                if (donation == null || !IsWithinPickupDeadline(stop, donation))
+                    return null;
+                routeDonations.Add(donation);
             }
 
-            var routeStart = startTimeValue;
-            var routeEnd = lastStop.EstimatedArrival.Value;
+            // הקטע האחרון: מהתחנה האחרונה לעמותה
+            var lastStop = optimizedRoute[^1];
+            var ngoLocation = new GeoCoordinate { Latitude = targetNgo.Latitude, Longitude = targetNgo.Longitude };
+            var (ngoLegKm, ngoLegMinutes) = await _routeOptimizationService.EstimateLegAsync(lastStop.Location, ngoLocation);
+            var ngoArrival = lastStop.EstimatedArrival!.Value
+                .AddMinutes(policy.StopServiceMinutes)
+                .AddMinutes(Math.Max(0, ngoLegMinutes));
 
-            if (!VolunteerAvailabilityCoversRoute(volunteer, routeStart, routeEnd, compatibleDonations, targetNgo))
+            // העמותה פתוחה בזמן ההגעה בפועל
+            if (!NgoAvailabilityHelper.IsNgoOpenAt(targetNgo, ngoArrival))
+                return null;
+
+            // המזון מגיע לעמותה לפני שפג תוקפו
+            if (routeDonations.Any(d => ngoArrival > d.ExpirationTime))
+                return null;
+
+            // המתנדב זמין לכל משך המסלול, באזורי היציאה והיעד שהגדיר
+            if (!VolunteerAvailabilityCoversRoute(volunteer, startTimeValue, ngoArrival, routeDonations, targetNgo))
+                return null;
+
+            double totalKm = optimizedRoute.Sum(s => s.LegDistanceKm ?? 0) + ngoLegKm;
+            double knapsackValue = knapsackItems
+                .Where(i => optimizedRoute.Any(s => s.DonationId == i.Donation.Id))
+                .Sum(i => i.Value);
+
+            return new RoutePlan
             {
-                return new List<PickupStop>();
-            }
-
-            if (anchorDonationId.HasValue && !optimizedRoute.Any(s => s.DonationId == anchorDonationId.Value))
-            {
-                return new List<PickupStop>();
-            }
-
-            return optimizedRoute;
+                Stops = optimizedRoute,
+                StartLocation = start,
+                StartTime = startTimeValue,
+                NgoArrival = ngoArrival,
+                NgoLegDistanceKm = ngoLegKm,
+                NgoLegDurationMinutes = ngoLegMinutes,
+                TotalDistanceKm = totalKm,
+                TotalDurationMinutes = (ngoArrival - startTimeValue).TotalMinutes,
+                TotalWeightKg = routeDonations.Sum(d => d.TotalWeightKg()),
+                KnapsackValue = knapsackValue
+            };
         }
     }
 }

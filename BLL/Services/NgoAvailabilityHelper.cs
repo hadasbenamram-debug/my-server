@@ -1,4 +1,4 @@
-using BLL.Algoritems;
+﻿using BLL.Algoritems;
 using BLL.Configuration;
 using DAL.Classes;
 using System;
@@ -115,11 +115,6 @@ namespace BLL.Algorithms
             var latestArrival = latestPickup + travel;
             if (latestArrival > donation.ExpirationTime) latestArrival = donation.ExpirationTime;
             if (earliestArrival > latestArrival) return false;
-
-            // הדפסות מעקב כדי לראות את הערכים בזמן ריצה
-            Console.WriteLine($"[DEBUG] NGO ID: {ngo.Id} | Donation ID: {donation.Id}");
-            Console.WriteLine($"[DEBUG] Distance: {distanceKm:F2} km | Travel Time: {travel.TotalMinutes} minutes");
-            Console.WriteLine($"[DEBUG] Earliest Arrival: {earliestArrival} | Latest Arrival: {latestArrival}");
 
             return EarliestOpenAtOrAfter(ngo, earliestArrival, latestArrival).HasValue;
         }

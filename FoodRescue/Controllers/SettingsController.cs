@@ -1,46 +1,30 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using BLL.Interfaces;
+using FoodRescue.DTOs;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Threading.Tasks;
 
 namespace FoodRescue.Controllers
 {
+    // הגדרות מנוע השידוכים. תוקן: בעבר ההגדרות נשמרו במילון בזיכרון ולא השפיעו על המנוע.
+    // עכשיו הן נשמרות במסד (SystemSettings) והמנוע קורא אותן מיד (IMatchingPolicyProvider).
     [Route("api/[controller]")]
-    [ApiController]
-    [Authorize(Roles = "Admin")] // מומלץ לוודא שרק מנהלים יכולים לגשת ולשנות הגדרות
-    public class SettingsController : ControllerBase
+    [Authorize(Roles = "Admin")]
+    public class SettingsController : ApiControllerBase
     {
-        // לצורך הדגמה או שמירה במסד נתונים / קובץ הגדרות
-        private static System.Collections.Generic.Dictionary<string, object> _settings = new()
+        private readonly ISettingsService _settingsService;
+
+        public SettingsController(ISettingsService settingsService)
         {
-            { "matchingTimeoutMinutes", "" },
-            { "distanceWeight", "" },
-            { "urgencyWeight",""}
-        };
+            _settingsService = settingsService;
+        }
 
         [HttpGet]
-        public IActionResult GetSettings()
-        {
-            return Ok(_settings);
-        }
+        public ActionResult<SystemSettingsDto> GetSettings() => Ok(_settingsService.GetCurrent());
 
+        // רק השדות שנשלחו (לא null) מתעדכנים
         [HttpPut]
-        public IActionResult UpdateSettings([FromBody] System.Collections.Generic.Dictionary<string, object> newSettings)
-        {
-            if (newSettings == null)
-            {
-                return BadRequest("נתונים שגויים.");
-            }
-
-            foreach (var kvp in newSettings)
-            {
-                _settings[kvp.Key] = kvp.Value;
-            }
-
-            return Ok(new MessageResponse { Message = "הגדרות עודכנו בהצלחה" });
-        }
-    }
-
-    public class MessageResponse
-    {
-        public string Message { get; set; } = string.Empty;
+        public async Task<ActionResult<SystemSettingsDto>> UpdateSettings([FromBody] SystemSettingsDto changes) =>
+            Ok(await _settingsService.UpdateAsync(changes, RequireUserId()));
     }
 }

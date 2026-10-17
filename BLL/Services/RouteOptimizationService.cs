@@ -1,8 +1,6 @@
-﻿using BLL.Algoritems;
+using BLL.Algoritems;
 using BLL.Configuration;
 using BLL.Integrations.GoogleMaps;
-using BLL.Interfaces;
-using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -19,36 +17,30 @@ namespace BLL.Algorithms
     public class PickupStop
     {
         public int DonationId { get; set; }
-        public GeoCoordinate Location { get; set; }
+        public GeoCoordinate Location { get; set; } = new GeoCoordinate();
         public DateTime? EstimatedArrival { get; set; }
+
+        // הקטע שמוביל לתחנה הזו (מהתחנה הקודמת / מנקודת היציאה)
+        public double? LegDistanceKm { get; set; }
+        public double? LegDurationMinutes { get; set; }
     }
 
     /// <summary>
     /// אלגוריתם Nearest-Neighbor לבניית מסלול איסוף.
-    ///
-    /// תיקונים לעומת הגרסה המקורית:
-    /// 1. בגרסה הסינכרונית, בחירת ה"עצירה הקרובה ביותר" הייתה מבוססת על מרחק אוקלידי גולמי
-    ///    במעלות (lat/lon) בעוד שזמן הנסיעה בפועל חושב לפי Haversine בק"מ - שני קריטריונים
-    ///    שונים שיכולים להוביל לבחירת עצירה "הלא נכונה" (מעלת קו רוחב ומעלת קו אורך אינן
-    ///    מרחק שווה בק"מ). כעת שתי הפעולות (בחירה וחישוב זמן) מסתמכות על אותה פונקציית מרחק.
-    /// 2. לא נלקח בחשבון זמן שירות בעצירה (העמסה/חתימה) - כעת מתווסף StopServiceMinutes
-    ///    מתוך המדיניות אחרי כל עצירה, כך שזמן ההגעה לעצירה הבאה ריאלי יותר.
-    /// 3. כאשר Google Maps לא זמין (סינכרוני, או Fallback באסינכרוני), קו אווירי מוכפל
-    ///    במקדם עקיפת-כביש (RoadDetourFactor) כדי לא להעריך בחסר את זמן/מרחק הנסיעה בפועל.
-    /// 4. מהירות ברירת מחדל (AverageSpeedKmH) נלקחת מהקונפיגורציה המרכזית (MatchingPolicyOptions)
-    ///    במקום קבוע 40.0 מקודד בקוד בשני מקומות שונים.
+    /// בחירת התחנה הבאה וחישוב הזמן מבוססים על אותה פונקציית מרחק, כולל זמן שירות בכל תחנה
+    /// (StopServiceMinutes) ומקדם עקיפת-כביש כשאין נתון מ-Google.
     /// </summary>
     public class RouteOptimizationService : IRouteOptimizationService
     {
-        private readonly IGoogleMapsDistanceService _googleMapsDistanceService;
-        private readonly MatchingPolicyOptions _options;
+        private readonly IGoogleMapsDistanceService? _googleMapsDistanceService;
+        private readonly IMatchingPolicyProvider _policy;
 
         public RouteOptimizationService(
-            IGoogleMapsDistanceService googleMapsDistanceService = null,
-            IOptions<MatchingPolicyOptions> options = null)
+            IGoogleMapsDistanceService? googleMapsDistanceService = null,
+            IMatchingPolicyProvider? policy = null)
         {
             _googleMapsDistanceService = googleMapsDistanceService;
-            _options = options?.Value ?? new MatchingPolicyOptions();
+            _policy = policy ?? new StaticMatchingPolicyProvider();
         }
 
         public List<PickupStop> OptimizeRoute(GeoCoordinate startPoint, List<PickupStop> stops, DateTime startTime)
@@ -56,6 +48,7 @@ namespace BLL.Algorithms
             if (startPoint == null) throw new ArgumentNullException(nameof(startPoint));
             if (stops == null || stops.Count == 0) return new List<PickupStop>();
 
+            var options = _policy.Current;
             var optimizedRoute = new List<PickupStop>(stops.Count);
             var remainingStops = new List<PickupStop>(stops);
             var currentPos = startPoint;
@@ -63,13 +56,11 @@ namespace BLL.Algorithms
 
             while (remainingStops.Count > 0)
             {
-                PickupStop nearestStop = null;
+                PickupStop nearestStop = remainingStops[0];
                 double bestDistanceKm = double.MaxValue;
 
                 foreach (var stop in remainingStops)
                 {
-                    // אותה פונקציית מרחק (Haversine) משמשת גם לבחירה וגם לחישוב הזמן,
-                    // כדי שהעצירה שנבחרת כ"קרובה ביותר" תהיה אכן זו שדורשת הכי פחות נסיעה.
                     var distanceKm = GeoUtils.HaversineKm(
                         currentPos.Latitude, currentPos.Longitude,
                         stop.Location.Latitude, stop.Location.Longitude);
@@ -82,17 +73,19 @@ namespace BLL.Algorithms
                 }
 
                 var travelMinutes = GeoUtils.EstimateDriveMinutes(
-                    bestDistanceKm, _options.AverageSpeedKmH, _options.RoadDetourFactor);
+                    bestDistanceKm, options.AverageSpeedKmH, options.RoadDetourFactor);
 
                 currentTime = currentTime.AddMinutes(travelMinutes);
                 nearestStop.EstimatedArrival = currentTime;
+                nearestStop.LegDistanceKm = bestDistanceKm * Math.Max(options.RoadDetourFactor, 1.0);
+                nearestStop.LegDurationMinutes = travelMinutes;
 
                 optimizedRoute.Add(nearestStop);
                 currentPos = nearestStop.Location;
                 remainingStops.Remove(nearestStop);
 
                 // זמן שירות בעצירה (העמסה/מסירה) - נספר לפני היציאה לעצירה הבאה.
-                currentTime = currentTime.AddMinutes(_options.StopServiceMinutes);
+                currentTime = currentTime.AddMinutes(options.StopServiceMinutes);
             }
 
             return optimizedRoute;
@@ -102,14 +95,14 @@ namespace BLL.Algorithms
             GeoCoordinate startPoint,
             List<PickupStop> stops,
             DateTime startTime,
-            Func<PickupStop, DateTime, bool> isArrivalAcceptable = null)
+            Func<PickupStop, DateTime, bool>? isArrivalAcceptable = null)
         {
             if (startPoint == null) throw new ArgumentNullException(nameof(startPoint));
             if (stops == null || stops.Count == 0) return new List<PickupStop>();
             if (_googleMapsDistanceService == null)
-                throw new InvalidOperationException(
-                    "לא הוזרק IGoogleMapsDistanceService - השתמשי ב-OptimizeRoute הסינכרוני, או ספקי מימוש בבנאי.");
+                throw new InvalidOperationException("IGoogleMapsDistanceService is not available - use OptimizeRoute.");
 
+            var options = _policy.Current;
             var optimizedRoute = new List<PickupStop>(stops.Count);
             var remainingStops = new List<PickupStop>(stops);
             var currentPos = startPoint;
@@ -117,37 +110,17 @@ namespace BLL.Algorithms
 
             while (remainingStops.Count > 0)
             {
-                PickupStop nearestStop = null;
+                PickupStop? nearestStop = null;
                 double bestDistanceKm = double.MaxValue;
                 double bestDurationMinutes = 0;
 
                 foreach (var stop in remainingStops)
                 {
-                    double distanceKm;
-                    double durationMinutes;
-                    try
-                    {
-                        var result = await _googleMapsDistanceService.GetDrivingDistanceAsync(
-                            currentPos.Latitude, currentPos.Longitude,
-                            stop.Location.Latitude, stop.Location.Longitude);
-                        distanceKm = result.DistanceKm;
-                        durationMinutes = result.DurationMinutes;
-                    }
-                    catch
-                    {
-                        // גיבוי: קו אווירי + מקדם עקיפת-כביש, במקום הנחת "קו אווירי = כביש"
-                        distanceKm = GeoUtils.HaversineKm(
-                            currentPos.Latitude, currentPos.Longitude,
-                            stop.Location.Latitude, stop.Location.Longitude);
-                        durationMinutes = GeoUtils.EstimateDriveMinutes(
-                            distanceKm, _options.AverageSpeedKmH, _options.RoadDetourFactor);
-                    }
+                    var (distanceKm, durationMinutes) = await EstimateLegAsync(currentPos, stop.Location);
 
                     var candidateArrival = currentTime.AddMinutes(durationMinutes);
                     if (isArrivalAcceptable != null && !isArrivalAcceptable(stop, candidateArrival))
-                    {
                         continue;
-                    }
 
                     if (distanceKm < bestDistanceKm)
                     {
@@ -157,23 +130,39 @@ namespace BLL.Algorithms
                     }
                 }
 
+                // אין עוד תחנה שאפשר להגיע אליה בזמן - המסלול נעצר כאן (המתזמר בודק שתרומת העוגן בפנים)
                 if (nearestStop == null)
-                {
-                    // אין אף עצירה שעומדת באילוץ ה-isArrivalAcceptable מהמיקום הנוכחי - עוצרים,
-                    // בדיוק כמו בגרסה המקורית (הקוד הקורא צריך להתמודד עם מסלול חלקי).
                     break;
-                }
 
                 currentTime = currentTime.AddMinutes(bestDurationMinutes);
                 nearestStop.EstimatedArrival = currentTime;
+                nearestStop.LegDistanceKm = bestDistanceKm;
+                nearestStop.LegDurationMinutes = bestDurationMinutes;
                 optimizedRoute.Add(nearestStop);
                 currentPos = nearestStop.Location;
                 remainingStops.Remove(nearestStop);
 
-                currentTime = currentTime.AddMinutes(_options.StopServiceMinutes);
+                currentTime = currentTime.AddMinutes(options.StopServiceMinutes);
             }
 
             return optimizedRoute;
+        }
+
+        public async Task<(double DistanceKm, double DurationMinutes)> EstimateLegAsync(GeoCoordinate from, GeoCoordinate to)
+        {
+            if (_googleMapsDistanceService != null)
+            {
+                try
+                {
+                    return await _googleMapsDistanceService.GetDrivingDistanceAsync(from.Latitude, from.Longitude, to.Latitude, to.Longitude);
+                }
+                catch
+                {
+                    // נופלים להערכה לפי קו אווירי
+                }
+            }
+
+            return GoogleMapsDistanceService.Estimate(from.Latitude, from.Longitude, to.Latitude, to.Longitude, _policy.Current);
         }
     }
 }

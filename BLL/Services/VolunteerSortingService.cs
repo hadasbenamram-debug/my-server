@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using BLL.Configuration;
 using DAL.Classes;
 
 namespace BLL.Algorithms
@@ -20,14 +21,17 @@ namespace BLL.Algorithms
     /// </summary>
     public class VolunteerMatchScorer
     {
-        public double DistanceWeight { get; set; } = 0.35;
-        public double UrgencyWeight { get; set; } = 0.30;
-        public double CapacityWeight { get; set; } = 0.15;
-        public double ReliabilityWeight { get; set; } = 0.20;
+        private readonly IMatchingPolicyProvider _policy;
+
+        public VolunteerMatchScorer(IMatchingPolicyProvider? policy = null)
+        {
+            _policy = policy ?? new StaticMatchingPolicyProvider();
+        }
 
         /// <summary>
-        /// מחזיר ציון גבוה יותר = התאמה טובה יותר.
-        /// כל רכיב מנורמל לטווח 0-1 לפני השקלול.
+        /// מחזיר ציון בין 0 ל-1 (גבוה יותר = התאמה טובה יותר).
+        /// כל רכיב מנורמל לטווח 0-1 לפני השקלול. המשקלות נלקחים מהמדיניות (ניתנים לשינוי ב-api/settings),
+        /// ומנורמלים כך שסכומם 1.
         /// </summary>
         public double CalculateScore(
             Volunteer volunteer,
@@ -35,29 +39,32 @@ namespace BLL.Algorithms
             double distanceKm,
             double maxSearchRadiusKm,
             DateTime? asOfUtc = null,
-            double urgencyTimeConstantMinutes = 180.0)
+            double? urgencyTimeConstantMinutes = null)
         {
             if (volunteer == null) throw new ArgumentNullException(nameof(volunteer));
             if (donation == null) throw new ArgumentNullException(nameof(donation));
 
+            var p = _policy.Current;
+            double totalWeight = Math.Max(1e-9, p.DistanceWeight + p.UrgencyWeight + p.CapacityWeight + p.ReliabilityWeight);
+
             double normalizedDistance = 1.0 - Math.Clamp(distanceKm / Math.Max(maxSearchRadiusKm, 0.001), 0, 1);
 
             double normalizedUrgency = Math.Clamp(
-                PriorityCalculator.Calculate(donation, asOfUtc ?? DateTime.UtcNow, urgencyTimeConstantMinutes) / 100.0,
+                PriorityCalculator.Calculate(donation, asOfUtc ?? DateTime.UtcNow, urgencyTimeConstantMinutes ?? p.UrgencyTimeConstantMinutes) / 100.0,
                 0, 1);
 
-            // שימוש ב-WeightKg בהתאם למדד קיבולת הרכב בפועל בקילוגרמים
+            // קיבולת פנויה ביחס למשקל התרומה (קיבולת כפולה ומעלה = ציון מלא)
             double capacityRatio = volunteer.MaxCapacityKg <= 0
                 ? 0
                 : Math.Clamp(volunteer.MaxCapacityKg / Math.Max(donation.TotalWeightKg(), 0.001), 0, 2) / 2.0;
 
-            // נורמליזציה נכונה של ציון האמינות לפי סקאלה של 1 עד 5
+            // נורמליזציה של ציון האמינות לפי סקאלה של 1 עד 5
             double normalizedReliability = Math.Clamp(volunteer.ReliabilityScore / 5.0, 0, 1);
 
-            return (normalizedDistance * DistanceWeight)
-                 + (normalizedUrgency * UrgencyWeight)
-                 + (capacityRatio * CapacityWeight)
-                 + (normalizedReliability * ReliabilityWeight);
+            return ((normalizedDistance * p.DistanceWeight)
+                 + (normalizedUrgency * p.UrgencyWeight)
+                 + (capacityRatio * p.CapacityWeight)
+                 + (normalizedReliability * p.ReliabilityWeight)) / totalWeight;
         }
     }
 
@@ -171,6 +178,9 @@ namespace BLL.Algorithms
         {
             _scorer = scorer ?? throw new ArgumentNullException(nameof(scorer));
         }
+
+        public double Score(Volunteer volunteer, Donation donation, double distanceKm, double maxSearchRadiusKm, DateTime? asOfUtc = null) =>
+            _scorer.CalculateScore(volunteer, donation, distanceKm, maxSearchRadiusKm, asOfUtc);
 
         public List<Volunteer> RankVolunteers(
             List<Volunteer> availableVolunteers,

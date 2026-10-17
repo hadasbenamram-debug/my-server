@@ -1,10 +1,7 @@
-﻿using DAL;
+﻿using BLL.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace API.Controllers
@@ -14,64 +11,20 @@ namespace API.Controllers
     [Authorize]
     public class MapController : ControllerBase
     {
-        private readonly FoodRescueDbContext _context;
+        private readonly IMapService _mapService;
 
-        public MapController(FoodRescueDbContext context)
+        public MapController(IMapService mapService)
         {
-            _context = context ?? throw new ArgumentNullException(nameof(context));
+            _mapService = mapService ?? throw new ArgumentNullException(nameof(mapService));
         }
 
-        // שליפת כלל הישויות (ספקים, עמותות ומתנדבים) עבור תמונת המצב המרחבית
+        // שליפת כלל הישויות (ספקים, עמותות ומתנדבים) עבור תמונת המצב המרחבית - מנהלים בלבד.
+        // כתובות וקואורדינטות של כל הישויות הן מידע רגיש ולכן לא נחשפות לכל משתמש מחובר.
         [HttpGet("all-entities")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> GetAllEntities()
         {
-            var entities = new List<object>();
-
-            // שליפת ספקים/תורמים
-            var suppliers = await _context.Suppliers
-                .Select(s => new
-                {
-                    id = s.Id,
-                    name = s.BusinessName,
-                    latitude = s.Latitude,
-                    longitude = s.Longitude,
-                    address = s.Address,
-                    type = "supplier"
-                })
-                .ToListAsync();
-
-            // שליפת עמותות
-            var ngos = await _context.Ngos
-                .Select(n => new
-                {
-                    id = n.Id,
-                    name = n.NgoName,
-                    latitude = n.Latitude,
-                    longitude = n.Longitude,
-                    address = n.Address,
-                    type = "ngo"
-                })
-                .ToListAsync();
-
-            // שליפת מתנדבים (בהתאם למבנה הטבלה שלך)
-            var volunteers = await _context.Volunteers
-                .Include(v => v.User)
-                .Select(v => new
-                {
-                    id = v.Id,
-                    name = v.User != null ? v.User.Name : "מתנדב",
-                    latitude = 0.0, // יש לעדכן אם קיימות קואורדינטות למתנדב במסד
-                    longitude = 0.0,
-                    address = "",
-                    type = "volunteer"
-                })
-                .ToListAsync();
-
-            entities.AddRange(suppliers);
-            entities.AddRange(ngos);
-            entities.AddRange(volunteers);
-
-            return Ok(entities);
+            return Ok(await _mapService.GetAllEntitiesAsync());
         }
     }
 }

@@ -1,10 +1,9 @@
-using FoodRescue.Controllers;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Configuration;
-using Moq;
-using BLL.Interfaces;
+﻿using BLL.Interfaces;
 using DAL.Classes;
-using System.Collections.Generic;
+using FoodRescue.Controllers;
+using FoodRescue.DTOs;
+using Microsoft.AspNetCore.Mvc;
+using Moq;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -12,78 +11,87 @@ namespace FoodRescue.Tests
 {
     public class AuthControllerTests
     {
+        // הקונטרולר עובד רק מול IUserService (בלי Repositories, Cache או שירות מייל)
+        private static AuthController CreateController(Mock<IUserService> userService) =>
+            new AuthController(userService.Object);
+
         [Fact]
-        public async Task Register_RejectsShortPassword_ReturnsBadRequest()
+        public async Task Register_Success_ReturnsOkWithAuthResponse()
         {
-            var inMem = new Dictionary<string, string>
-            {
-                { "JwtSettings:Secret", "test-secret-which-is-long-enough" },
-                { "JwtSettings:Issuer", "test-issuer" },
-                { "JwtSettings:Audience", "test-audience" }
-            };
-            var config = new ConfigurationBuilder().AddInMemoryCollection(inMem).Build();
+            var response = new AuthResponseDto { Token = "t", Role = "User" };
+            var service = new Mock<IUserService>();
+            service.Setup(s => s.RegisterAsync(It.IsAny<RegisterDto>()))
+                   .ReturnsAsync(AuthResult.Success(response));
 
-            var userRepo = new Mock<IUserRepository>();
+            var result = await CreateController(service).Register(new RegisterDto());
 
-            var controller = new AuthController(config, userRepo.Object);
-
-            var model = new AuthController.RegisterModel
-            {
-                Name = "Name",
-                Email = "short@example.com",
-                Phone = "000",
-                Password = "short"
-            };
-            // Sanity-check the test input
-            Assert.Equal(5, model.Password.Length);
-
-            var result = await controller.Register(model);
-            // Diagnostic output
-            try { System.Console.WriteLine($"Register result type: {result?.GetType().FullName}"); } catch { }
-
-            Assert.IsType<BadRequestObjectResult>(result);
-            var bad = result as BadRequestObjectResult;
-            Assert.NotNull(bad);
-            var msg = bad.Value?.ToString() ?? string.Empty;
-            Assert.Contains("Password must be at least 8", msg);
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Same(response, ok.Value);
         }
 
         [Fact]
-        public async Task Register_ValidPassword_CreatesUser_ReturnsOkWithToken()
+        public async Task Register_EmailTaken_Returns409()
         {
-            var inMem = new Dictionary<string, string>
-            {
-                { "JwtSettings:Secret", "test-secret-which-is-long-enough" },
-                { "JwtSettings:Issuer", "test-issuer" },
-                { "JwtSettings:Audience", "test-audience" }
-            };
-            var config = new ConfigurationBuilder().AddInMemoryCollection(inMem).Build();
+            var service = new Mock<IUserService>();
+            service.Setup(s => s.RegisterAsync(It.IsAny<RegisterDto>()))
+                   .ReturnsAsync(AuthResult.Fail(AuthError.EmailTaken, "taken"));
 
-            var userRepo = new Mock<IUserRepository>();
-            userRepo.Setup(r => r.GetByEmailAsync(It.IsAny<string>())).ReturnsAsync((User)null);
-            userRepo.Setup(r => r.AddAsync(It.IsAny<User>())).Returns(Task.CompletedTask).Verifiable();
+            var result = await CreateController(service).Register(new RegisterDto());
 
-            var controller = new AuthController(config, userRepo.Object);
+            Assert.IsType<ConflictObjectResult>(result);
+        }
 
-            var model = new AuthController.RegisterModel
-            {
-                Name = "Name",
-                Email = "valid@example.com",
-                Phone = "000",
-                Password = "longenough"
-            };
+        [Theory]
+        [InlineData(AuthError.InvalidCredentials, 401)]
+        [InlineData(AuthError.LockedOut, 423)]
+        [InlineData(AuthError.NgoPendingApproval, 403)]
+        [InlineData(AuthError.NgoRejected, 403)]
+        [InlineData(AuthError.SupplierPendingApproval, 403)]
+        [InlineData(AuthError.SupplierRejected, 403)]
+        public async Task Login_Failure_MapsToExpectedStatusCode(AuthError error, int expectedStatus)
+        {
+            var service = new Mock<IUserService>();
+            service.Setup(s => s.LoginAsync(It.IsAny<LoginDto>(), It.IsAny<string?>()))
+                   .ReturnsAsync(AuthResult.Fail(error, "msg"));
 
-            var result = await controller.Register(model);
+            var result = await CreateController(service).Login(new LoginDto());
+
+            var status = Assert.IsAssignableFrom<ObjectResult>(result);
+            Assert.Equal(expectedStatus, status.StatusCode ?? (result is UnauthorizedObjectResult ? 401 : 0));
+        }
+
+        [Fact]
+        public async Task Login_Success_ReturnsOk()
+        {
+            var service = new Mock<IUserService>();
+            service.Setup(s => s.LoginAsync(It.IsAny<LoginDto>(), It.IsAny<string?>()))
+                   .ReturnsAsync(AuthResult.Success(new AuthResponseDto { Token = "t", Role = "User" }));
+
+            var result = await CreateController(service).Login(new LoginDto());
 
             Assert.IsType<OkObjectResult>(result);
-            var ok = result as OkObjectResult;
-            Assert.NotNull(ok);
-            var tokenProp = ok.Value.GetType().GetProperty("Token");
-            Assert.NotNull(tokenProp);
-            var token = tokenProp.GetValue(ok.Value) as string;
-            Assert.False(string.IsNullOrEmpty(token));
+        }
 
-            userRepo.Verify(r => r.AddAsync(It.Is<User>(u => u.Email == model.Email && !string.IsNullOrEmpty(u.PasswordHash))), Times.Once);
+        [Fact]
+        public async Task ForgotPassword_AlwaysReturnsOk_WithGenericMessage()
+        {
+            var service = new Mock<IUserService>();
+            var result = await CreateController(service).ForgotPassword(new ForgotPasswordDto { Email = "x@y.com" });
+
+            Assert.IsType<OkObjectResult>(result);
+            service.Verify(s => s.ForgotPasswordAsync(It.IsAny<ForgotPasswordDto>()), Times.Once);
+        }
+
+        [Fact]
+        public async Task ResetPassword_InvalidToken_ReturnsBadRequest()
+        {
+            var service = new Mock<IUserService>();
+            service.Setup(s => s.ResetPasswordAsync(It.IsAny<ResetPasswordDto>())).ReturnsAsync(false);
+
+            var result = await CreateController(service).ResetPassword(
+                new ResetPasswordDto { Token = "bad", NewPassword = "longenough1" });
+
+            Assert.IsType<BadRequestObjectResult>(result);
         }
     }
 }
