@@ -30,8 +30,17 @@ namespace DAL.Classes
         public double MatchScore { get; set; }
 
         public DateTime AssignedAt { get; set; } = DateTime.UtcNow;
+
+        // זמן ההגעה המשוער לתחנת האיסוף של התרומה הזו
         public DateTime? EstimatedArrival { get; set; }
+
+        // עד מתי המתנדב צריך לאשר (AssignedAt + MatchingPolicy:ResponseTimeoutMinutes)
         public DateTime? ResponseDeadline { get; set; }
+
+        // מתי המתנדב אישר/דחה, מתי נאסף ומתי נמסר
+        public DateTime? RespondedAt { get; set; }
+        public DateTime? PickedUpAt { get; set; }
+        public DateTime? DeliveredAt { get; set; }
 
         // נוסף: מרחק/משך נסיעה בפועל כפי שחושבו ע"י Google Distance Matrix API
         // בזמן השידוך - לשקיפות/דיבוג, וכדי לא להסתמך על ערך שמשתנה בזמן אמת.

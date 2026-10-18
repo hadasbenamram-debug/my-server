@@ -1,3 +1,19 @@
+# Uploaded images and files
+Images/
+PrivateFiles/
+wwwroot/Files/
+FoodRescue/wwwroot/Files/
+
+# Visual Studio / user-specific files
 .vs/
+*.user
+*.suo
+
+# Build outputs
 bin/
 obj/
+
+# Local test-environment files that may contain passwords/tokens (see FoodRescue.http)
+http-client.env.json
+http-client.env.json.user
+http-client.private.env.json

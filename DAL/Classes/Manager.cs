@@ -7,7 +7,6 @@ using System.Text;
 
 namespace DAL.Classes
 {
-    [Index(nameof(UserId), IsUnique = true)]
     public class Manager
     {
         [Key]

@@ -1,234 +1,226 @@
-using BLL.Interfaces;
 using BLL.Algorithms;
-using System.Collections.Generic;
-using System.Linq;
-using DAL;
+using BLL.Configuration;
+using BLL.Exceptions;
+using BLL.Integrations.GoogleMaps;
+using BLL.Notifications;
+using BLL.Security;
 using DAL.Classes;
-using Microsoft.EntityFrameworkCore;
-using System;
-using System.Threading;
-using System.Threading.Tasks;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Text;
+using DAL.Interfaces;
+using Hangfire;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
-using Hangfire;
-using BLL.Services;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Threading.Tasks;
 
 namespace BLL.Services
 {
+    // יוצר מסלול + שידוך לכל תחנה (בטרנזקציה אחת) ושולח למתנדב בקשת התנדבות אחת למסלול כולו.
     public class MatchCreationService
     {
-        private readonly FoodRescueDbContext _context;
-        private readonly IEmailService _emailService;
+        private readonly IMatchRepository _matchRepository;
+        private readonly IDonationRepository _donationRepository;
+        private readonly IVolunteerRouteRepository _routeRepository;
         private readonly IUserRepository _userRepository;
+        private readonly IUnitOfWork _unitOfWork;
+        private readonly IActionTokenService _actionTokens;
+        private readonly INotificationService _notifications;
+        private readonly IGoogleMapsDistanceService? _google;
+        private readonly IBackgroundJobClient _jobs;
+        private readonly IMatchingPolicyProvider _policy;
         private readonly IConfiguration _configuration;
         private readonly ILogger<MatchCreationService> _logger;
 
         public MatchCreationService(
-            FoodRescueDbContext context,
-            IEmailService emailService,
+            IMatchRepository matchRepository,
+            IDonationRepository donationRepository,
+            IVolunteerRouteRepository routeRepository,
             IUserRepository userRepository,
+            IUnitOfWork unitOfWork,
+            IActionTokenService actionTokens,
+            INotificationService notifications,
+            IBackgroundJobClient jobs,
+            IMatchingPolicyProvider policy,
             IConfiguration configuration,
-            ILogger<MatchCreationService> logger)
+            ILogger<MatchCreationService> logger,
+            IGoogleMapsDistanceService? google = null)
         {
-            _context = context ?? throw new ArgumentNullException(nameof(context));
-            _emailService = emailService ?? throw new ArgumentNullException(nameof(emailService));
-            _userRepository = userRepository ?? throw new ArgumentNullException(nameof(userRepository));
-            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _matchRepository = matchRepository;
+            _donationRepository = donationRepository;
+            _routeRepository = routeRepository;
+            _userRepository = userRepository;
+            _unitOfWork = unitOfWork;
+            _actionTokens = actionTokens;
+            _notifications = notifications;
+            _jobs = jobs;
+            _policy = policy;
+            _configuration = configuration;
+            _logger = logger;
+            _google = google;
         }
 
         /// <summary>
-        /// Create a Match and update Donation.Status. 
-        /// Volunteer.IsAvailable is NOT set to false here anymore; it will be updated only when the volunteer accepts.
+        /// שומר מסלול ושידוכים לכל התחנות שלו. מחזיר null אם אחת התרומות כבר שובצה במקביל
+        /// (ואז שום דבר לא נשמר).
         /// </summary>
-        public async Task<(bool Success, Match CreatedMatch)> CreateMatchAsync(Donation donation, Ngo ngo, Volunteer volunteer)
-        {
-            if (donation == null) throw new ArgumentNullException(nameof(donation));
-            if (ngo == null) throw new ArgumentNullException(nameof(ngo));
-            if (volunteer == null) throw new ArgumentNullException(nameof(volunteer));
-
-            Match match;
-            using var tx = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                match = await CreateSingleMatchRowAsync(donation, ngo, volunteer, null, null);
-
-                donation.Status = DonationStatus.Matched;
-                _context.Donations.Update(donation);
-
-                await _context.SaveChangesAsync();
-                await tx.CommitAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                await tx.RollbackAsync();
-                return (false, null);
-            }
-
-            // שליחת המייל והתזמון מתבצעים לאחר סיום והתחייבות הטרנזקציה בהצלחה
-            await SendAssignmentEmailAndScheduleTimeoutAsync(volunteer, match);
-
-            return (true, match);
-        }
-
-        public async Task<(bool Success, VolunteerRoute CreatedRoute)> CreateRouteMatchesAsync(
-              Volunteer volunteer,
-              Ngo ngo,
-              List<PickupStop> route,
-              IReadOnlyDictionary<int, Donation> donationsById,
-              CancellationToken ct = default)
+        public async Task<VolunteerRoute?> CreateRouteAsync(Volunteer volunteer, Ngo ngo, RoutePlan plan, double matchScore)
         {
             if (volunteer == null) throw new ArgumentNullException(nameof(volunteer));
             if (ngo == null) throw new ArgumentNullException(nameof(ngo));
-            if (route == null) throw new ArgumentNullException(nameof(route));
-            if (donationsById == null) throw new ArgumentNullException(nameof(donationsById));
+            if (plan == null || plan.Stops.Count == 0) throw new ArgumentException("המסלול ריק.", nameof(plan));
 
-            VolunteerRoute vroute;
+            var policy = _policy.Current;
+            var now = DateTime.UtcNow;
+
+            // תוקן: ResponseDeadline לא מולא אף פעם, ולכן ה-Timeout לא הופעל. עכשיו הוא נקבע לכל שידוך.
+            var deadline = now.AddMinutes(Math.Max(1, policy.ResponseTimeoutMinutes));
+
+            // Polyline של המסלול המלא (אופציונלי - רק אם Google זמין). מחוץ לטרנזקציה.
+            EncodedRoute? encoded = null;
+            if (_google != null)
+            {
+                try
+                {
+                    encoded = await _google.GetRouteAsync(
+                        new GeoPoint(plan.StartLocation.Latitude, plan.StartLocation.Longitude),
+                        plan.Stops.Select(s => new GeoPoint(s.Location.Latitude, s.Location.Longitude)).ToList(),
+                        new GeoPoint(ngo.Latitude, ngo.Longitude));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not get route polyline from Google.");
+                }
+            }
+
+            VolunteerRoute? route = null;
             var createdMatches = new List<Match>();
+            string? linkToken = null;
 
-            using var tx = await _context.Database.BeginTransactionAsync(ct);
             try
             {
-                vroute = new VolunteerRoute
+                bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
                 {
-                    VolunteerId = volunteer.Id,
-                    ScheduledAt = DateTime.UtcNow,
-                    TotalWeightKg = route.Select(s => donationsById.ContainsKey(s.DonationId) ? donationsById[s.DonationId].TotalWeightKg() : 0.0).Sum(),
-                    Status = RouteStatus.Planned,
-                    GoogleDirectionsPolyline = string.Empty
-                };
-
-                await _context.VolunteerRoutes.AddAsync(vroute, ct);
-                await _context.SaveChangesAsync(ct);
-
-                foreach (var stop in route)
-                {
-                    if (!donationsById.TryGetValue(stop.DonationId, out var donation))
+                    route = new VolunteerRoute
                     {
-                        continue;
+                        VolunteerId = volunteer.Id,
+                        ScheduledAt = now,
+                        TotalWeightKg = plan.TotalWeightKg,
+                        Status = RouteStatus.Planned,
+                        GoogleDirectionsPolyline = encoded?.Polyline,
+                        EstimatedTotalDurationMinutes = encoded?.DurationMinutes > 0 ? encoded.DurationMinutes : plan.TotalDurationMinutes,
+                        EstimatedTotalDistanceKm = encoded?.DistanceKm > 0 ? encoded.DistanceKm : plan.TotalDistanceKm,
+                        MatchScore = Math.Round(matchScore, 2)
+                    };
+                    await _routeRepository.AddAsync(route);
+
+                    foreach (var stop in plan.Stops)
+                    {
+                        // ערכים עדכניים מהמסד (כולל RowVersion) - ואם בינתיים מישהו אחר שיבץ את התרומה, מבטלים הכל
+                        var donation = await _donationRepository.GetFreshAsync(stop.DonationId);
+                        if (donation == null || donation.Status != DonationStatus.Pending)
+                            throw new ConflictException($"התרומה {stop.DonationId} כבר אינה ממתינה לשיבוץ.");
+
+                        var match = new Match
+                        {
+                            DonationId = donation.Id,
+                            NgoId = ngo.Id,
+                            VolunteerId = volunteer.Id,
+                            VolunteerRouteId = route.Id,
+                            Status = MatchStatus.AwaitingVolunteerConfirmation,
+                            IsActive = true,
+                            AssignedAt = now,
+                            EstimatedArrival = stop.EstimatedArrival,
+                            ResponseDeadline = deadline,
+                            MatchScore = Math.Round(matchScore, 2),
+                            GoogleMapsDistanceKm = stop.LegDistanceKm,
+                            GoogleMapsDurationMinutes = stop.LegDurationMinutes
+                        };
+                        await _matchRepository.AddAsync(match);
+                        createdMatches.Add(match);
+
+                        donation.Status = DonationStatus.Matched;
+                        await _donationRepository.UpdateAsync(donation);
                     }
 
-                    // רענון התרומה מהמסד כדי לוודא שה-RowVersion מעודכן אחרי עדכון ה-PriorityScore
-                    await _context.Entry(donation).ReloadAsync(ct);
+                    // קישור במייל: טוקן חד-פעמי שמוגבל למסלול הזה ולפעולת אישור/דחייה בלבד (לא טוקן התחברות)
+                    linkToken = await _actionTokens.CreateLinkTokenAsync(
+                        volunteer.UserId, ActionTokenPurpose.MatchResponse, deadline - now + TimeSpan.FromMinutes(1), route.Id);
 
-                    var match = await CreateSingleMatchRowAsync(donation, ngo, volunteer, vroute.Id, stop.EstimatedArrival, ct);
-                    createdMatches.Add(match);
+                    await QueueVolunteerRequestAsync(volunteer, ngo, route, plan, linkToken, deadline);
+                });
 
-                    donation.Status = DonationStatus.Matched;
-                    _context.Donations.Update(donation);
-                }
-
-                await _context.SaveChangesAsync(ct);
-                vroute.Matches = createdMatches;
-
-                await tx.CommitAsync(ct);
+                if (!saved)
+                    return null;
             }
-            catch (DbUpdateConcurrencyException)
+            catch (ConflictException ex)
             {
-                await tx.RollbackAsync(ct);
-                return (false, null);
-            }
-
-            // שליחת מייל לכל שידוך שנוצר במסלול לאחר שהמסלול והשידוכים נשמרו בהצלחה במסד
-            foreach (var match in createdMatches)
-            {
-                await SendAssignmentEmailAndScheduleTimeoutAsync(volunteer, match);
-            }
-
-            return (true, vroute);
-        }
-
-        private async Task<Match> CreateSingleMatchRowAsync(
-            Donation donation,
-            Ngo ngo,
-            Volunteer volunteer,
-            int? volunteerRouteId,
-            DateTime? estimatedArrival,
-            CancellationToken ct = default)
-        {
-            var match = new Match
-            {
-                DonationId = donation.Id,
-                NgoId = ngo.Id,
-                VolunteerId = volunteer.Id,
-                VolunteerRouteId = volunteerRouteId,
-                Status = MatchStatus.AwaitingVolunteerConfirmation,
-                IsActive = true,
-                AssignedAt = DateTime.UtcNow,
-                EstimatedArrival = estimatedArrival
-            };
-
-            await _context.Matches.AddAsync(match, ct);
-            return match;
-        }
-
-        /// <summary>
-        /// פונקציית עזר פרטית לטיפול ביצירת טוקן JWT, שליחת האימייל למתנדב ותזמון ה-Timeout ב-Hangfire
-        /// </summary>
-        private async Task SendAssignmentEmailAndScheduleTimeoutAsync(Volunteer volunteer, Match createdMatch)
-        {
-            var user = await _userRepository.GetByIdAsync(volunteer.UserId);
-            if (user == null)
-            {
-                _logger.LogWarning("Assigned volunteer ID {VolunteerId} has no corresponding User record (UserId: {UserId}). Email not sent.", volunteer.Id, volunteer.UserId);
-                return;
-            }
-
-            try
-            {
-                var jwtSettings = _configuration.GetSection("JwtSettings");
-                var secretKeyString = jwtSettings["Secret"] ?? throw new InvalidOperationException("JWT Secret Key is missing in configuration.");
-                var secretKey = Encoding.UTF8.GetBytes(secretKeyString);
-
-                var claims = new[]
-                {
-                    new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-                    new Claim(JwtRegisteredClaimNames.Sub, user.Email),
-                    new Claim(ClaimTypes.Role, user.Role.ToString()),
-                    new Claim("MatchId", createdMatch.Id.ToString()),
-                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-                };
-
-                var key = new SymmetricSecurityKey(secretKey);
-                var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-
-                var tokenDescriptor = new JwtSecurityToken(
-                    issuer: jwtSettings["Issuer"],
-                    audience: jwtSettings["Audience"],
-                    claims: claims,
-                    expires: DateTime.UtcNow.AddMinutes(5),
-                    signingCredentials: creds
-                );
-
-                string matchToken = new JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
-                var frontendBaseUrl = "http://localhost:5174";
-                var responseLink = $"{frontendBaseUrl}/app/volunteer/incoming-request/{createdMatch.Id}?token={matchToken}";
-
-                _logger.LogInformation("Attempting to send assignment email to User ID {UserId} ({Email}) for Match ID {MatchId}", user.Id, user.Email, createdMatch.Id);
-
-                await _emailService.SendEmailAsync(
-                    user.Id,
-                    user.Email,
-                    "תרומה חדשה ממתינה לאישורך - יש לך 5 דקות!",
-                    $"שלום {System.Net.WebUtility.HtmlEncode(user.Name)}, נמצאה עבורך תרומה חדשה לאיסוף. לאישור או דחייה תוך 5 דקות לחץ על הקישור הבא: <a href='{responseLink}'>לחץ כאן לאישור/דחייה</a>"
-                );
-
-                _logger.LogInformation("Email successfully sent to User ID {UserId}", user.Id);
+                _logger.LogInformation("Route for volunteer {VolunteerId} was not saved: {Reason}", volunteer.Id, ex.Message);
+                return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send assignment email to User ID {UserId} for Match ID {MatchId}. Error: {Message}", user.Id, createdMatch.Id, ex.Message);
+                // למשל האינדקס הייחודי (שידוך פעיל אחד לתרומה) - שידוך מקביל ניצח
+                _logger.LogWarning(ex, "Route for volunteer {VolunteerId} could not be saved.", volunteer.Id);
+                return null;
             }
 
-            // תזמון בדיקת פג תוקף (Timeout) לאחר 5 דקות באמצעות Hangfire
-            BackgroundJob.Schedule<MatchTimeoutService>(
-                service => service.ProcessTimeoutsAndNoShowsAsync(DateTime.UtcNow),
-                TimeSpan.FromMinutes(5)
-            );
+            route!.Matches = createdMatches;
+
+            await _notifications.NotifyUserAsync(
+                volunteer.UserId,
+                "בקשת התנדבות חדשה",
+                $"מסלול עם {createdMatches.Count} תחנות איסוף. יש לאשר עד {LocalClock.ToLocal(deadline):HH:mm}.",
+                link: $"/app/volunteer/incoming-request/{createdMatches[0].Id}",
+                type: "request");
+
+            // בדיקת Timeout בדיוק כשהזמן נגמר (בנוסף לג'וב התקופתי). אין פרמטר זמן -
+            // הזמן הנוכחי נקבע בתוך הג'וב כשהוא רץ, לא ברגע התזמון.
+            try
+            {
+                _jobs.Schedule<MatchTimeoutService>(s => s.ProcessTimeoutsAsync(), deadline - now + TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not schedule timeout check; the recurring job will handle it.");
+            }
+
+            return route;
+        }
+
+        // בקשת ההתנדבות כוללת את כל פרטי המסלול (מסמך התיאור, שלב 5)
+        private async Task QueueVolunteerRequestAsync(Volunteer volunteer, Ngo ngo, VolunteerRoute route, RoutePlan plan, string linkToken, DateTime deadline)
+        {
+            var user = volunteer.User ?? await _userRepository.GetByIdAsync(volunteer.UserId);
+            if (user == null)
+                return;
+
+            var link = FrontendLinks.TryBuild(_configuration,
+                $"app/respond?token={WebUtility.UrlEncode(linkToken)}");
+
+            var stopsHtml = string.Join("", plan.Stops.Select((s, i) =>
+                $"<li>תחנה {i + 1}: תרומה #{s.DonationId}, הגעה משוערת {LocalClock.ToLocal(s.EstimatedArrival ?? plan.StartTime):HH:mm}</li>"));
+
+            var body =
+                $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>נמצא עבורך מסלול איסוף חדש:<br/>" +
+                $"<ul>{stopsHtml}</ul>" +
+                $"יעד: {WebUtility.HtmlEncode(ngo.NgoName)} - {WebUtility.HtmlEncode(ngo.Address)}<br/>" +
+                $"משקל כולל: {plan.TotalWeightKg:0.#} ק\"ג, הגעה משוערת לעמותה: {LocalClock.ToLocal(plan.NgoArrival):HH:mm}<br/><br/>" +
+                $"יש לאשר או לדחות עד <b>{LocalClock.ToLocal(deadline):HH:mm}</b>." +
+                (link == null ? "" : $"<br/><a href='{link}'>לאישור או דחייה של המסלול</a>");
+
+            await _notifications.QueueEmailAsync(user.Id, user.Email, "בקשת התנדבות חדשה - לתת באהבה", body,
+                summary: $"בקשת התנדבות למסלול #{route.Id}");
+
+            // SMS רק למספר שאומת
+            if (user.IsPhoneVerified && !string.IsNullOrWhiteSpace(user.Phone))
+            {
+                await _notifications.QueueSmsAsync(user.Id, user.Phone,
+                    $"לתת באהבה: בקשת איסוף חדשה ({plan.Stops.Count} תחנות). יש לאשר עד {LocalClock.ToLocal(deadline):HH:mm}" +
+                    (link == null ? "." : $": {link}"),
+                    summary: $"SMS: בקשת התנדבות למסלול #{route.Id}");
+            }
         }
     }
 }

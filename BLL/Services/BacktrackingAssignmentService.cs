@@ -1,149 +1,83 @@
-﻿using BLL.Interfaces;
-using DAL;
 using DAL.Classes;
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Threading.Tasks;
 
 namespace BLL.Algorithms
 {
-    /// <summary>
-    /// עוטף מתנדב יחד עם המרחק שלו לתרומה הספציפית. המרחק מגיע מ-
-    /// GoogleMapsIntegrationService (מרחק/זמן נסיעה אמיתי בכביש, ולא קו אווירי),
-    /// בדרך כלל דרך המטמון ב-DistanceMemoizationService.
-    /// </summary>
+    /// <summary>מתנדב מועמד יחד עם המרחק שלו לתרומה וציון ההתאמה שלו.</summary>
     public class VolunteerCandidate
     {
         public Volunteer Volunteer { get; }
         public double DistanceKm { get; }
+        public double Score { get; }
+        public GeoCoordinate StartLocation { get; }
 
-        public VolunteerCandidate(Volunteer volunteer, double distanceKm)
+        public VolunteerCandidate(Volunteer volunteer, double distanceKm, double score = 0, GeoCoordinate? startLocation = null)
         {
             Volunteer = volunteer ?? throw new ArgumentNullException(nameof(volunteer));
             DistanceKm = distanceKm;
+            Score = score;
+            StartLocation = startLocation ?? new GeoCoordinate();
         }
     }
 
-    public enum AssignmentOutcome
+    /// <summary>מסלול שנבנה בהצלחה למתנדב מועמד</summary>
+    public sealed class RouteCandidate
     {
-        Assigned,
-        EscalatedNoneEligible,
-        EscalatedOutOfRange
-    }
+        public VolunteerCandidate Candidate { get; init; } = null!;
+        public RoutePlan Plan { get; init; } = null!;
 
-    public class AssignmentResult
-    {
-        public AssignmentOutcome Outcome { get; init; }
-        public Volunteer? AssignedVolunteer { get; init; }
+        // Matching Score סופי של המסלול (0-100)
+        public double Score { get; set; }
     }
 
     /// <summary>
-    /// מוצא מתנדב פנוי לתרומה מתוך רשימה ממוינת, עם Backtracking רקורסיבי:
-    /// אם המתנדב הנוכחי לא כשיר, עוברים למתנדב הבא, וחוזר חלילה.
+    /// מעבר רקורסיבי (Backtracking) על רשימת המועמדים המדורגת: לכל מועמד מנסים לבנות מסלול; אם אי אפשר
+    /// (אילוץ קשה נכשל) - חוזרים אחורה וממשיכים למועמד הבא. מועמד שמרחקו חורג מטווח החיפוש נגזם (Bound)
+    /// בלי לבנות לו מסלול. נעצרים כשנמצאו maxRoutes מסלולים אפשריים - מתוכם נבחר המסלול עם הציון הגבוה.
     ///
-    /// "Branch &amp; Bound" בפועל: הרשימה חייבת להגיע ממוינת לפי מרחק עולה
-    /// (מרחק נסיעה אמיתי מ-Google, לא קו אווירי). ברגע שמגיעים למתנדב שמרחקו
-    /// חורג מ-_maxSearchRadiusKm, גוזמים את כל שאר הענף בלי לבדוק אותו כלל.
-    ///
-    /// תיקון: בדיקת הכשירות הבין-אזורית (IsVolunteerEligible) חושבה בעבר ישירות
-    /// לפי asOf.DayOfWeek/TimeOfDay (בד"כ UTC) מול Day/StartTime/EndTime של ה-Slot
-    /// (שעון קיר מקומי) - אותו באג טיימזון שתוקן ב-NgoAvailabilityHelper וב-
-    /// RegionAvailabilityMatchingService. כעת ממיר ל-LocalClock.ToLocal ומשתמש ב-
-    /// AvailabilityHelper.SlotServesRoute המשותפת, במקום להשוות RegionId/ToRegionId ידנית.
+    /// תוקן: בעבר זה היה מסלול שידוך נפרד (עם כללים משלו, ושנוצר דרכו שידוך נוסף מתוך Program.cs).
+    /// עכשיו זה רכיב חיפוש בלבד בתוך המנוע היחיד (DonationMatchingBatchService) - לא יוצר שידוכים בעצמו.
     /// </summary>
     public class BacktrackingAssignmentService
     {
-        private readonly double _maxSearchRadiusKm;
-        private readonly Func<Volunteer, Donation, Ngo, System.Threading.Tasks.Task> _sendRequestToVolunteer;
-        private readonly Func<Donation, AssignmentOutcome, System.Threading.Tasks.Task> _triggerEscalation;
-
-        public BacktrackingAssignmentService(
-            double maxSearchRadiusKm,
-            Func<Volunteer, Donation, Ngo, System.Threading.Tasks.Task> sendRequestToVolunteer,
-            Func<Donation, AssignmentOutcome, System.Threading.Tasks.Task> triggerEscalation)
+        public Task<List<RouteCandidate>> FindRoutesAsync(
+            IReadOnlyList<VolunteerCandidate> rankedCandidates,
+            double maxDistanceKm,
+            int maxRoutes,
+            Func<VolunteerCandidate, Task<RoutePlan?>> tryBuildRoute)
         {
-            if (maxSearchRadiusKm <= 0)
-                throw new ArgumentOutOfRangeException(nameof(maxSearchRadiusKm));
+            if (rankedCandidates == null) throw new ArgumentNullException(nameof(rankedCandidates));
+            if (tryBuildRoute == null) throw new ArgumentNullException(nameof(tryBuildRoute));
 
-            _maxSearchRadiusKm = maxSearchRadiusKm;
-            _sendRequestToVolunteer = sendRequestToVolunteer ?? throw new ArgumentNullException(nameof(sendRequestToVolunteer));
-            _triggerEscalation = triggerEscalation ?? throw new ArgumentNullException(nameof(triggerEscalation));
+            return SearchAsync(rankedCandidates, 0, Math.Max(1, maxRoutes), maxDistanceKm, tryBuildRoute, new List<RouteCandidate>());
         }
 
-        // כשל באסקלציה (למשל מייל) לא אמור להפיל את ריצת השידוך
-        private async System.Threading.Tasks.Task EscalateAsync(Donation donation, AssignmentOutcome outcome)
+        private static async Task<List<RouteCandidate>> SearchAsync(
+            IReadOnlyList<VolunteerCandidate> candidates,
+            int index,
+            int maxRoutes,
+            double maxDistanceKm,
+            Func<VolunteerCandidate, Task<RoutePlan?>> tryBuildRoute,
+            List<RouteCandidate> found)
         {
-            try
-            {
-                await _triggerEscalation(donation, outcome);
-            }
-            catch
-            {
-                // הלוג מטופל ב-AdminEscalationService
-            }
-        }
+            // תנאי עצירה: עברנו על כל המועמדים, או שנמצאו מספיק מסלולים להשוואה
+            if (index >= candidates.Count || found.Count >= maxRoutes)
+                return found;
 
-        /// <summary>
-        /// מקבל גם את ה-Ngo היעד, כדי שאפשר יהיה לבדוק אם מדובר בשידוך
-        /// תוך-אזורי (מספיקה זמינות רגילה) או בין-אזורי (נדרשת הצהרת AvailabilitySlot
-        /// תואמת). sortedCandidates חייבת להיות ממוינת לפי DistanceKm עולה.
-        /// </summary>
-        public async System.Threading.Tasks.Task<AssignmentResult> TryAssignDonation(
-             Donation donation,
-             Ngo targetNgo,
-             List<VolunteerCandidate> sortedCandidates,
-             DateTime asOf,
-             int currentIndex = 0)
-        {
-            if (donation == null) throw new ArgumentNullException(nameof(donation));
-            if (targetNgo == null) throw new ArgumentNullException(nameof(targetNgo));
+            var candidate = candidates[index];
 
-            if (sortedCandidates == null || currentIndex >= sortedCandidates.Count)
+            // Bound: מועמד מחוץ לטווח - לא בונים לו מסלול בכלל
+            if (candidate.DistanceKm <= maxDistanceKm)
             {
-                await EscalateAsync(donation, AssignmentOutcome.EscalatedNoneEligible);
-                return new AssignmentResult { Outcome = AssignmentOutcome.EscalatedNoneEligible };
+                var plan = await tryBuildRoute(candidate);
+                if (plan != null)
+                    found.Add(new RouteCandidate { Candidate = candidate, Plan = plan });
             }
 
-            var candidate = sortedCandidates[currentIndex];
-
-            // *** גיזום ענף (Bound) ***
-            if (candidate.DistanceKm > _maxSearchRadiusKm)
-            {
-                await EscalateAsync(donation, AssignmentOutcome.EscalatedOutOfRange);
-                return new AssignmentResult { Outcome = AssignmentOutcome.EscalatedOutOfRange };
-            }
-
-            if (IsVolunteerEligible(candidate.Volunteer, donation, targetNgo, asOf))
-            {
-                try
-                {
-                    await _sendRequestToVolunteer(candidate.Volunteer, donation, targetNgo);
-                }
-                catch
-                {
-                    // Notification failure should not block assignment; log is handled by delegate factory.
-                }
-
-                return new AssignmentResult
-                {
-                    Outcome = AssignmentOutcome.Assigned,
-                    AssignedVolunteer = candidate.Volunteer
-                };
-            }
-
-            // Backtracking: המועמד הנוכחי לא כשיר - חוזרים אחורה וממשיכים למועמד הבא
-            return await TryAssignDonation(donation, targetNgo, sortedCandidates, asOf, currentIndex + 1);
-        }
-
-        private bool IsVolunteerEligible(Volunteer volunteer, Donation donation, Ngo targetNgo, DateTime asOf)
-        {
-            bool basicEligible = volunteer.IsAvailable && volunteer.MaxCapacityKg >= donation.TotalWeightKg();
-            if (!basicEligible) return false;
-
-            if (donation.RegionId == targetNgo.RegionId)
-                return true;
-
-            return AvailabilityHelper.CanServeAt(volunteer, asOf, donation.RegionId, targetNgo.RegionId);
+            // Backtrack: ממשיכים למועמד הבא
+            return await SearchAsync(candidates, index + 1, maxRoutes, maxDistanceKm, tryBuildRoute, found);
         }
     }
 }

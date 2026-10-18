@@ -17,8 +17,16 @@ namespace DAL.Classes
         [Required]
         public RouteStatus Status { get; set; } = RouteStatus.Planned;
 
-        public string GoogleDirectionsPolyline { get; set; }
+        // מסלול מקודד מ-Google Routes API (null אם אין מפתח Google / הקריאה נכשלה)
+        public string? GoogleDirectionsPolyline { get; set; }
         public double? EstimatedTotalDurationMinutes { get; set; }
+        public double? EstimatedTotalDistanceKm { get; set; }
+
+        // ציון ההתאמה (Matching Score) של המסלול כולו
+        public double MatchScore { get; set; }
+
+        public DateTime? StartedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
 
         public ICollection<Match> Matches { get; set; }
 

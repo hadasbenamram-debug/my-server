@@ -1,80 +1,46 @@
-﻿using AutoMapper;
-using BLL.Algorithms;
 using BLL.Interfaces;
-using BLL.Services;
-using DAL.Classes;
-using DTOs.DTOs;
+using FoodRescue.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace FoodRescue.Controllers
 {
-    [Authorize] // דורש אימות ברירת מחדל לכל הבקר
+    [Authorize]
     [Route("api/[controller]")]
-    [ApiController]
-    public class CommentsController : ControllerBase
+    public class CommentsController : ApiControllerBase
     {
-        private readonly CommentService _commentService;
-        private readonly IRepository<Comment> _commentRepository;
-        private readonly CommentTreeService _commentTreeService;
-        private readonly IMapper _mapper;
+        private readonly ICommentService _commentService;
 
-        public CommentsController(
-            IRepository<Comment> commentRepository,
-            CommentTreeService commentTreeService,
-            CommentService commentService,
-            IMapper mapper)
+        public CommentsController(ICommentService commentService)
         {
-            _commentRepository = commentRepository;
-            _commentTreeService = commentTreeService;
             _commentService = commentService;
-            _mapper = mapper;
         }
 
-        // שליפת עץ התגובות מעודכן לשימוש ב-BuildCommentTree
+        // עץ התגובות (רקורסיבי) - מנהל רואה הכל, כל משתמש אחר רק תגובות על תרומות/שידוכים שהוא קשור אליהם
         [HttpGet("tree")]
-        public async Task<ActionResult> GetCommentTree()
-        {
-            // 1. שליפת כל התגובות הגולמיות מהמסד
-            var flatComments = await _commentRepository.GetAllAsync();
+        public async Task<ActionResult<List<CommentDto>>> GetCommentTree() =>
+            Ok(await _commentService.GetTreeAsync(CurrentUser));
 
-            // 2. מיפוי ל-CommentDto הנדרש על ידי אלגוריתם בניית העץ
-            var commentDtos = flatComments.Select(c => new CommentDto
-            {
-                Id = c.Id,
-                ParentId = c.ParentCommentId,
-                Text = c.Content,
-                AuthorName = c.Author
-            });
-
-            // 3. בניית העץ באמצעות השירות הנכון
-            var tree = _commentTreeService.BuildCommentTree(commentDtos);
-
-            return Ok(tree);
-        }
-
+        // תגובה חדשה חייבת להיות על תרומה/שידוך (DonationId / MatchId), או תשובה לתגובה קיימת (ParentCommentId)
         [HttpPost]
-        public async Task<ActionResult> AddComment([FromBody] CommentDto1 dto)
-        {
-            if (dto == null) return BadRequest("נתונים שגויים.");
+        public async Task<ActionResult<CommentDto>> AddComment([FromBody] CreateCommentDto dto) =>
+            Ok(await _commentService.AddAsync(dto, CurrentUser));
 
-            // מיפוי מ-CommentDto1 למודל Comment של ה-DAL
-            var commentEntity = _mapper.Map<Comment>(dto);
-
-            await _commentService.AddCommentAsync(commentEntity);
-            return Ok();
-        }
-
-        // שליפת כל התגובות - מנהלים בלבד
+        // ניהול תגובות - מנהלים בלבד
         [HttpGet]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult> GetComments()
+        public async Task<ActionResult<List<CommentDto>>> GetComments() =>
+            Ok(await _commentService.GetAllAsync());
+
+        // מחיקת תגובה כולל כל התשובות שמתחתיה
+        [HttpDelete("{id:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> DeleteComment(int id)
         {
-            var comments = await _commentService.GetAllCommentsAsync();
-            return Ok(comments);
+            var deleted = await _commentService.DeleteAsync(id);
+            return Ok(new { message = "התגובה נמחקה.", deleted });
         }
     }
 }

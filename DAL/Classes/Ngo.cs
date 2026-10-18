@@ -5,7 +5,6 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace DAL.Classes
 {
-    [Index(nameof(UserId), IsUnique = true)]
     public class Ngo
     {
         [Key]

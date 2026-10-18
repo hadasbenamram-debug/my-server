@@ -1,102 +1,88 @@
-﻿using BLL.Algorithms;
-using BLL.Interfaces;
-using DAL;
+using BLL.Notifications;
 using DAL.Classes;
-using Microsoft.EntityFrameworkCore;
+using DAL.Interfaces;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 
 namespace BLL.Services
 {
     /// <summary>
-    /// אסקלציה למנהלים כשלא נמצא מתנדב לתרומה: לכל מנהל נוצרת רשומת Notification (Email)
-    /// ונשלח מייל. למניעת הצפה (המנוע רץ כל שעה) לא נשלחת התראה חוזרת לאותו מנהל
-    /// על אותה תרומה בתוך 24 שעות, אלא אם ההתראה הקודמת נכשלה.
+    /// אסקלציה למנהלים כשלא נמצא מתנדב לתרומה: מייל + התראה במרכז ההתראות.
+    /// למניעת הצפה (המנוע רץ כל שעה) לא נשלחת התראה חוזרת לאותו מנהל על אותה תרומה
+    /// בתוך 24 שעות, אלא אם ההתראה הקודמת נכשלה.
+    ///
+    /// תוקן: השירות יצר בעבר Notification בלי ExternalMessageId (עמודת חובה) - ה-INSERT נכשל,
+    /// החריגה נבלעה, ושום התראה לא נשלחה. עכשיו ההתראה עוברת דרך תור ההתראות הרגיל.
     /// </summary>
     public class AdminEscalationService
     {
         private static readonly TimeSpan RepeatWindow = TimeSpan.FromHours(24);
 
-        private readonly FoodRescueDbContext _context;
-        private readonly IEmailService _emailService;
+        private readonly IUserRepository _userRepository;
+        private readonly INotificationRepository _notificationRepository;
+        private readonly INotificationService _notifications;
         private readonly ILogger<AdminEscalationService> _logger;
 
         public AdminEscalationService(
-            FoodRescueDbContext context,
-            IEmailService emailService,
+            IUserRepository userRepository,
+            INotificationRepository notificationRepository,
+            INotificationService notifications,
             ILogger<AdminEscalationService> logger)
         {
-            _context = context;
-            _emailService = emailService;
+            _userRepository = userRepository;
+            _notificationRepository = notificationRepository;
+            _notifications = notifications;
             _logger = logger;
         }
 
-        public async Task NotifyAdminsAsync(Donation donation, AssignmentOutcome outcome)
+        public static string SubjectFor(int donationId) => $"אין מתנדב זמין לתרומה #{donationId}";
+
+        // מחזיר כמה מנהלים קיבלו התראה (0 = כולם כבר קיבלו לאחרונה / אין מנהלים)
+        public async Task<int> NotifyAdminsAsync(Donation donation, string reason)
         {
             if (donation == null) throw new ArgumentNullException(nameof(donation));
 
-            _logger.LogWarning("אסקלציה: לא נמצא מתנדב לתרומה {DonationId} ({Outcome}).", donation.Id, outcome);
-
-            var admins = await _context.Users.Where(u => u.Role == UserRole.Admin).ToListAsync();
+            var admins = await _userRepository.GetByRoleAsync(UserRole.Admin);
             if (admins.Count == 0)
             {
-                _logger.LogWarning("אסקלציה לתרומה {DonationId}: לא קיימים מנהלים במערכת להתראה.", donation.Id);
-                return;
+                _logger.LogWarning("Escalation for donation {DonationId}: there are no admins to notify.", donation.Id);
+                return 0;
             }
 
-            string reason = outcome == AssignmentOutcome.EscalatedOutOfRange
-                ? "כל המתנדבים הזמינים נמצאים מחוץ לטווח החיפוש."
-                : "לא נמצא אף מתנדב זמין ומתאים.";
-
-            string subject = $"אין מתנדב זמין לתרומה #{donation.Id}";
+            string subject = SubjectFor(donation.Id);
             string content =
                 $"לא ניתן לשבץ מתנדב לתרומה #{donation.Id}.<br/>" +
                 $"סיבה: {WebUtility.HtmlEncode(reason)}<br/>" +
                 $"שעת איסוף אחרונה: {donation.LatestPickupTime:hh\\:mm}<br/>" +
-                $"תאריך תפוגה: {donation.ExpirationTime:yyyy-MM-dd HH:mm}<br/>" +
-                "נדרש טיפול ידני (למשל פנייה ישירה למתנדבים או לעמותה).";
+                $"תאריך תפוגה: {BLL.Algorithms.LocalClock.ToLocal(donation.ExpirationTime):yyyy-MM-dd HH:mm}<br/>" +
+                "נדרש טיפול ידני (למשל פנייה ישירה למתנדבים או לעמותה, או שיבוץ ידני במסך ה-No-Show).";
 
             var since = DateTime.UtcNow - RepeatWindow;
+            int notified = 0;
 
             foreach (var admin in admins)
             {
-                bool alreadyNotified = await _context.Notifications.AnyAsync(n =>
-                    n.UserId == admin.Id &&
-                    n.Subject == subject &&
-                    n.CreatedAt >= since &&
-                    n.Status != NotificationStatus.Failed);
-                if (alreadyNotified) continue;
-                var notification = new Notification
-                {
-                    UserId = admin.Id,
-                    Channel = NotificationChannel.Email,
-                    Subject = subject,
-                    Content = content,
-                    Status = NotificationStatus.Pending,
-                    ErrorMessage = string.Empty // חובה! מונע את שגיאת ה-NULL במסד הנתונים
-                };
-                _context.Notifications.Add(notification);
-                await _context.SaveChangesAsync();
+                if (await _notificationRepository.HasRecentNonFailedAsync(admin.Id, subject, since))
+                    continue;
 
                 try
                 {
-                    await _emailService.SendEmailAsync(admin.Id, admin.Email, subject, content);
-                    notification.Status = NotificationStatus.Sent;
-                    notification.SentAt = DateTime.UtcNow;
+                    await _notifications.QueueEmailAsync(admin.Id, admin.Email, subject, content, summary: reason);
+                    await _notifications.NotifyUserAsync(admin.Id, subject, reason, link: "/app/admin/noshow", type: "warning");
+                    notified++;
                 }
                 catch (Exception ex)
                 {
-                    notification.Status = NotificationStatus.Failed;
-                    notification.RetryCount = 1;
-                    notification.ErrorMessage = ex.Message;
-                    _logger.LogError(ex, "שליחת התראת אסקלציה למנהל {AdminId} נכשלה.", admin.Id);
+                    _logger.LogError(ex, "Escalation notification to admin {AdminId} failed.", admin.Id);
                 }
-
-                await _context.SaveChangesAsync();
             }
+
+            if (notified > 0)
+                _logger.LogWarning("Escalation: no volunteer for donation {DonationId} ({Reason}); notified {Count} admins.", donation.Id, reason, notified);
+
+            return notified;
         }
     }
 }

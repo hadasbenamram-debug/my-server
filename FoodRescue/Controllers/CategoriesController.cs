@@ -1,36 +1,32 @@
-﻿using DAL;
+using BLL.Interfaces;
+using FoodRescue.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace FoodRescue.Controllers
 {
+    // קטגוריות מזון. אוחד עם api/lookups/categories (שהוסר) - נתיב אחד לכל משאב.
     [Authorize]
     [Route("api/[controller]")]
-    [ApiController]
-    public class CategoriesController : ControllerBase
+    public class CategoriesController : ApiControllerBase
     {
-        private readonly FoodRescueDbContext _context;
+        private readonly IFoodCategoryService _categoryService;
 
-        public CategoriesController(FoodRescueDbContext context)
+        public CategoriesController(IFoodCategoryService categoryService)
         {
-            _context = context ?? throw new System.ArgumentNullException(nameof(context));
+            _categoryService = categoryService;
         }
 
+        // תוקן: מחזיר FoodCategoryResponseDto כולל Id (בעבר ב-lookups הוחזר DTO בלי Id)
         [HttpGet]
-        public async Task<IActionResult> GetCategories()
-        {
-            // שימוש בשם הנכון של הטבלה במסד הנתונים: FoodCategories
-            var categories = await _context.FoodCategories
-                .Select(c => new
-                {
-                    id = c.Id,
-                    name = c.CategoryName // שימוש בשדה הנכון מתוך מחלקת FoodCategory
-                })
-                .ToListAsync();
+        public async Task<ActionResult<List<FoodCategoryResponseDto>>> GetCategories() =>
+            Ok(await _categoryService.GetAllAsync());
 
-            return Ok(categories);
-        }
+        [HttpPost]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<FoodCategoryResponseDto>> AddCategory([FromBody] CreateFoodCategoryDto dto) =>
+            Ok(await _categoryService.AddAsync(dto));
     }
 }

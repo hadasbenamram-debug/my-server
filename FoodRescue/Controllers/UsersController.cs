@@ -1,50 +1,43 @@
-﻿using AutoMapper;
+using BLL.Exceptions;
 using BLL.Interfaces;
-using DAL.Classes;
 using FoodRescue.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+
 namespace FoodRescue.Controllers
 {
-    [Authorize] // דורש אימות כללי לכל ה־Endpoints בבקר זה כברירת מחדל
+    [Authorize]
     [Route("api/[controller]")]
-    [ApiController]
-    public class UsersController : ControllerBase
+    public class UsersController : ApiControllerBase
     {
-        private readonly IUserRepository _userRepository;
-        private readonly IMapper _mapper;
+        private readonly IUserService _userService;
 
-        public UsersController(IUserRepository userRepository, IMapper mapper)
+        public UsersController(IUserService userService)
         {
-            _userRepository = userRepository;
-            _mapper = mapper;
+            _userService = userService;
         }
 
-        // שליפת כל המשתמשים - מוגבל למנהלים בלבד (סעיף 11)
+        // כל המשתמשים - מנהלים בלבד, בעימוד (?page=1&pageSize=100; הסך בכותרת X-Total-Count)
         [HttpGet]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<IEnumerable<UserDto>>> GetUsers()
-        {
-            var users = await _userRepository.GetAllAsync();
-            var userDtos = _mapper.Map<IEnumerable<UserDto>>(users);
-            return Ok(userDtos);
-        }
+        public async Task<ActionResult<List<UserDto>>> GetUsers([FromQuery] PageRequest page) =>
+            Paged(await _userService.GetPageAsync(page));
 
-        // שליפת משתמש לפי מזהה - מוגבל למנהלים בלבד
-        [HttpGet("{id}")]
+        [HttpGet("{id:int}")]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<UserDto>> GetUser(int id)
-        {
-            var user = await _userRepository.GetByIdAsync(id);
-            if (user == null) return NotFound();
+        public async Task<ActionResult<UserDto>> GetUser(int id) =>
+            Ok(await _userService.GetByIdAsync(id) ?? throw new NotFoundException("המשתמש לא נמצא."));
 
-            var userDto = _mapper.Map<UserDto>(user);
-            return Ok(userDto);
-        }
+        // GET api/users/me - הפרופיל של המשתמש המחובר (כל תפקיד)
+        [HttpGet("me")]
+        public async Task<ActionResult<MyProfileDto>> GetMe() =>
+            Ok(await _userService.GetMyProfileAsync(RequireUserId()) ?? throw new UnauthorizedException("המשתמש לא נמצא."));
 
-        // הרשמת משתמשים מתבצעת אך ורק דרך POST /api/Auth/register.
-        // ה-endpoint הישן POST /api/Users/register הוסר (היה לא עקבי: בלי Phone, בלי בדיקת סיסמה/מייל כפול ובלי JWT).
+        // PUT api/users/me - עדכון שם וטלפון (שינוי טלפון מבטל את אימות הטלפון)
+        [HttpPut("me")]
+        public async Task<ActionResult<MyProfileDto>> UpdateMe([FromBody] UpdateMyProfileDto dto) =>
+            Ok(await _userService.UpdateMyProfileAsync(RequireUserId(), dto) ?? throw new UnauthorizedException("המשתמש לא נמצא."));
     }
 }

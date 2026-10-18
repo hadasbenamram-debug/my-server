@@ -67,8 +67,16 @@ namespace DAL.Classes
 
         public ICollection<Notification> Notifications { get; set; }
 
-        // Lockout support for failed login attempts
-        public DateTime? LockoutEnd { get; set; }
+        // חותמת אבטחה: נכנסת לכל JWT ומתחלפת בכל שינוי/איפוס סיסמה.
+        // טוקן שהונפק לפני השינוי מכיל חותמת ישנה ולכן נדחה (ראו Program.cs - OnTokenValidated).
+        [Required, MaxLength(64)]
+        public string SecurityStamp { get; set; } = Guid.NewGuid().ToString("N");
+
+        // המשתמש נרשם עם סיסמה זמנית שנשלחה במייל - חייב להחליף אותה לפני שימוש במערכת.
+        public bool MustChangePassword { get; set; }
+
+        // הנעילה אחרי ניסיונות כושלים נשמרת בטבלת LoginAttempts (לפי מייל + IP),
+        // ולכן אין יותר שדה LockoutEnd על המשתמש.
 
     }
 }

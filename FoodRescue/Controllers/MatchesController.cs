@@ -1,380 +1,145 @@
-﻿using AutoMapper;
-using BLL.Algoritems;
-using BLL.Algorithms;
+﻿using BLL.Exceptions;
 using BLL.Interfaces;
-using BLL.Services;
-using DAL;
-using DAL.Classes;
 using FoodRescue.DTOs;
-using FoodRescue.Security;
-using Hangfire;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
-using System;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Collections.Generic;
-using System.IdentityModel.Tokens.Jwt;
-using System.Linq;
-using System.Security.Claims;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace FoodRescue.Controllers
 {
+    // שידוכים ומסלולים. כל ההחלטות וההרשאות נמצאות ב-MatchService / RouteWorkflowService.
+    // מחזור החיים: AwaitingVolunteerConfirmation -> Confirmed -> InPickup -> InTransit -> Delivered -> Completed
+    // (ובצד: Declined / TimedOut / NoShow / Cancelled -> שיבוץ מחדש אוטומטי)
     [Authorize]
     [Route("api/[controller]")]
-    [ApiController]
-    public class MatchesController : ControllerBase
+    public class MatchesController : ApiControllerBase
     {
-        private readonly IMatchRepository _matchRepository;
-        private readonly DonationMatchingOrchestrator _orchestrator;
-        private readonly IDonationAssignmentService _donationAssignmentService;
-        private readonly IDonationRepository _donationRepository;
-        private readonly IVolunteerRepository _volunteerRepository;
-        private readonly INgoRepository _ngoRepository;
-        private readonly MatchCreationService _matchCreationService;
-        private readonly IMapper _mapper;
-        private readonly MatchTimeoutService _matchTimeoutService;
-        private readonly INgoSelectionService _ngoSelectionService;
-        private readonly CallerProfileService _caller;
-        private readonly IEmailService _emailService;
-        private readonly IUserRepository _userRepository;
-        private readonly IConfiguration _configuration;
-        private readonly ILogger<MatchesController> _logger;
+        private const string MatchNotFound = "השידוך לא נמצא.";
+        private const string RouteNotFound = "המסלול לא נמצא.";
 
-        public MatchesController(
-            IMatchRepository matchRepository,
-            DonationMatchingOrchestrator orchestrator,
-            IDonationAssignmentService donationAssignmentService,
-            IDonationRepository donationRepository,
-            IVolunteerRepository volunteerRepository,
-            INgoRepository ngoRepository,
-            MatchCreationService matchCreationService,
-            IMapper mapper,
-            MatchTimeoutService matchTimeoutService,
-            INgoSelectionService ngoSelectionService,
-            CallerProfileService caller,
-            IEmailService emailService,
-            IUserRepository userRepository,
-            IConfiguration configuration,
-            ILogger<MatchesController> logger)
+        private readonly IMatchService _matchService;
+
+        public MatchesController(IMatchService matchService)
         {
-            _caller = caller;
-            _matchRepository = matchRepository;
-            _orchestrator = orchestrator;
-            _donationAssignmentService = donationAssignmentService;
-            _donationRepository = donationRepository;
-            _volunteerRepository = volunteerRepository;
-            _ngoRepository = ngoRepository;
-            _matchCreationService = matchCreationService;
-            _mapper = mapper;
-            _matchTimeoutService = matchTimeoutService;
-            _ngoSelectionService = ngoSelectionService;
-            _emailService = emailService;
-            _userRepository = userRepository;
-            _configuration = configuration;
-            _logger = logger;
+            _matchService = matchService;
         }
 
-        private async Task<bool> IsParticipantAsync(CallerProfile caller, Match match)
-        {
-            if (caller.IsAdmin) return true;
-            if (caller.OwnsMatchAsVolunteer(match) || caller.IsMatchNgo(match)) return true;
-            if (caller.Supplier != null)
-            {
-                var donation = await _donationRepository.GetByIdAsync(match.DonationId);
-                return caller.OwnsDonation(donation);
-            }
-            return false;
-        }
+        // ---------------- קריאה ----------------
 
+        // כל השידוכים - מנהל בלבד, בעימוד ועם סינון לפי סטטוס (?status=NoShow)
         [HttpGet]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<IEnumerable<MatchResponseDto>>> GetMatches()
-        {
-            var matches = await _matchRepository.GetAllAsync();
-            var matchDtos = _mapper.Map<IEnumerable<MatchResponseDto>>(matches);
-            return Ok(matchDtos);
-        }
+        public async Task<ActionResult<List<MatchResponseDto>>> GetMatches([FromQuery] PageRequest page, [FromQuery] MatchStatus? status) =>
+            Paged(await _matchService.GetPageAsync(page, status));
 
-        [HttpGet("{id}")]
-        public async Task<ActionResult<MatchResponseDto>> GetMatch(int id)
-        {
-            var match = await _matchRepository.GetByIdAsync(id);
-            if (match == null) return NotFound(new { message = "השידוך לא נמצא." });
+        [HttpGet("{id:int}")]
+        public async Task<ActionResult<MatchResponseDto>> GetMatch(int id) =>
+            // אותה תשובה גם כשלא קיים וגם כשאין הרשאה - כדי לא לחשוף שהשידוך קיים.
+            Ok(await _matchService.GetByIdAsync(id, CurrentUser) ?? throw new NotFoundException(MatchNotFound));
 
-            var caller = await _caller.GetAsync();
-            if (!await IsParticipantAsync(caller, match)) return Forbid();
+        [HttpGet("active")]
+        public async Task<ActionResult<List<MatchResponseDto>>> GetActiveMatches() =>
+            Ok(await _matchService.GetActiveAsync(CurrentUser));
 
-            var matchDto = _mapper.Map<MatchResponseDto>(match);
-            return Ok(matchDto);
-        }
+        // ---------------- המנוע (מנהל) ----------------
+
+        // הפעלה ידנית של אותו מנוע שרץ לפי לוח הזמנים - שומר שידוכים ומסלולים בפועל
         [HttpPost("run-engine")]
         [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> RunEngine()
+        public async Task<ActionResult<EngineRunResultDto>> RunEngine()
         {
-            _logger.LogInformation("Manual run-engine started by administrator.");
-            try
-            {
-                // הפעלת מחזור השידוכים דרך האורקסטרטטור (יש לוודא את שם המתודה המדויק לפי מחלקת ה-Orchestrator שלך)
-                await _orchestrator.RunMatchingCycleAsync();
-
-                return Ok(new { success = true, message = "מנוע השידוכים הופעל בהצלחה." });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to run matching engine manually.");
-                return StatusCode(500, new { message = "שגיאה פנימית בהפעלת מנוע השידוכים." });
-            }
-        }
-        [HttpGet("active")]
-        public async Task<ActionResult<IEnumerable<MatchResponseDto>>> GetActiveMatches()
-        {
-            var caller = await _caller.GetAsync();
-            var matches = await _matchRepository.GetActiveMatchesAsync();
-            if (!caller.IsAdmin)
-            {
-                matches = matches.Where(m =>
-                    caller.OwnsMatchAsVolunteer(m) ||
-                    caller.IsMatchNgo(m) ||
-                    caller.OwnsDonation(m.Donation)).ToList();
-            }
-            var matchDtos = _mapper.Map<IEnumerable<MatchResponseDto>>(matches);
-            return Ok(matchDtos);
+            var result = await _matchService.RunEngineAsync();
+            return result.Started ? Ok(result) : Conflict(result);
         }
 
-        [HttpPost("assign-donation/{donationId}")]
-        [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> AssignDonation(int donationId)
-        {
-            _logger.LogInformation("AssignDonation started for DonationId={DonationId}", donationId);
-
-            var donation = await _donationRepository.GetByIdWithCategoriesAsync(donationId);
-            if (donation == null)
-            {
-                return NotFound(new { message = "Donation not found" });
-            }
-
-            if (donation.Status != DonationStatus.Pending)
-            {
-                return Conflict(new { message = "Donation is not pending and cannot be assigned." });
-            }
-
-            var allNgos = (await _ngoRepository.GetAllAsync()).ToList();
-            if (allNgos == null || allNgos.Count == 0)
-            {
-                return Ok(new { matched = false, message = "No NGOs configured in the system." });
-            }
-
-            var pickupDate = donation.CreatedAt.Date;
-            var pickupDateTime = pickupDate + donation.LatestPickupTime;
-            if (pickupDateTime > donation.ExpirationTime)
-            {
-                pickupDateTime = donation.ExpirationTime;
-            }
-
-            var bestMatchResult = await _ngoSelectionService.SelectBestNgoAsync(donation, allNgos, pickupDateTime);
-            if (bestMatchResult == null)
-            {
-                return Ok(new { matched = false, message = "No NGO can receive this donation in time." });
-            }
-
-            var ngo = bestMatchResult.Value.Ngo;
-            var volunteers = await _volunteerRepository.GetAvailableVolunteersAsync();
-
-            var result = await _donationAssignmentService.AssignVolunteerAsync(donation, ngo, volunteers, DateTime.UtcNow);
-
-            if (result == null || result.Outcome != AssignmentOutcome.Assigned)
-            {
-                return Ok(new { matched = false, message = "No eligible volunteer found at this time." });
-            }
-
-            var assignedVolunteer = result.AssignedVolunteer;
-            var (success, createdMatch) = await _matchCreationService.CreateMatchAsync(donation, ngo, assignedVolunteer);
-
-            if (!success)
-            {
-                return Conflict(new { matched = false, message = "Failed to persist match due to concurrent update. Try again." });
-            }
-
-            var user = await _userRepository.GetByIdAsync(assignedVolunteer.UserId);
-            if (user != null)
-            {
-                try
-                {
-                    var jwtSettings = _configuration.GetSection("JwtSettings");
-                    var secretKeyString = jwtSettings["Secret"] ?? throw new InvalidOperationException("JWT Secret Key is missing.");
-                    var secretKey = Encoding.UTF8.GetBytes(secretKeyString);
-
-                    var claims = new[]
-                    {
-                        new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-                        new Claim(JwtRegisteredClaimNames.Sub, user.Email),
-                        new Claim(ClaimTypes.Role, user.Role.ToString()),
-                        new Claim("MatchId", createdMatch.Id.ToString()),
-                        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-                    };
-
-                    var key = new SymmetricSecurityKey(secretKey);
-                    var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-
-                    var tokenDescriptor = new JwtSecurityToken(
-                        issuer: jwtSettings["Issuer"],
-                        audience: jwtSettings["Audience"],
-                        claims: claims,
-                        expires: DateTime.UtcNow.AddMinutes(5),
-                        signingCredentials: creds
-                    );
-
-                    string matchToken = new JwtSecurityTokenHandler().WriteToken(tokenDescriptor);
-                    var frontendBaseUrl = "http://localhost:5174";
-                    var responseLink = $"{frontendBaseUrl}/app/volunteer/respond-match/{createdMatch.Id}?token={matchToken}";
-
-                    await _emailService.SendEmailAsync(
-                        user.Id,
-                        user.Email,
-                        "תרומה חדשה ממתינה לאישורך - יש לך 5 דקות!",
-                        $"שלום {System.Net.WebUtility.HtmlEncode(user.Name)}, נמצאה עבורך תרומה חדשה לאיסוף. לאישור או דחייה תוך 5 דקות לחץ על הקישור הבא: <a href='{responseLink}'>לחץ כאן לאישור/דחייה</a>"
-                    );
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to send assignment email.");
-                }
-            }
-
-            BackgroundJob.Schedule(() => _matchTimeoutService.ProcessTimeoutsAndNoShowsAsync(DateTime.UtcNow), TimeSpan.FromMinutes(5));
-
-            return Ok(new
-            {
-                matched = true,
-                matchId = createdMatch.Id,
-                message = "Volunteer assigned successfully.",
-            });
-        }
-
-        [HttpPost("{id}/accept")]
-        public async Task<IActionResult> AcceptMatch(int id)
-        {
-            _logger.LogInformation("=== AcceptMatch started for Match ID: {MatchId} ===", id);
-
-            var match = await _matchRepository.GetByIdAsync(id);
-            if (match == null)
-            {
-                return NotFound(new { message = "השידוך לא נמצא." });
-            }
-
-            var caller = await _caller.GetAsync();
-            if (!caller.OwnsMatchAsVolunteer(match))
-            {
-                return Forbid();
-            }
-
-            if (match.Status != MatchStatus.AwaitingVolunteerConfirmation)
-            {
-                return BadRequest(new { message = "לא ניתן לאשר שידוך זה מכיוון שאינו ממתין לאישור או שפג תוקפו." });
-            }
-
-            if (await _matchRepository.HasActiveConfirmedMatchAsync(match.VolunteerId, match.Id, match.VolunteerRouteId))
-            {
-                return Conflict(new { message = "למתנדב כבר יש שיבוץ פעיל אחר." });
-            }
-
-            match.Status = MatchStatus.Confirmed;
-
-            var volunteer = match.Volunteer ?? await _volunteerRepository.GetByIdAsync(match.VolunteerId);
-            if (volunteer != null)
-            {
-                volunteer.IsAvailable = false;
-            }
-
-            await _matchRepository.UpdateAsync(match);
-
-            var matchDto = _mapper.Map<MatchResponseDto>(match);
-
-            return Ok(new { success = true, message = "השידוך אושר בהצלחה.", match = matchDto });
-        }
-
-        [HttpPost("{id}/decline")]
-        public async Task<IActionResult> DeclineMatch(int id)
-        {
-            var match = await _matchRepository.GetByIdAsync(id);
-            if (match == null) return NotFound(new { message = "השידוך לא נמצא." });
-
-            var caller = await _caller.GetAsync();
-            if (!caller.OwnsMatchAsVolunteer(match)) return Forbid();
-
-            if (match.Status != MatchStatus.AwaitingVolunteerConfirmation)
-            {
-                return BadRequest(new { message = "לא ניתן לדחות שידוך זה." });
-            }
-
-            match.Status = MatchStatus.Declined;
-
-            var volunteer = match.Volunteer ?? await _volunteerRepository.GetByIdAsync(match.VolunteerId);
-            if (volunteer != null)
-            {
-                volunteer.IsAvailable = true;
-            }
-
-            if (match.Donation != null)
-            {
-                match.Donation.Status = DonationStatus.Pending;
-            }
-
-            await _matchRepository.UpdateAsync(match);
-
-            return Ok(new { success = true, message = "השידוך נדחה." });
-        }
         [HttpGet("engine-status")]
         [Authorize(Roles = "Admin")]
-        public IActionResult GetEngineStatus()
+        public async Task<ActionResult<EngineStatusDto>> GetEngineStatus() =>
+            Ok(await _matchService.GetEngineStatusAsync());
+
+        // שיבוץ ידני של תרומה אחת - דרך אותו מנוע (שידוך אחד, מייל אחד)
+        [HttpPost("assign-donation/{donationId:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<AssignDonationResultDto>> AssignDonation(int donationId) =>
+            Ok(await _matchService.AssignDonationAsync(donationId) ?? throw new NotFoundException("התרומה לא נמצאה."));
+
+        // ---------------- תגובת המתנדב (לכל המסלול) ----------------
+
+        // אישור אחד לכל המסלול (בעבר אישור נפרד לכל תחנה)
+        [HttpPost("{id:int}/accept")]
+        public async Task<ActionResult<RouteDto>> AcceptMatch(int id) =>
+            Ok(await _matchService.AcceptAsync(id, CurrentUser));
+
+        [HttpPost("{id:int}/decline")]
+        public async Task<IActionResult> DeclineMatch(int id)
         {
-            try
-            {
-                // כאן תוכל להחזיר את הסטטוס העדכני של המנוע
-                return Ok(new
-                {
-                    status = "Ready",
-                    lastRun = "לא ידוע",
-                    matchedCount = 0
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to get engine status.");
-                return StatusCode(500, new { message = "שגיאה בטעינת סטטוס המנוע." });
-            }
+            await _matchService.DeclineAsync(id, CurrentUser);
+            return Message("הבקשה נדחתה. התרומות יועברו למתנדב אחר.");
         }
 
-        [HttpPost("{id}/complete")]
+        // ---------------- ביצוע המסלול ----------------
+
+        // המתנדב יוצא לדרך (המסלול עובר ל-InProgress, השידוכים ל-InPickup)
+        [HttpPost("routes/{routeId:int}/start")]
+        public async Task<ActionResult<RouteDto>> StartRoute(int routeId) =>
+            Ok(await _matchService.StartRouteAsync(routeId, CurrentUser));
+
+        // נאסף מהספק (InPickup -> InTransit, התרומה -> PickedUp)
+        [HttpPost("{id:int}/picked-up")]
+        public async Task<IActionResult> MarkPickedUp(int id)
+        {
+            await _matchService.PickUpAsync(id, CurrentUser);
+            return Message("האיסוף נרשם.");
+        }
+
+        // נמסר לעמותה (InTransit -> Delivered). העמותה מאשרת קבלה דרך /api/donations/{id}/confirm-receipt
+        [HttpPost("{id:int}/complete")]
         public async Task<IActionResult> SetCompleted(int id)
         {
-            var match = await _matchRepository.GetByIdAsync(id);
-            if (match == null) return NotFound(new { message = "השידוך לא נמצא." });
-
-            var caller = await _caller.GetAsync();
-            if (!caller.IsAdmin && !caller.OwnsMatchAsVolunteer(match)) return Forbid();
-
-            match.Status = MatchStatus.Completed;
-
-            if (match.Donation != null)
-            {
-                match.Donation.Status = DonationStatus.Delivered;
-            }
-
-            var volunteer = match.Volunteer ?? await _volunteerRepository.GetByIdAsync(match.VolunteerId);
-            if (volunteer != null)
-            {
-                volunteer.IsAvailable = true;
-            }
-
-            await _matchRepository.UpdateAsync(match);
-
-            return Ok(new { success = true, message = "השידוך הושלם בהצלחה!" });
+            await _matchService.CompleteAsync(id, CurrentUser);
+            return Message("המסירה נרשמה. העמותה תתבקש לאשר את הקבלה.");
         }
+
+        // No-Show (מנהל): המתנדב לא הגיע. התרומות חוזרות לשיבוץ מחדש מיידי וציון האמינות שלו יורד.
+        [HttpPost("{id:int}/no-show")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> MarkNoShow(int id,
+            [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] NoShowDto? dto)
+        {
+            var count = await _matchService.MarkNoShowAsync(id, dto?.Reason);
+            return Ok(new { message = $"סומן No-Show. {count} תרומות הוחזרו לשיבוץ מחדש.", requeued = count });
+        }
+
+        // ---------------- מסלולים ----------------
+
+        [HttpGet("routes/my-active")]
+        public async Task<ActionResult<RouteDto>> GetMyActiveRoute()
+        {
+            var route = await _matchService.GetMyActiveRouteAsync(CurrentUser);
+            return route == null ? NoContent() : Ok(route);
+        }
+
+        [HttpGet("routes/{routeId:int}")]
+        public async Task<ActionResult<RouteDto>> GetRoute(int routeId) =>
+            Ok(await _matchService.GetRouteAsync(routeId, CurrentUser) ?? throw new NotFoundException(RouteNotFound));
+
+        // ---------------- קישור מהמייל (בלי התחברות) ----------------
+        // תוקן: הקישור הכיל JWT מלא של המתנדב (כולל גישה לכל המערכת) ו-MatchId שלא נבדק.
+        // עכשיו: טוקן חד-פעמי אקראי, שמור מגובב במסד, מוגבל למסלול אחד ולתגובה אחת. הטוקן נשלח בגוף הבקשה ולא ב-URL.
+
+        [HttpPost("by-link")]
+        [AllowAnonymous]
+        [EnableRateLimiting("auth")]
+        public async Task<ActionResult<RouteDto>> GetRouteByLink([FromBody] RespondByLinkDto dto) =>
+            Ok(await _matchService.GetRouteByLinkAsync(dto.Token)
+               ?? throw new NotFoundException("הקישור אינו בתוקף (פג, כבר נוצל או שגוי)."));
+
+        [HttpPost("respond-by-link")]
+        [AllowAnonymous]
+        [EnableRateLimiting("auth")]
+        public async Task<ActionResult<RouteDto>> RespondByLink([FromBody] RespondByLinkDto dto) =>
+            Ok(await _matchService.RespondByLinkAsync(dto));
     }
 }
