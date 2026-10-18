@@ -15,6 +15,11 @@ namespace DAL.Repositories
             return await _dbSet.FirstOrDefaultAsync(s => s.UserId == userId);
         }
 
+        public async Task<Supplier?> GetOwnedAsync(int id, int userId)
+        {
+            return await _dbSet.FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
+        }
+
         public async Task<List<Supplier>> GetAllWithUserAsync()
         {
             return await _context.Suppliers

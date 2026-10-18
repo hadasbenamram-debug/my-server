@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Identity;
 using AutoMapper;
 using BLL.Algorithms;
 using BLL.Exceptions;
@@ -26,6 +27,7 @@ namespace BLL.Services
         private readonly INotificationService _notifications;
         private readonly IMapper _mapper;
         private readonly ILogger<SupplierService> _logger;
+        private readonly IPasswordHasher<User> _passwordHasher;
 
         public SupplierService(
             ISupplierRepository supplierRepository,
@@ -35,8 +37,10 @@ namespace BLL.Services
             IUnitOfWork unitOfWork,
             INotificationService notifications,
             IMapper mapper,
-            ILogger<SupplierService> logger)
+            ILogger<SupplierService> logger,
+            IPasswordHasher<User> passwordHasher)
         {
+            _passwordHasher = passwordHasher;
             _supplierRepository = supplierRepository;
             _userRepository = userRepository;
             _approvals = approvals;
@@ -61,16 +65,17 @@ namespace BLL.Services
 
         public async Task<SupplierResponseDto?> GetByIdAsync(int id, CurrentUserDto currentUser)
         {
-            // תוקן: חיפוש לפי מזהה ספק בלבד (בעבר גם לפי מזהה משתמש - דו-משמעי)
-            var supplier = await _supplierRepository.GetByIdAsync(id);
-            if (supplier == null)
-                return null;
+            // מנהל רואה כל ספק. אחרים - רק ספק עם המזהה הזה *וגם* של המשתמש המחובר.
+            // null (= "לא נמצא") גם כשהספק קיים אבל לא שלו, כדי לא לחשוף אילו מזהים קיימים.
+            Supplier? supplier;
+            if (currentUser.IsAdmin)
+                supplier = await _supplierRepository.GetByIdAsync(id);
+            else if (currentUser.UserId.HasValue)
+                supplier = await _supplierRepository.GetOwnedAsync(id, currentUser.UserId.Value);
+            else
+                supplier = null;
 
-            // בדיקת בעלות: null (= "לא נמצא") כדי לא לחשוף שהמזהה קיים.
-            if (!currentUser.IsAdmin && supplier.UserId != currentUser.UserId)
-                return null;
-
-            return _mapper.Map<SupplierResponseDto>(supplier);
+            return supplier == null ? null : _mapper.Map<SupplierResponseDto>(supplier);
         }
 
         public async Task<SupplierResponseDto?> GetCurrentAsync(int userId)
@@ -104,7 +109,7 @@ namespace BLL.Services
                 await _unitOfWork.ExecuteInTransactionAsync(async () =>
                 {
                     await _supplierRepository.AddAsync(supplierEntity);
-                    await _approvals.AddPendingAsync(userId, RequestedRole.Supplier, true, "הוגש פרופיל ספק עם רישיון עסק.");
+                    await _approvals.AddPendingAsync(userId, FoodRescue.DTOs.RequestedRole.Supplier, true, "הוגש פרופיל ספק עם רישיון עסק.");
                 });
             }
             catch
@@ -144,11 +149,11 @@ namespace BLL.Services
                         Name = dto.Name.Trim(),
                         Email = email,
                         Phone = dto.Phone.Trim(),
-                        PasswordHash = PasswordHasher.Hash(tempPassword),
                         Role = UserRole.Supplier,
                         MustChangePassword = true,
                         SecurityStamp = UserService.NewStamp()
                     };
+                    user.PasswordHash = _passwordHasher.HashPassword(user, tempPassword);
 
                     if (!await _userRepository.TryAddAsync(user))
                         throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
@@ -168,7 +173,7 @@ namespace BLL.Services
                     };
 
                     await _supplierRepository.AddAsync(supplierEntity);
-                    await _approvals.AddPendingAsync(user.Id, RequestedRole.Supplier, true, "הוגש פרופיל ספק עם רישיון עסק.");
+                    await _approvals.AddPendingAsync(user.Id, FoodRescue.DTOs.RequestedRole.Supplier, true, "הוגש פרופיל ספק עם רישיון עסק.");
 
                     await _notifications.QueueEmailAsync(
                         user.Id,

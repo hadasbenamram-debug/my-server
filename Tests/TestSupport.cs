@@ -122,10 +122,10 @@ namespace FoodRescue.Tests
         {
             var data = new Dictionary<string, string?>
             {
-                ["JwtSettings:Secret"] = "0123456789abcdef0123456789abcdef-test",
-                ["JwtSettings:Issuer"] = "test-issuer",
-                ["JwtSettings:Audience"] = "test-audience",
-                ["JwtSettings:ExpiresMinutes"] = "30",
+                ["Jwt:Key"] = "0123456789abcdef0123456789abcdef-test",
+                ["Jwt:Issuer"] = "test-issuer",
+                ["Jwt:Audience"] = "test-audience",
+                ["Jwt:ExpiresMinutes"] = "30",
                 ["App:FrontendBaseUrl"] = "https://app.test"
             };
             if (extra != null)
@@ -274,9 +274,13 @@ namespace FoodRescue.Tests
             ReceivesOnFriday = true, FridayOpenTime = TimeSpan.Zero, FridayCloseTime = new TimeSpan(23, 59, 0)
         };
 
+        // hash אחד לכל הבדיקות (ה-PasswordHasher של Microsoft איטי בכוונה)
+        private static readonly Lazy<string> TestPasswordHash =
+            new(() => new PasswordHasherWithLegacySupport().HashPassword(new User(), "Password123!"));
+
         public static User NewUser(string email, UserRole role, string? phone = "0501234567") => new()
         {
-            Name = email.Split('@')[0], Email = email, Phone = phone ?? "", PasswordHash = PasswordHasher.Hash("Password123!"),
+            Name = email.Split('@')[0], Email = email, Phone = phone ?? "", PasswordHash = TestPasswordHash.Value,
             Role = role, IsEmailVerified = true, SecurityStamp = UserService.NewStamp()
         };
 
@@ -315,7 +319,7 @@ namespace FoodRescue.Tests
             var donation = new Donation
             {
                 SupplierId = Supplier.Id, RegionId = Region.Id, Latitude = latitude, Longitude = longitude,
-                GooglePlaceId = "N/A", ImageFilePath = "", CreatedAt = NowUtc.AddMinutes(-10),
+                GooglePlaceId = "N/A", Image = null, CreatedAt = NowUtc.AddMinutes(-10),
                 LatestPickupTime = (LocalNow + (pickupIn ?? TimeSpan.FromHours(3))).TimeOfDay,
                 ExpirationTime = NowUtc + (expiresIn ?? TimeSpan.FromHours(8)),
                 Status = DonationStatus.Pending, PriorityScore = 1, UrgencyScore = 1, PriorityUpdatedAt = NowUtc,

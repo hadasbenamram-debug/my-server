@@ -1,6 +1,6 @@
 using BLL.Interfaces;
 using FoodRescue.DTOs;
-using FoodRescue.Security;
+using FoodRescue.Extensions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;

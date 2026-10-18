@@ -26,16 +26,16 @@ namespace BLL.Services
 
         public TokenService(IConfiguration configuration, TimeProvider? clock = null)
         {
-            var section = configuration.GetSection("JwtSettings");
-            var secret = section["Secret"];
+            var section = configuration.GetSection("Jwt");
+            var secret = section["Key"];
 
             if (string.IsNullOrWhiteSpace(secret))
                 throw new InvalidOperationException(
-                    "JwtSettings:Secret is not configured. Set it via user-secrets or environment variables.");
+                    "Jwt:Key is missing. Set the environment variable Jwt__Key, or in development: dotnet user-secrets set \"Jwt:Key\" \"<random value of at least 32 characters>\".");
 
             if (Encoding.UTF8.GetByteCount(secret) < 32)
                 throw new InvalidOperationException(
-                    "JwtSettings:Secret must be at least 32 bytes long (use a random 256-bit value).");
+                    "Jwt:Key must be at least 32 bytes long (HS256 needs a 256-bit key). Use a long random value.");
 
             _credentials = new SigningCredentials(
                 new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret)),
@@ -54,10 +54,12 @@ namespace BLL.Services
             DateTimeOffset now = _clock.GetUtcNow();
             DateTime expires = now.Add(_loginLifetime).UtcDateTime;
 
+            // ה-claims: מזהה, מייל ותפקיד - בלי מידע רגיש (הטוקן מקודד, לא מוצפן).
+            // בנוסף: חותמת האבטחה (לביטול טוקנים אחרי החלפת סיסמה), מזהה טוקן ייחודי (jti) וזמן ההנפקה (iat).
             var claims = new List<Claim>
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Id.ToString(CultureInfo.InvariantCulture)),
-                new Claim(JwtRegisteredClaimNames.Sub, user.Email),
+                new Claim(ClaimTypes.Email, user.Email),
                 new Claim(ClaimTypes.Role, user.Role.ToString()),
                 new Claim(SecurityStampClaimType, user.SecurityStamp ?? string.Empty),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
@@ -88,7 +90,7 @@ namespace BLL.Services
                 minutes <= 0)
             {
                 throw new InvalidOperationException(
-                    $"JwtSettings:{key} must be a positive whole number of minutes.");
+                    $"Jwt:{key} must be a positive whole number of minutes.");
             }
 
             return TimeSpan.FromMinutes(minutes);

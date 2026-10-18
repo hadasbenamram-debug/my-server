@@ -270,7 +270,7 @@ namespace FoodRescue.Tests
             await f.SeedAsync();
             var ngo = await f.AddPendingNgoAsync("ngo@test");
 
-            var pending = await f.Approvals.GetPendingAsync(RequestedRole.Ngo);
+            var pending = await f.Approvals.GetPendingAsync(FoodRescue.DTOs.RequestedRole.Ngo);
 
             var item = Assert.Single(pending);
             Assert.Equal(ngo.Id, item.ProfileId);

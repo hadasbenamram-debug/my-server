@@ -62,10 +62,14 @@ namespace BLL.Services
         // קריאה
         // =========================================================
 
-        public async Task<PagedResult<MatchResponseDto>> GetPageAsync(PageRequest page, FoodRescue.DTOs.MatchStatus? status)
+        public async Task<PagedResponse<MatchResponseDto>> GetPageAsync(PageRequest page, FoodRescue.DTOs.MatchStatus? status)
         {
             var result = await _matchRepository.GetPageAsync(page.Skip, page.PageSize, status.HasValue ? (MatchStatus)(int)status.Value : null);
-            return new PagedResult<MatchResponseDto>(_mapper.Map<List<MatchResponseDto>>(result.Items), result.TotalCount);
+            return new PagedResponse<MatchResponseDto>
+            {
+                Items = _mapper.Map<List<MatchResponseDto>>(result.Items),
+                TotalCount = result.TotalCount
+            };
         }
 
         public async Task<MatchResponseDto?> GetByIdAsync(int id, CurrentUserDto currentUser)
@@ -302,15 +306,18 @@ namespace BLL.Services
             return route;
         }
 
+        // שידוך של המתנדב המחובר בלבד. שידוך שלא קיים ושידוך של מתנדב אחר מקבלים אותה תשובה (404).
         private async Task<(Match Match, int VolunteerId)> LoadOwnMatchAsync(int id, CurrentUserDto currentUser)
         {
-            var match = await _matchRepository.GetByIdWithDetailsAsync(id) ?? throw new NotFoundException(MatchNotFound);
-
             var caller = await _caller.GetAsync(currentUser);
-            if (!caller.OwnsMatchAsVolunteer(match))
+            if (caller.Volunteer == null)
                 throw new NotFoundException(MatchNotFound);
 
-            return (match, caller.Volunteer!.Id);
+            // מחפשים שידוך עם המזהה הזה *וגם* של המתנדב המחובר
+            var match = await _matchRepository.GetOwnedByVolunteerAsync(id, caller.Volunteer.Id)
+                        ?? throw new NotFoundException(MatchNotFound);
+
+            return (match, caller.Volunteer.Id);
         }
 
         private async Task<RouteDto> BuildRouteDtoAsync(Match match)

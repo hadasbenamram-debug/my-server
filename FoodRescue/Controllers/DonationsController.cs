@@ -64,8 +64,7 @@ namespace FoodRescue.Controllers
         [HttpPost]
         public async Task<ActionResult<DonationResponseDto>> CreateDonation([FromBody] CreateDonationDto donationDto)
         {
-            RequireUserId();
-            var created = await _donationService.CreateAsync(donationDto, CurrentUser);
+            var created = await _donationService.CreateAsync(donationDto, RequireUserId());
             return CreatedAtAction(nameof(GetDonation), new { id = created.Id }, created);
         }
 

@@ -1,6 +1,6 @@
 using BLL.Interfaces;
 using BLL.Notifications;
-using FoodRescue.Security;
+using FoodRescue.Extensions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using System;

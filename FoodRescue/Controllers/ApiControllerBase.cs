@@ -1,7 +1,6 @@
 using BLL.Exceptions;
-using DAL.Interfaces;
 using FoodRescue.DTOs;
-using FoodRescue.Security;
+using FoodRescue.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using System.Collections.Generic;
 using System.Globalization;
@@ -21,12 +20,6 @@ namespace FoodRescue.Controllers
             User.GetUserId() ?? throw new UnauthorizedException("המשתמש אינו מחובר.");
 
         // רשימה מעומדת: הפריטים בגוף התשובה (מערך, כמו קודם), וסך הרשומות בכותרת X-Total-Count
-        protected ActionResult<List<T>> Paged<T>(PagedResult<T> page)
-        {
-            Response.Headers[TotalCountHeader] = page.TotalCount.ToString(CultureInfo.InvariantCulture);
-            return Ok(page.Items);
-        }
-
         protected ActionResult<List<T>> Paged<T>(PagedResponse<T> page)
         {
             Response.Headers[TotalCountHeader] = page.TotalCount.ToString(CultureInfo.InvariantCulture);

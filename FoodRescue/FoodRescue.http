@@ -143,6 +143,15 @@ Authorization: Bearer {{tokenA}}
 GET {{host}}/api/ngos
 Authorization: Bearer {{tokenA}}
 
+###
+### EXPECT: 403 - creating a donation on behalf of a supplier is Admin only.
+### (CreateDonationDto has no SupplierId: a supplier's own donations always belong to the supplier in the token)
+POST {{host}}/api/admin/suppliers/1/donations
+Authorization: Bearer {{tokenA}}
+Content-Type: application/json
+
+{ "regionId": 1, "latitude": 32.08, "longitude": 34.78, "latestPickupTime": "18:00:00", "categories": [ { "categoryId": 1, "quantity": 1, "weightKg": 1 } ] }
+
 ### Same endpoints as Admin -> 200 / 204 / 404 (never 401/403)
 ### EXPECT: 200
 GET {{host}}/api/ngos
@@ -222,6 +231,14 @@ Authorization: Bearer {{tokenB}}
 ### EXPECT: 404
 POST {{host}}/api/matches/{{matchId}}/accept
 Authorization: Bearer {{tokenB}}
+
+###
+### B edits / cancels a donation that is not B's -> EXPECT: 404 (same as an id that does not exist)
+PUT {{host}}/api/donations/{{donationId}}/cancel
+Authorization: Bearer {{tokenB}}
+Content-Type: application/json
+
+{ "reason": "test" }
 
 ### ---------------------------------------------------------------------
 ### 6. Comments: author/createdAt/id from the client are ignored; target is checked

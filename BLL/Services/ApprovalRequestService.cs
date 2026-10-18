@@ -68,11 +68,14 @@ namespace BLL.Services
         // קריאה
         // =========================================================
 
-        public async Task<PagedResult<ApprovalRequestResponseDto>> GetPageAsync(PageRequest page)
+        public async Task<PagedResponse<ApprovalRequestResponseDto>> GetPageAsync(PageRequest page)
         {
             var result = await _approvalRequestRepository.GetPageAsync(page.Skip, page.PageSize);
-            return new PagedResult<ApprovalRequestResponseDto>(
-                _mapper.Map<List<ApprovalRequestResponseDto>>(result.Items), result.TotalCount);
+            return new PagedResponse<ApprovalRequestResponseDto>
+            {
+                Items = _mapper.Map<List<ApprovalRequestResponseDto>>(result.Items),
+                TotalCount = result.TotalCount
+            };
         }
 
         public async Task<ApprovalRequestResponseDto?> GetByIdAsync(int id)
@@ -81,9 +84,9 @@ namespace BLL.Services
             return request == null ? null : _mapper.Map<ApprovalRequestResponseDto>(request);
         }
 
-        public async Task<List<PendingApprovalRequestDto>> GetPendingAsync(RequestedRole? role)
+        public async Task<List<PendingApprovalRequestDto>> GetPendingAsync(FoodRescue.DTOs.RequestedRole? role)
         {
-            var requests = await _approvalRequestRepository.GetPendingWithUserAsync(role);
+            var requests = await _approvalRequestRepository.GetPendingWithUserAsync(role.HasValue ? ToEntityRole(role.Value) : null);
             var result = new List<PendingApprovalRequestDto>(requests.Count);
 
             foreach (var request in requests)
@@ -146,15 +149,17 @@ namespace BLL.Services
             await DecideAsync(request.RequestedRole, request.UserId, request, approve: false, managerUserId, rejectionReason);
         }
 
-        public async Task ApproveProfileAsync(RequestedRole role, int profileId, int? managerUserId)
+        public async Task ApproveProfileAsync(FoodRescue.DTOs.RequestedRole dtoRole, int profileId, int? managerUserId)
         {
+            var role = ToEntityRole(dtoRole);
             int userId = await GetProfileUserIdAsync(role, profileId);
             var request = await _approvalRequestRepository.GetLatestByUserAndRoleAsync(userId, role);
             await DecideAsync(role, userId, request, approve: true, managerUserId, null);
         }
 
-        public async Task RejectProfileAsync(RequestedRole role, int profileId, int? managerUserId, string? rejectionReason)
+        public async Task RejectProfileAsync(FoodRescue.DTOs.RequestedRole dtoRole, int profileId, int? managerUserId, string? rejectionReason)
         {
+            var role = ToEntityRole(dtoRole);
             int userId = await GetProfileUserIdAsync(role, profileId);
             var request = await _approvalRequestRepository.GetLatestByUserAndRoleAsync(userId, role);
             await DecideAsync(role, userId, request, approve: false, managerUserId, rejectionReason);
@@ -340,11 +345,11 @@ namespace BLL.Services
             return _mapper.Map<ApprovalRequestResponseDto>(requestEntity);
         }
 
-        public Task AddPendingAsync(int userId, RequestedRole role, bool passedAutomaticValidation, string validationDetails) =>
+        public Task AddPendingAsync(int userId, FoodRescue.DTOs.RequestedRole role, bool passedAutomaticValidation, string validationDetails) =>
             _approvalRequestRepository.AddAsync(new ApprovalRequest
             {
                 UserId = userId,
-                RequestedRole = role,
+                RequestedRole = ToEntityRole(role),
                 Status = ApprovalStatus.Pending,
                 PassedAutomaticValidation = passedAutomaticValidation,
                 ValidationDetails = validationDetails ?? string.Empty,
@@ -355,6 +360,9 @@ namespace BLL.Services
         // =========================================================
         // עזר
         // =========================================================
+
+        // ה-enum של DTOs זהה בשמות ובערכים ל-enum של DAL. ההמרה נעשית כאן, ב-Service, ולא בקונטרולר.
+        private static RequestedRole ToEntityRole(FoodRescue.DTOs.RequestedRole role) => (RequestedRole)(int)role;
 
         public static UserRole ToUserRole(RequestedRole role) => role switch
         {

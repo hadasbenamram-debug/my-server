@@ -7,7 +7,6 @@ using Microsoft.AspNetCore.RateLimiting;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading.Tasks;
-using RequestedRole = DAL.Classes.RequestedRole;
 
 namespace FoodRescue.Controllers
 {

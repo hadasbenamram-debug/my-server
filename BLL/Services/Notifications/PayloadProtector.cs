@@ -21,7 +21,7 @@ namespace BLL.Notifications
 
         private readonly byte[] _key;
 
-        // המפתח: Notifications:EncryptionKey (Base64 של 32 בתים). אם לא הוגדר - נגזר (HKDF) מ-JwtSettings:Secret,
+        // המפתח: Notifications:EncryptionKey (Base64 של 32 בתים). אם לא הוגדר - נגזר (HKDF) מ-Jwt:Key,
         // כך שאין צורך בהגדרה נוספת וכל השרתים מקבלים אותו מפתח.
         public AesGcmPayloadProtector(IConfiguration configuration)
         {
@@ -34,9 +34,9 @@ namespace BLL.Notifications
                 return;
             }
 
-            var secret = configuration["JwtSettings:Secret"];
+            var secret = configuration["Jwt:Key"];
             if (string.IsNullOrWhiteSpace(secret))
-                throw new InvalidOperationException("Notifications:EncryptionKey or JwtSettings:Secret must be configured.");
+                throw new InvalidOperationException("Notifications:EncryptionKey or Jwt:Key must be configured.");
 
             _key = HKDF.DeriveKey(
                 HashAlgorithmName.SHA256,

@@ -55,6 +55,13 @@ namespace DAL.Repositories
                 .FirstOrDefaultAsync(d => d.Id == id);
         }
 
+        public async Task<Donation?> GetOwnedForUpdateAsync(int id, int supplierId)
+        {
+            return await _context.Donations
+                .Include(d => d.DonationFoodCategories)
+                .FirstOrDefaultAsync(d => d.Id == id && d.SupplierId == supplierId);
+        }
+
         public async Task<Donation?> GetFreshAsync(int id)
         {
             var donation = await _context.Donations.FindAsync(id);
@@ -90,11 +97,11 @@ namespace DAL.Repositories
             return PageAsync(query, skip, take);
         }
 
-        public async Task<List<string>> GetImageFilePathsAsync()
+        public async Task<List<string>> GetImageFileNamesAsync()
         {
             return await _context.Donations
-                .Where(d => d.ImageFilePath != null && d.ImageFilePath != "")
-                .Select(d => d.ImageFilePath!)
+                .Where(d => d.Image != null && d.Image != "")
+                .Select(d => d.Image!)
                 .ToListAsync();
         }
 

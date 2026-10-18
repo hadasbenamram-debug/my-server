@@ -12,7 +12,9 @@ namespace DAL.Classes
         public int SupplierId { get; set; }
         public Supplier Supplier { get; set; }
 
-        public string? ImageFilePath { get; set; }
+        // שם קובץ התמונה בלבד (למשל a1b2c3.jpg), בלי נתיב ובלי כתובת. הקובץ עצמו נמצא בתיקייה Images.
+        [MaxLength(100)]
+        public string? Image { get; set; }
         public int RegionId { get; set; }
         public Region Region { get; set; }
 

@@ -1,4 +1,5 @@
-﻿using AutoMapper;
+﻿using Microsoft.AspNetCore.Identity;
+using AutoMapper;
 using BLL.Algorithms;
 using BLL.Interfaces;
 using BLL.Notifications;
@@ -34,6 +35,11 @@ namespace BLL.Services
         private readonly IConfiguration _configuration;
         private readonly ILogger<UserService> _logger;
         private readonly IMapper _mapper;
+        private readonly IPasswordHasher<User> _passwordHasher;
+
+        // hash קבוע לבדיקה מול מייל שלא קיים, כדי שזמן התגובה יהיה דומה (לא חושף אילו מיילים רשומים)
+        private static readonly Lazy<string> DummyHash =
+            new(() => new PasswordHasher<User>().HashPassword(new User(), Guid.NewGuid().ToString()));
 
         public UserService(
             IUserRepository userRepository,
@@ -45,8 +51,10 @@ namespace BLL.Services
             ITokenService tokenService,
             IConfiguration configuration,
             ILogger<UserService> logger,
-            IMapper mapper)
+            IMapper mapper,
+            IPasswordHasher<User> passwordHasher)
         {
+            _passwordHasher = passwordHasher;
             _userRepository = userRepository;
             _ngoRepository = ngoRepository;
             _supplierRepository = supplierRepository;
@@ -75,12 +83,12 @@ namespace BLL.Services
                 Name = dto.Name.Trim(),
                 Email = email,
                 Phone = dto.Phone.Trim(),
-                PasswordHash = PasswordHasher.Hash(dto.Password),
                 Role = UserRole.User,               // never taken from the client
                 IsEmailVerified = false,
                 IsPhoneVerified = false,
                 SecurityStamp = NewStamp()
             };
+            user.PasswordHash = _passwordHasher.HashPassword(user, dto.Password);
 
             // Two simultaneous registrations may hit the unique index on Email.
             if (!await _userRepository.TryAddAsync(user))
@@ -114,15 +122,22 @@ namespace BLL.Services
             var user = await _userRepository.GetByEmailAsync(email);
 
             // The dummy hash keeps the response time similar for unknown e-mail addresses.
-            bool passwordOk = user != null
-                ? PasswordHasher.Verify(dto.Password, user.PasswordHash)
-                : PasswordHasher.Verify(dto.Password, PasswordHasher.Hash(Guid.NewGuid().ToString()));
+            var verification = user != null
+                ? _passwordHasher.VerifyHashedPassword(user, user.PasswordHash ?? string.Empty, dto.Password)
+                : _passwordHasher.VerifyHashedPassword(new User(), DummyHash.Value, dto.Password);
 
-            if (user == null || !passwordOk)
+            if (user == null || verification == PasswordVerificationResult.Failed)
             {
                 await _lockout.RecordAsync(email, ipAddress, user?.Id, success: false,
                     failureReason: user == null ? "UnknownEmail" : "WrongPassword");
                 return AuthResult.Fail(AuthError.InvalidCredentials, InvalidCredentialsMessage);
+            }
+
+            // סיסמה שנשמרה בפורמט הישן: שומרים אותה מחדש עם ה-PasswordHasher של Microsoft
+            if (verification == PasswordVerificationResult.SuccessRehashNeeded)
+            {
+                user.PasswordHash = _passwordHasher.HashPassword(user, dto.Password);
+                await _userRepository.UpdateAsync(user);
             }
 
             // --- approval status for NGOs and suppliers ---
@@ -192,7 +207,7 @@ namespace BLL.Services
             if (user == null)
                 return false;
 
-            user.PasswordHash = PasswordHasher.Hash(dto.NewPassword);
+            user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
             user.MustChangePassword = false;
             user.SecurityStamp = NewStamp();          // כל הטוקנים שהונפקו לפני האיפוס מפסיקים לעבוד
             await _userRepository.UpdateAsync(user);
@@ -303,10 +318,14 @@ namespace BLL.Services
         // Users (admin)
         // =====================================================
 
-        public async Task<PagedResult<UserDto>> GetPageAsync(PageRequest page)
+        public async Task<PagedResponse<UserDto>> GetPageAsync(PageRequest page)
         {
             var result = await _userRepository.GetPageAsync(page.Skip, page.PageSize);
-            return new PagedResult<UserDto>(_mapper.Map<System.Collections.Generic.List<UserDto>>(result.Items), result.TotalCount);
+            return new PagedResponse<UserDto>
+            {
+                Items = _mapper.Map<System.Collections.Generic.List<UserDto>>(result.Items),
+                TotalCount = result.TotalCount
+            };
         }
 
         public async Task<UserDto?> GetByIdAsync(int id)
@@ -326,13 +345,13 @@ namespace BLL.Services
                 return new ChangePasswordOutcome(ChangePasswordResult.UserNotFound);
 
             if (string.IsNullOrEmpty(user.PasswordHash) ||
-                !PasswordHasher.Verify(dto.CurrentPassword, user.PasswordHash))
+                _passwordHasher.VerifyHashedPassword(user, user.PasswordHash, dto.CurrentPassword) == PasswordVerificationResult.Failed)
                 return new ChangePasswordOutcome(ChangePasswordResult.WrongCurrentPassword);
 
             if (dto.CurrentPassword == dto.NewPassword)
                 return new ChangePasswordOutcome(ChangePasswordResult.SameAsCurrent);
 
-            user.PasswordHash = PasswordHasher.Hash(dto.NewPassword);
+            user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
             user.MustChangePassword = false;
 
             // תוקן: החלפת סיסמה לא ביטלה טוקנים שכבר הונפקו. עכשיו החותמת מתחלפת, וכל טוקן ישן נדחה.

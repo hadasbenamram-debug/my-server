@@ -1,7 +1,9 @@
+using DAL.Classes;
 using System.Linq;
 
-namespace DAL.Classes
+namespace BLL.Services
 {
+    // חישובי עזר על תרומה (משקל, כמות, מקדם פגיעות). זו לוגיקה עסקית, ולכן היא ב-BLL ולא ב-DAL.
     public static class DonationExtensions
     {
         // סכום המשקל של כל שורות הקטגוריה בתרומה

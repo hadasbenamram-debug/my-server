@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Identity;
 using AutoMapper;
 using BLL.Algorithms;
 using BLL.Exceptions;
@@ -31,6 +32,7 @@ namespace BLL.Services
         private readonly INotificationService _notifications;
         private readonly IMapper _mapper;
         private readonly ILogger<NgoService> _logger;
+        private readonly IPasswordHasher<User> _passwordHasher;
 
         public NgoService(
             INgoRepository ngoRepository,
@@ -41,8 +43,10 @@ namespace BLL.Services
             IUnitOfWork unitOfWork,
             INotificationService notifications,
             IMapper mapper,
-            ILogger<NgoService> logger)
+            ILogger<NgoService> logger,
+            IPasswordHasher<User> passwordHasher)
         {
+            _passwordHasher = passwordHasher;
             _ngoRepository = ngoRepository;
             _userRepository = userRepository;
             _regionRepository = regionRepository;
@@ -122,12 +126,12 @@ namespace BLL.Services
                     Name = dto.Name.Trim(),
                     Email = email,
                     Phone = dto.Phone.Trim(),
-                    PasswordHash = PasswordHasher.Hash(tempPassword),
                     // תוקן: עמותה קיבלה Role=User בזמן שספק ומתנדב מקבלים את התפקיד שלהם
                     Role = UserRole.Ngo,
                     MustChangePassword = true,
                     SecurityStamp = UserService.NewStamp()
                 };
+                user.PasswordHash = _passwordHasher.HashPassword(user, tempPassword);
 
                 if (!await _userRepository.TryAddAsync(user))
                     throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
@@ -152,7 +156,7 @@ namespace BLL.Services
                 };
 
                 await _ngoRepository.AddAsync(ngoEntity);
-                await _approvals.AddPendingAsync(user.Id, RequestedRole.Ngo, true, "הוגשה בקשת הצטרפות של עמותה.");
+                await _approvals.AddPendingAsync(user.Id, FoodRescue.DTOs.RequestedRole.Ngo, true, "הוגשה בקשת הצטרפות של עמותה.");
 
                 await _notifications.QueueEmailAsync(
                     user.Id,

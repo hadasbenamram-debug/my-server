@@ -16,6 +16,9 @@ namespace DAL.Interfaces
         // התרומה במעקב (Tracked) כולל שורות הקטגוריה - לעדכון
         Task<Donation?> GetForUpdateAsync(int id);
 
+        // תרומה עם המזהה הזה *וגם* של הספק הזה (null = לא קיימת או לא שלו)
+        Task<Donation?> GetOwnedForUpdateAsync(int id, int supplierId);
+
         // התרומה במעקב, עם הערכים העדכניים מהמסד (כולל RowVersion)
         Task<Donation?> GetFreshAsync(int id);
 
@@ -26,7 +29,7 @@ namespace DAL.Interfaces
         Task<PagedResult<Donation>> GetPageWithSupplierAsync(int skip, int take);
 
         // נתיבי התמונות ששמורים בתרומות (לניקוי תמונות "יתומות")
-        Task<List<string>> GetImageFilePathsAsync();
+        Task<List<string>> GetImageFileNamesAsync();
 
         Task<bool> ExistsAsync(int id);
         Task<bool> ExistsForSupplierAsync(int donationId, int supplierId);

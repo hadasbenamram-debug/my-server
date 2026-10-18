@@ -7,7 +7,6 @@ using Microsoft.AspNetCore.RateLimiting;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading.Tasks;
-using RequestedRole = DAL.Classes.RequestedRole;
 
 namespace FoodRescue.Controllers
 {
@@ -80,10 +79,12 @@ namespace FoodRescue.Controllers
     public class AdminSuppliersController : ApiControllerBase
     {
         private readonly ISupplierService _supplierService;
+        private readonly IDonationService _donationService;
 
-        public AdminSuppliersController(ISupplierService supplierService)
+        public AdminSuppliersController(ISupplierService supplierService, IDonationService donationService)
         {
             _supplierService = supplierService;
+            _donationService = donationService;
         }
 
         [HttpGet]
@@ -96,6 +97,14 @@ namespace FoodRescue.Controllers
         {
             var file = await _supplierService.GetLicenseFileAsync(id) ?? throw new NotFoundException("קובץ הרישיון לא נמצא.");
             return PhysicalFile(file.FullPath, file.ContentType, file.DownloadName);
+        }
+
+        // מנהל יוצר תרומה בשם ספק. מזהה הספק מגיע מהנתיב (ולא מה-DTO), והנקודה כולה מוגבלת למנהלים.
+        [HttpPost("{supplierId:int}/donations")]
+        public async Task<ActionResult<DonationResponseDto>> CreateDonationForSupplier(int supplierId, [FromBody] CreateDonationDto donationDto)
+        {
+            var created = await _donationService.CreateForSupplierAsync(supplierId, donationDto, RequireUserId());
+            return CreatedAtAction("GetDonation", "Donations", new { id = created.Id }, created);
         }
     }
 }

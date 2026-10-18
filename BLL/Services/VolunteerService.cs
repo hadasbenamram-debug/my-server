@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Identity;
 using AutoMapper;
 using BLL.Algorithms;
 using BLL.Exceptions;
@@ -36,6 +37,7 @@ namespace BLL.Services
         private readonly INotificationService _notifications;
         private readonly IMapper _mapper;
         private readonly ILogger<VolunteerService> _logger;
+        private readonly IPasswordHasher<User> _passwordHasher;
 
         public VolunteerService(
             IVolunteerRepository volunteerRepository,
@@ -48,8 +50,10 @@ namespace BLL.Services
             IUnitOfWork unitOfWork,
             INotificationService notifications,
             IMapper mapper,
-            ILogger<VolunteerService> logger)
+            ILogger<VolunteerService> logger,
+            IPasswordHasher<User> passwordHasher)
         {
+            _passwordHasher = passwordHasher;
             _volunteerRepository = volunteerRepository;
             _userRepository = userRepository;
             _availabilitySlotRepository = availabilitySlotRepository;
@@ -155,7 +159,7 @@ namespace BLL.Services
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 await _volunteerRepository.AddAsync(volunteerEntity);
-                await _approvals.AddPendingAsync(userId, RequestedRole.Volunteer, passed, details);
+                await _approvals.AddPendingAsync(userId, FoodRescue.DTOs.RequestedRole.Volunteer, passed, details);
 
                 if (!string.IsNullOrEmpty(user.Email))
                 {
@@ -212,11 +216,11 @@ namespace BLL.Services
                     Name = dto.Name.Trim(),
                     Email = email,
                     Phone = dto.Phone.Trim(),
-                    PasswordHash = PasswordHasher.Hash(tempPassword),
                     Role = UserRole.Volunteer,
                     MustChangePassword = true,           // חובה להחליף את הסיסמה הזמנית בכניסה הראשונה
                     SecurityStamp = UserService.NewStamp()
                 };
+                user.PasswordHash = _passwordHasher.HashPassword(user, tempPassword);
 
                 if (!await _userRepository.TryAddAsync(user))
                     throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
@@ -233,7 +237,7 @@ namespace BLL.Services
                     ApprovalStatus = ApprovalStatus.Pending,
                 });
 
-                await _approvals.AddPendingAsync(user.Id, RequestedRole.Volunteer, passed, details);
+                await _approvals.AddPendingAsync(user.Id, FoodRescue.DTOs.RequestedRole.Volunteer, passed, details);
 
                 await _notifications.QueueEmailAsync(
                     user.Id,
@@ -290,12 +294,8 @@ namespace BLL.Services
             if (currentUser.UserId == null)
                 return null;
 
-            var own = await _volunteerRepository.GetByUserIdAsync(currentUser.UserId.Value);
-            if (own == null)
-                return null;
-
-            // בדיקת בעלות על המזהה שהתקבל בכתובת: רק מזהה המתנדב של המחובר עצמו
-            return requestedId == own.Id ? own : null;
+            // בדיקת בעלות על המזהה שהתקבל בכתובת: מתנדב עם המזהה הזה *וגם* של המשתמש המחובר
+            return await _volunteerRepository.GetOwnedAsync(requestedId, currentUser.UserId.Value);
         }
 
         // ממיר את משבצות הזמינות שהתקבלו מהלקוח ל-Entities, כולל בדיקות.

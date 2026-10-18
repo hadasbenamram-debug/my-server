@@ -25,8 +25,14 @@ namespace DAL.Interfaces
         // שידוך במעקב כולל התרומה, המתנדב, העמותה והמסלול - לשינוי סטטוס
         Task<Match?> GetByIdWithDetailsAsync(int id);
 
+        // שידוך עם המזהה הזה *וגם* של המתנדב הזה (null = לא קיים או לא שלו)
+        Task<Match?> GetOwnedByVolunteerAsync(int id, int volunteerId);
+
         // כל השידוכים של מסלול (במעקב, כולל תרומה/מתנדב/עמותה)
         Task<List<Match>> GetByRouteIdAsync(int routeId);
+
+        // השידוכים הפעילים במסלול, רק של המתנדב הזה
+        Task<List<Match>> GetActiveByRouteForVolunteerAsync(int routeId, int volunteerId);
 
         // האם קיים שידוך על התרומה שהמתנדב או העמותה משתתפים בו
         Task<bool> AnyForDonationAndParticipantAsync(int donationId, int volunteerId, int ngoId);

@@ -1,4 +1,5 @@
 using BLL.Exceptions;
+using BLL.Interfaces;
 using BLL.Notifications;
 using BLL.Security;
 using BLL.Services;
@@ -38,7 +39,8 @@ namespace FoodRescue.Tests
             await db.SaveChangesAsync();
 
             var services = new ServiceCollection();
-            services.AddSingleton<IUserRepository>(new UserRepository(db));
+            // ה-API פונה ל-Service (BLL), וה-Service ל-Repository
+            services.AddSingleton<ISessionValidationService>(new SessionValidationService(new UserRepository(db)));
             var http = new DefaultHttpContext { RequestServices = services.BuildServiceProvider() };
 
             var identity = new ClaimsIdentity(new[]

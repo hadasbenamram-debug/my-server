@@ -20,12 +20,10 @@ namespace FoodRescue.DTOs
         public string? CategoryName { get; set; }
     }
 
-    // DTO ליצירת תרומה ע"י הספק (ללא PriorityScore שנקבע בשרת, וללא NgoId או סטטוסים שנקבעים במערכת)
+    // DTO ליצירת תרומה. אין בו SupplierId: הספק נקבע בשרת לפי הטוקן (או לפי הנתיב, כשמנהל יוצר בשם ספק).
+    // אין בו גם PriorityScore, NgoId או סטטוסים - כל אלה נקבעים במערכת.
     public class CreateDonationDto
     {
-        // נשלח ע"י מנהל בלבד (יצירה בשם ספק). עבור ספק רגיל הערך מתעלמים ממנו והשרת קובע את הספק לפי ה-JWT.
-        public int SupplierId { get; set; }
-
         [Range(1, int.MaxValue, ErrorMessage = "יש לבחור אזור.")]
         public int RegionId { get; set; }
 
@@ -38,7 +36,9 @@ namespace FoodRescue.DTOs
         [StringLength(255, ErrorMessage = "מזהה המקום בגוגל יכול להכיל עד 255 תווים.")]
         public string? GooglePlaceId { get; set; }
 
-        public string? ImageFilePath { get; set; }
+        // שם קובץ התמונה שהתקבל מ-analyze-image (רק שם, בלי נתיב)
+        [StringLength(100, ErrorMessage = "שם קובץ התמונה ארוך מדי.")]
+        public string? Image { get; set; }
 
         // שעת האיסוף האחרונה היום (שעון מקומי)
         public TimeSpan LatestPickupTime { get; set; }
@@ -82,7 +82,7 @@ namespace FoodRescue.DTOs
         public double Latitude { get; set; }
         public double Longitude { get; set; }
         public string? GooglePlaceId { get; set; }
-        public string? ImageFilePath { get; set; }
+        public string? Image { get; set; }   // שם הקובץ בלבד. כתובת התמונה: /images/ + Image
         public TimeSpan LatestPickupTime { get; set; }
         public DateTime ExpirationTime { get; set; }
         public DateTime CreatedAt { get; set; }

@@ -87,6 +87,21 @@ namespace DAL.Repositories
                 .ToListAsync();
         }
 
+        public async Task<Match?> GetOwnedByVolunteerAsync(int id, int volunteerId)
+        {
+            return await WithDetails()
+                .Include(m => m.VolunteerRoute)
+                .FirstOrDefaultAsync(m => m.Id == id && m.VolunteerId == volunteerId);
+        }
+
+        public async Task<List<Match>> GetActiveByRouteForVolunteerAsync(int routeId, int volunteerId)
+        {
+            return await WithDetails()
+                .Where(m => m.VolunteerRouteId == routeId && m.VolunteerId == volunteerId && m.IsActive)
+                .OrderBy(m => m.EstimatedArrival)
+                .ToListAsync();
+        }
+
         public async Task<bool> AnyForDonationAndParticipantAsync(int donationId, int volunteerId, int ngoId)
         {
             return await _context.Matches.AnyAsync(m =>
