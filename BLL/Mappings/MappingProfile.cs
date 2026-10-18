@@ -37,6 +37,9 @@ namespace BLL.Mappings
                 // שעת התפוגה מחושבת ומאומתת בשירות (ValidateTimes) ולא מועתקת כמו שהיא
                 .ForMember(d => d.ExpirationTime, o => o.Ignore())
                 .ForSourceMember(s => s.ExpirationTime, o => o.DoNotValidate())
+                // התמונה: השירות בודק שהקובץ הועלה ע"י המשתמש ורק אז ממלא את השדה בעצמו
+                .ForMember(d => d.Image, o => o.Ignore())
+                .ForSourceMember(s => s.Image, o => o.DoNotValidate())
                 .ForMember(d => d.CreatedAt, o => o.Ignore())
                 .ForMember(d => d.Status, o => o.Ignore())
                 .ForMember(d => d.PriorityScore, o => o.Ignore())

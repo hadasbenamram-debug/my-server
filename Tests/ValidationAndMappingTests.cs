@@ -191,7 +191,7 @@ namespace FoodRescue.Tests
             var service = new VolunteerService(
                 h.Volunteers, h.Users, new AvailabilitySlotRepository(db), new RegionRepository(db), h.Routes,
                 new Mock<IApprovalRequestService>().Object, new ValidationService(), h.UnitOfWork, h.NotificationService,
-                TestDb.Mapper, TestDb.Log<VolunteerService>());
+                TestDb.Mapper, TestDb.Log<VolunteerService>(), new BLL.Security.PasswordHasherWithLegacySupport());
 
             return (service, await db.Users.SingleAsync(u => u.Id == v.UserId), db);
         }

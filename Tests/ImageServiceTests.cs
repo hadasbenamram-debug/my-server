@@ -1,9 +1,11 @@
 ﻿using BLL.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -35,6 +37,40 @@ namespace FoodRescue.Tests
 
         private static IFormFile File(byte[] bytes, string fileName, long? length = null) =>
             new FormFile(new MemoryStream(bytes), 0, length ?? bytes.Length, "image", fileName);
+
+        // מדריך התמונות: רק ImageService מוחק קבצים. הניקוי התקופתי מבקש ממנו את הרשימה ואת המחיקה.
+        [Fact]
+        public async Task OrphanCleanup_DeletesOnlyUnreferencedImages_ThroughImageService()
+        {
+            var service = Create();
+            var png = await PngBytesAsync();
+            var kept = await service.Save(File(png, "a.png"));
+            var orphan = await service.Save(File(png, "b.png"));
+
+            var donations = new Mock<DAL.Interfaces.IDonationRepository>();
+            donations.Setup(r => r.GetImageFileNamesAsync()).ReturnsAsync(new List<string> { kept });
+
+            // שעתיים קדימה: שתי התמונות כבר "ישנות" מספיק
+            var later = new TestClock(DateTime.UtcNow.AddHours(2));
+            await new OrphanImageCleanupService(donations.Object, service, later).CleanupAsync();
+
+            Assert.True(System.IO.File.Exists(Path.Combine(_dir, kept)));
+            Assert.False(System.IO.File.Exists(Path.Combine(_dir, orphan)));
+        }
+
+        [Fact]
+        public async Task OrphanCleanup_KeepsImagesThatWereJustUploaded()
+        {
+            var service = Create();
+            var orphan = await service.Save(File(await PngBytesAsync(), "b.png"));
+
+            var donations = new Mock<DAL.Interfaces.IDonationRepository>();
+            donations.Setup(r => r.GetImageFileNamesAsync()).ReturnsAsync(new List<string>());
+
+            await new OrphanImageCleanupService(donations.Object, service, new TestClock(DateTime.UtcNow)).CleanupAsync();
+
+            Assert.True(System.IO.File.Exists(Path.Combine(_dir, orphan)));
+        }
 
         [Fact]
         public async Task Save_ValidPng_ReturnsGuidFileName_AndWritesFile()

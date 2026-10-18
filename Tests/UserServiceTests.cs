@@ -26,12 +26,12 @@ namespace FoodRescue.Tests
             new LoginLockoutService(new LoginAttemptRepository(Db)),
             _h.ActionTokens, _h.NotificationService,
             new TokenService(TestDb.Config()), TestDb.Config(),
-            TestDb.Log<UserService>(), TestDb.Mapper);
+            TestDb.Log<UserService>(), TestDb.Mapper, new PasswordHasherWithLegacySupport());
 
         private async Task<User> AddUserAsync(string email = "a@b.com", string password = "correct-password", UserRole role = UserRole.User)
         {
             var user = EngineHarness.NewUser(email, role);
-            user.PasswordHash = PasswordHasher.Hash(password);
+            user.PasswordHash = new PasswordHasherWithLegacySupport().HashPassword(user, password);
             Db.Users.Add(user);
             await Db.SaveChangesAsync();
             return user;
@@ -124,6 +124,27 @@ namespace FoodRescue.Tests
         }
 
         [Fact]
+        public async Task Login_WithOldFormatHash_Succeeds_AndUpgradesToMicrosoftHasher()
+        {
+            // hash שנוצר בפורמט הישן של הפרויקט (PBKDF2-SHA256, "iterations.salt.hash") עבור "old-format-pass1"
+            var user = EngineHarness.NewUser("old@b.com", UserRole.User);
+            user.PasswordHash = "100000.AAECAwQFBgcICQoLDA0ODw==.C7tBXPpxGVlSBJYBoyOCvpS0AfymuEK578lqwCTWJ7c=";
+            Db.Users.Add(user);
+            await Db.SaveChangesAsync();
+
+            var wrong = await Create().LoginAsync(new LoginDto { Email = "old@b.com", Password = "not-the-password" });
+            Assert.False(wrong.Succeeded);
+
+            var result = await Create().LoginAsync(new LoginDto { Email = "old@b.com", Password = "old-format-pass1" });
+
+            Assert.True(result.Succeeded);
+            var saved = await Db.Users.AsNoTracking().SingleAsync(u => u.Email == "old@b.com");
+            Assert.DoesNotContain(".", saved.PasswordHash);   // נשמר מחדש בפורמט של Microsoft
+            Assert.Equal(Microsoft.AspNetCore.Identity.PasswordVerificationResult.Success,
+                new PasswordHasherWithLegacySupport().VerifyHashedPassword(saved, saved.PasswordHash, "old-format-pass1"));
+        }
+
+        [Fact]
         public async Task Login_WithTemporaryPassword_FlagsMustChangePassword()
         {
             var user = await AddUserAsync(role: UserRole.Volunteer);
@@ -183,7 +204,8 @@ namespace FoodRescue.Tests
             _h.Fresh();
             var updated = await Db.Users.SingleAsync(u => u.Id == user.Id);
             Assert.NotEqual(oldStamp, updated.SecurityStamp);
-            Assert.True(PasswordHasher.Verify("brand-new-pass1", updated.PasswordHash));
+            Assert.NotEqual(Microsoft.AspNetCore.Identity.PasswordVerificationResult.Failed,
+                new PasswordHasherWithLegacySupport().VerifyHashedPassword(updated, updated.PasswordHash, "brand-new-pass1"));
         }
 
         [Fact]

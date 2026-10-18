@@ -25,10 +25,10 @@ namespace FoodRescue.Tests
         {
             var data = new Dictionary<string, string?>
             {
-                ["JwtSettings:Secret"] = Secret,
-                ["JwtSettings:Issuer"] = "test-issuer",
-                ["JwtSettings:Audience"] = "test-audience",
-                ["JwtSettings:ExpiresMinutes"] = "30"
+                ["Jwt:Key"] = Secret,
+                ["Jwt:Issuer"] = "test-issuer",
+                ["Jwt:Audience"] = "test-audience",
+                ["Jwt:ExpiresMinutes"] = "30"
             };
 
             if (extra != null)
@@ -64,7 +64,7 @@ namespace FoodRescue.Tests
         [Fact]
         public void CreateToken_DefaultLifetime_IsNotThreeHours()
         {
-            var cfg = Config(new() { ["JwtSettings:ExpiresMinutes"] = null });
+            var cfg = Config(new() { ["Jwt:ExpiresMinutes"] = null });
             var now = DateTimeOffset.UtcNow;
             var result = new TokenService(cfg, new FixedClock(now)).CreateToken(TestUser);
 
@@ -95,7 +95,7 @@ namespace FoodRescue.Tests
         [InlineData("too-short")]
         public void Constructor_RejectsMissingOrShortSecret(string? secret)
         {
-            var cfg = Config(new() { ["JwtSettings:Secret"] = secret });
+            var cfg = Config(new() { ["Jwt:Key"] = secret });
             Assert.Throws<InvalidOperationException>(() => new TokenService(cfg));
         }
 
@@ -105,7 +105,7 @@ namespace FoodRescue.Tests
         [InlineData("abc")]
         public void Constructor_RejectsInvalidExpiry(string minutes)
         {
-            var cfg = Config(new() { ["JwtSettings:ExpiresMinutes"] = minutes });
+            var cfg = Config(new() { ["Jwt:ExpiresMinutes"] = minutes });
             Assert.Throws<InvalidOperationException>(() => new TokenService(cfg));
         }
     }

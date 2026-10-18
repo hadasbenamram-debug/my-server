@@ -56,7 +56,7 @@ namespace FoodRescue.Tests
             if (pickup == null) return;   // אין שעת איסוף אפשרית היום
 
             var before = DateTime.UtcNow;
-            var created = await Donations().CreateAsync(NewDonationDto(pickup.Value), SupplierUser);
+            var created = await Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId);
             var after = DateTime.UtcNow;
 
             _h.Fresh();
@@ -79,7 +79,7 @@ namespace FoodRescue.Tests
             if (local.TimeOfDay < TimeSpan.FromMinutes(5)) return;
 
             await Assert.ThrowsAsync<ArgumentException>(() =>
-                Donations().CreateAsync(NewDonationDto(TimeSpan.Zero), SupplierUser));
+                Donations().CreateAsync(NewDonationDto(TimeSpan.Zero), _h.Supplier.UserId));
         }
 
         // חדש: הספק עורך ומבטל תרומות שלו
@@ -89,7 +89,7 @@ namespace FoodRescue.Tests
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
             if (pickup == null) return;
-            var created = await Donations().CreateAsync(NewDonationDto(pickup.Value), SupplierUser);
+            var created = await Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId);
             _h.Fresh();
 
             var updated = await Donations().UpdateAsync(created.Id, new UpdateDonationDto
@@ -101,6 +101,82 @@ namespace FoodRescue.Tests
             Assert.Equal(2, updated.TotalWeightKg, 3);
             _h.Fresh();
             Assert.Equal(2, (await _h.Db.DonationFoodCategories.SingleAsync()).WeightKg, 3);
+        }
+
+        // מדריך התמונות: במסד נשמר רק שם הקובץ, בלי נתיב ובלי כתובת
+        [Fact]
+        public async Task Create_WithUploadedImage_StoresOnlyTheFileName()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            var fileName = Guid.NewGuid().ToString("N") + ".jpg";
+            await _h.ActionTokens.RegisterOwnedValueAsync(_h.Supplier.UserId, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
+
+            var dto = NewDonationDto(pickup.Value);
+            dto.Image = fileName;
+            var created = await Donations().CreateAsync(dto, _h.Supplier.UserId);
+
+            Assert.Equal(fileName, created.Image);
+            _h.Fresh();
+            Assert.Equal(fileName, (await _h.Db.Donations.SingleAsync(d => d.Id == created.Id)).Image);
+        }
+
+        [Fact]
+        public async Task Create_WithImagePathInsteadOfFileName_IsRejected()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            var fileName = Guid.NewGuid().ToString("N") + ".jpg";
+            await _h.ActionTokens.RegisterOwnedValueAsync(_h.Supplier.UserId, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
+
+            var dto = NewDonationDto(pickup.Value);
+            dto.Image = "/images/" + fileName;
+            await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(dto, _h.Supplier.UserId));
+        }
+
+        [Fact]
+        public async Task Create_ImageUploadedByAnotherUser_IsRejected()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            var fileName = Guid.NewGuid().ToString("N") + ".jpg";
+            await _h.ActionTokens.RegisterOwnedValueAsync(_h.AdminUser.Id, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
+
+            var dto = NewDonationDto(pickup.Value);
+            dto.Image = fileName;
+            await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(dto, _h.Supplier.UserId));
+        }
+
+        // מדריך JWT (IDOR): הספק נקבע לפי הטוקן. מנהל יוצר בשם ספק רק דרך נקודת הקצה של המנהלים.
+        [Fact]
+        public async Task CreateForSupplier_ByAdmin_AssignsTheChosenSupplier()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            var created = await Donations().CreateForSupplierAsync(_h.Supplier.Id, NewDonationDto(pickup.Value), _h.AdminUser.Id);
+
+            Assert.Equal(_h.Supplier.Id, created.SupplierId);
+            await Assert.ThrowsAsync<NotFoundException>(() =>
+                Donations().CreateForSupplierAsync(999999, NewDonationDto(pickup.Value), _h.AdminUser.Id));
+        }
+
+        [Fact]
+        public async Task Create_ByUserWithoutSupplierProfile_IsForbidden()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            await Assert.ThrowsAsync<ForbiddenException>(() =>
+                Donations().CreateAsync(NewDonationDto(pickup.Value), _h.AdminUser.Id));
         }
 
         [Fact]
@@ -121,6 +197,11 @@ namespace FoodRescue.Tests
 
             var other = new CurrentUserDto { UserId = otherUser.Id };
             await Assert.ThrowsAsync<NotFoundException>(() => Donations().CancelAsync(donation.Id, other, null));
+            await Assert.ThrowsAsync<NotFoundException>(() => Donations().UpdateAsync(donation.Id, new UpdateDonationDto
+            {
+                LatestPickupTime = new TimeSpan(20, 0, 0),
+                Categories = new List<DonationCategoryLineDto> { new() { CategoryId = _h.Category.Id, Quantity = 1, WeightKg = 1 } }
+            }, other));
         }
 
         [Fact]

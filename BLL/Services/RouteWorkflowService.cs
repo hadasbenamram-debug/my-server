@@ -168,9 +168,8 @@ namespace BLL.Services
 
         public async Task<List<Match>> StartRouteAsync(int routeId, int volunteerId)
         {
-            var matches = (await _matchRepository.GetByRouteIdAsync(routeId))
-                .Where(m => m.VolunteerId == volunteerId && m.IsActive)
-                .ToList();
+            // רק השידוכים הפעילים של המתנדב הזה במסלול (מסלול של מתנדב אחר = "לא נמצא")
+            var matches = await _matchRepository.GetActiveByRouteForVolunteerAsync(routeId, volunteerId);
 
             if (matches.Count == 0)
                 throw new NotFoundException("המסלול לא נמצא.");

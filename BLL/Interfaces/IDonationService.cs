@@ -1,4 +1,3 @@
-using DAL.Interfaces;
 using FoodRescue.DTOs;
 using Microsoft.AspNetCore.Http;
 using System.Collections.Generic;
@@ -14,13 +13,17 @@ namespace BLL.Interfaces
 
         Task<List<SupplierDonationSummaryDto>> GetMySupplierDonationsAsync(int userId);
         Task<IEnumerable<DonationResponseDto>> GetMyNgoDonationsAsync(CurrentUserDto currentUser);
-        Task<PagedResult<AdminDonationSummaryDto>> GetAllForAdminAsync(PageRequest page);
+        Task<PagedResponse<AdminDonationSummaryDto>> GetAllForAdminAsync(PageRequest page);
 
         // מחזיר null אם התרומה לא קיימת או שאין למשתמש הרשאה לראות אותה
         Task<DonationResponseDto?> GetByIdAsync(int donationId, CurrentUserDto currentUser);
 
         Task<IEnumerable<DonationResponseDto>> GetAvailableAsync(CurrentUserDto currentUser);
-        Task<DonationResponseDto> CreateAsync(CreateDonationDto dto, CurrentUserDto currentUser);
+        // ספק: הבעלים של התרומה נקבע לפי userId שהקונטרולר לקח מהטוקן
+        Task<DonationResponseDto> CreateAsync(CreateDonationDto dto, int userId);
+
+        // מנהל: יצירה בשם ספק שנבחר (נקודת קצה של מנהלים בלבד)
+        Task<DonationResponseDto> CreateForSupplierAsync(int supplierId, CreateDonationDto dto, int adminUserId);
 
         // חדש: הספק (או מנהל) יכול לערוך תרומה כל עוד היא ממתינה לשיבוץ
         Task<DonationResponseDto> UpdateAsync(int donationId, UpdateDonationDto dto, CurrentUserDto currentUser);

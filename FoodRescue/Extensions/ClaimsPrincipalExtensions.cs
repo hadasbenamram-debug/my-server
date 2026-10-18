@@ -1,7 +1,7 @@
 ﻿using FoodRescue.DTOs;
 using System.Security.Claims;
 
-namespace FoodRescue.Security
+namespace FoodRescue.Extensions
 {
     // קריאת זהות המשתמש מתוך ה-JWT. זה חלק מטיפול בבקשת HTTP ולכן נשאר בשכבת ה-API;
     // הקונטרולר מעביר את התוצאה ל-Service כ-DTO.

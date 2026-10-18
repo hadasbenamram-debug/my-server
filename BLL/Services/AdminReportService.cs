@@ -74,7 +74,7 @@ namespace BLL.Services
 
         // כל בקשות ההצטרפות של מתנדבים שממתינות לאישור
         public Task<List<PendingApprovalRequestDto>> GetPendingVolunteerRequestsAsync() =>
-            _approvals.GetPendingAsync(RequestedRole.Volunteer);
+            _approvals.GetPendingAsync(FoodRescue.DTOs.RequestedRole.Volunteer);
 
         // זמינות המתנדבים המאושרים - שורה לכל משבצת זמינות אמיתית (בעבר הוחזר "ראשון 08:00-16:00" לכולם)
         public async Task<List<VolunteerAvailabilitySummaryDto>> GetVolunteersAvailabilityAsync()

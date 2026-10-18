@@ -13,6 +13,7 @@ namespace FoodRescue.DTOs
         public DateTime CreatedAt { get; set; }
         public DateTime ExpirationTime { get; set; }
         public TimeSpan LatestPickupTime { get; set; }
+        public string? Image { get; set; }   // שם קובץ התמונה בלבד
     }
 
     // שורה ברשימת כל התרומות למנהל (GET api/Donations)
@@ -26,12 +27,13 @@ namespace FoodRescue.DTOs
         public DateTime ExpirationTime { get; set; }
         public double UrgencyScore { get; set; }
         public double PriorityScore { get; set; }
+        public string? Image { get; set; }   // שם קובץ התמונה בלבד
     }
 
     // תוצאת ניתוח תמונת תרומה (POST api/Donations/analyze-image)
     public class ImageAnalysisResponseDto
     {
-        public string FilePath { get; set; } = string.Empty;
+        public string Image { get; set; } = string.Empty;   // שם הקובץ בלבד
         public string? AiParsedData { get; set; }
         public string? Message { get; set; }
     }

@@ -23,7 +23,6 @@ namespace BLL.Services
     // Service עסקי של תרומות: הרשאות, ולידציות, חישובי עדיפות, תיאום עם שירותי התמונה, והמרה ל-DTO.
     public class DonationService : IDonationService
     {
-        private const string ImagesUrlPrefix = "/images/";
         private const string DonationNotFound = "התרומה לא נמצאה.";
         private static readonly TimeSpan UploadedImageLifetime = TimeSpan.FromMinutes(30);
 
@@ -109,9 +108,10 @@ namespace BLL.Services
 
             var result = await _imageAnalysisService.AnalyzeAsync(image, categories, cancellationToken);
 
+            // מחזירים רק את שם הקובץ. הלקוח מחבר אותו לכתובת תיקיית התמונות (/images/) כדי להציג את התמונה.
             return new ImageAnalysisResponseDto
             {
-                FilePath = ImagesUrlPrefix + uniqueFileName,
+                Image = uniqueFileName,
                 AiParsedData = result.AiParsedData,
                 Message = result.Message
             };
@@ -146,10 +146,14 @@ namespace BLL.Services
             return matches.Select(m => WithMatch(_mapper.Map<DonationResponseDto>(m.Donation), m)).ToList();
         }
 
-        public async Task<PagedResult<AdminDonationSummaryDto>> GetAllForAdminAsync(PageRequest page)
+        public async Task<PagedResponse<AdminDonationSummaryDto>> GetAllForAdminAsync(PageRequest page)
         {
             var result = await _donationRepository.GetPageWithSupplierAsync(page.Skip, page.PageSize);
-            return new PagedResult<AdminDonationSummaryDto>(_mapper.Map<List<AdminDonationSummaryDto>>(result.Items), result.TotalCount);
+            return new PagedResponse<AdminDonationSummaryDto>
+            {
+                Items = _mapper.Map<List<AdminDonationSummaryDto>>(result.Items),
+                TotalCount = result.TotalCount
+            };
         }
 
         public async Task<DonationResponseDto?> GetByIdAsync(int donationId, CurrentUserDto currentUser)
@@ -188,26 +192,28 @@ namespace BLL.Services
         // יצירה
         // =========================================================
 
-        public async Task<DonationResponseDto> CreateAsync(CreateDonationDto dto, CurrentUserDto currentUser)
+        // ספק יוצר תרומה בשם עצמו: הספק נקבע לפי המשתמש המחובר (מהטוקן), אף פעם לא מה-DTO.
+        public async Task<DonationResponseDto> CreateAsync(CreateDonationDto dto, int userId)
+        {
+            var supplier = await _supplierRepository.GetByUserIdAsync(userId)
+                           ?? throw new ForbiddenException("רק משתמש עם פרופיל ספק יכול ליצור תרומה.");
+
+            return await CreateForAsync(supplier, dto, userId);
+        }
+
+        // מנהל יוצר תרומה בשם ספק שבחר. מזהה הספק מגיע מהנתיב של נקודת קצה שמוגבלת למנהלים.
+        public async Task<DonationResponseDto> CreateForSupplierAsync(int supplierId, CreateDonationDto dto, int adminUserId)
+        {
+            var supplier = await _supplierRepository.GetByIdAsync(supplierId)
+                           ?? throw new NotFoundException("הספק לא נמצא.");
+
+            return await CreateForAsync(supplier, dto, adminUserId);
+        }
+
+        private async Task<DonationResponseDto> CreateForAsync(Supplier supplier, CreateDonationDto dto, int userId)
         {
             if (dto.Categories == null || !dto.Categories.Any())
                 throw new ArgumentException("יש לספק לפחות שורת קטגוריה אחת עבור התרומה.");
-
-            int userId = currentUser.UserId!.Value;
-
-            // מנהל יוצר תרומה בשם ספק שהוא בוחר; ספק יוצר תרומה בשם עצמו.
-            Supplier supplier;
-
-            if (currentUser.IsAdmin)
-            {
-                supplier = await _supplierRepository.GetByIdAsync(dto.SupplierId)
-                           ?? throw new ArgumentException("הספק שצוין לא נמצא.");
-            }
-            else
-            {
-                supplier = await _supplierRepository.GetByUserIdAsync(userId)
-                           ?? throw new ForbiddenException("רק משתמש עם פרופיל ספק יכול ליצור תרומה.");
-            }
 
             if (supplier.ApprovalStatus != ApprovalStatus.Approved)
                 throw new ForbiddenException("הספק טרם אושר על ידי מנהל, ולכן לא ניתן ליצור תרומות.");
@@ -225,20 +231,19 @@ namespace BLL.Services
 
             var donationEntity = _mapper.Map<Donation>(dto);
 
-            // תמונה מתקבלת רק אם הועלתה על ידי המשתמש הנוכחי דרך AnalyzeImageAsync (ועדיין בתוקף)
-            string safeImagePath = string.Empty;
-            if (!string.IsNullOrWhiteSpace(dto.ImageFilePath))
+            // תמונה מתקבלת רק אם הועלתה על ידי המשתמש הנוכחי דרך AnalyzeImageAsync (ועדיין בתוקף).
+            // במסד נשמר רק שם הקובץ - בלי נתיב ובלי כתובת.
+            string? imageFileName = null;
+            if (!string.IsNullOrWhiteSpace(dto.Image))
             {
-                var requestedFileName = ParseImageFileName(dto.ImageFilePath);
-                if (!await _actionTokens.TryUseOwnedValueAsync(userId, ActionTokenPurpose.ImageUpload, requestedFileName, consume: true))
+                imageFileName = ValidateImageFileName(dto.Image);
+                if (!await _actionTokens.TryUseOwnedValueAsync(userId, ActionTokenPurpose.ImageUpload, imageFileName, consume: true))
                     throw new ArgumentException("התמונה אינה תקפה או שלא הועלתה על ידי המשתמש הנוכחי. יש להעלות אותה מחדש.");
-
-                safeImagePath = ImagesUrlPrefix + requestedFileName;
             }
 
             // השלמת נתונים שהשרת קובע (לא הלקוח)
             donationEntity.Id = 0;
-            donationEntity.ImageFilePath = safeImagePath;
+            donationEntity.Image = imageFileName;
             donationEntity.GooglePlaceId = string.IsNullOrWhiteSpace(dto.GooglePlaceId) ? "N/A" : dto.GooglePlaceId.Trim();
             donationEntity.SupplierId = supplier.Id;
             donationEntity.CreatedAt = now;
@@ -350,17 +355,22 @@ namespace BLL.Services
         // ספק - רק התרומות שלו; מנהל - כל תרומה. אחרת 404 (בלי לחשוף שהתרומה קיימת)
         private async Task<Donation> LoadOwnedForUpdateAsync(int donationId, CurrentUserDto currentUser)
         {
-            var donation = await _donationRepository.GetForUpdateAsync(donationId)
-                           ?? throw new NotFoundException(DonationNotFound);
+            Donation? donation;
 
             if (currentUser.IsAdmin)
-                return donation;
+            {
+                donation = await _donationRepository.GetForUpdateAsync(donationId);
+            }
+            else
+            {
+                // מחפשים תרומה עם המזהה הזה *וגם* של הספק המחובר
+                var caller = await _caller.GetAsync(currentUser);
+                donation = caller.Supplier == null
+                    ? null
+                    : await _donationRepository.GetOwnedForUpdateAsync(donationId, caller.Supplier.Id);
+            }
 
-            var caller = await _caller.GetAsync(currentUser);
-            if (!caller.OwnsDonation(donation))
-                throw new NotFoundException(DonationNotFound);
-
-            return donation;
+            return donation ?? throw new NotFoundException(DonationNotFound);
         }
 
         private async Task ValidateCategoriesAsync(List<DonationCategoryLineDto>? categories)
@@ -416,14 +426,12 @@ namespace BLL.Services
             donation.UrgencyScore = hoursToExpiration > 0 ? Math.Round(Math.Min(100, 100 / hoursToExpiration), 2) : 100;
         }
 
-        private static string ParseImageFileName(string imageFilePath)
+        // הלקוח שולח בחזרה את שם הקובץ שקיבל מ-analyze-image. מקבלים רק שם קובץ נקי, בלי נתיב.
+        private static string ValidateImageFileName(string fileName)
         {
-            if (!imageFilePath.StartsWith(ImagesUrlPrefix, StringComparison.Ordinal))
-                throw new ArgumentException("נתיב התמונה אינו תקין.");
-
-            var name = imageFilePath.Substring(ImagesUrlPrefix.Length);
-            if (string.IsNullOrWhiteSpace(name) || name != Path.GetFileName(name) || name.Contains('/') || name.Contains('\\'))
-                throw new ArgumentException("נתיב התמונה אינו תקין.");
+            var name = fileName.Trim();
+            if (name.Length == 0 || name != Path.GetFileName(name) || name.Contains('/') || name.Contains('\\'))
+                throw new ArgumentException("שם קובץ התמונה אינו תקין.");
 
             return name;
         }

@@ -34,6 +34,13 @@ namespace DAL.Repositories
                 .FirstOrDefaultAsync(v => v.UserId == userId);
         }
 
+        public async Task<Volunteer?> GetOwnedAsync(int id, int userId)
+        {
+            return await _context.Volunteers
+                .Include(v => v.User)
+                .FirstOrDefaultAsync(v => v.Id == id && v.UserId == userId);
+        }
+
         public async Task<List<Volunteer>> GetAllWithUserAsync()
         {
             return await _context.Volunteers

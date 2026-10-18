@@ -1,4 +1,3 @@
-using DAL.Interfaces;
 using FoodRescue.DTOs;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -7,7 +6,7 @@ namespace BLL.Interfaces
 {
     public interface IMatchService
     {
-        Task<PagedResult<MatchResponseDto>> GetPageAsync(PageRequest page, MatchStatus? status);
+        Task<PagedResponse<MatchResponseDto>> GetPageAsync(PageRequest page, MatchStatus? status);
 
         // מחזיר null אם השידוך לא קיים או שהמשתמש לא משתתף בו
         Task<MatchResponseDto?> GetByIdAsync(int id, CurrentUserDto currentUser);

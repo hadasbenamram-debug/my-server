@@ -161,6 +161,19 @@ namespace BLL.Services
             return Task.CompletedTask;
         }
 
+        public IReadOnlyList<string> ListFileNames(DateTime createdBeforeUtc)
+        {
+            if (!Directory.Exists(_imagesFolder))
+                return Array.Empty<string>();
+
+            return Directory.EnumerateFiles(_imagesFolder)
+                .Where(path => File.GetCreationTimeUtc(path) <= createdBeforeUtc)
+                .Select(Path.GetFileName)
+                .Where(name => !string.IsNullOrEmpty(name))
+                .Select(name => name!)
+                .ToList();
+        }
+
         private string GetSafePath(string fileName)
         {
             if (string.IsNullOrWhiteSpace(fileName) ||

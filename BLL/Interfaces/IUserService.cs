@@ -1,4 +1,3 @@
-using DAL.Interfaces;
 using FoodRescue.DTOs;
 using System.Threading.Tasks;
 
@@ -81,7 +80,7 @@ namespace BLL.Interfaces
         /// <summary>Updates name and phone only. Email is the login identifier and is not changed here.</summary>
         Task<MyProfileDto?> UpdateMyProfileAsync(int userId, UpdateMyProfileDto dto);
 
-        Task<PagedResult<UserDto>> GetPageAsync(PageRequest page);
+        Task<PagedResponse<UserDto>> GetPageAsync(PageRequest page);
         Task<UserDto?> GetByIdAsync(int id);
     }
 }

@@ -1,4 +1,5 @@
-﻿using BLL.Algorithms;
+﻿using Microsoft.AspNetCore.Identity;
+using BLL.Algorithms;
 using DAL.Classes;
 using DAL.Interfaces;
 using Microsoft.Extensions.Configuration;
@@ -16,13 +17,16 @@ namespace BLL.Services
         private readonly IManagerRepository _managerRepository;
         private readonly IConfiguration _configuration;
         private readonly ILogger<AdminSeedService> _logger;
+        private readonly IPasswordHasher<User> _passwordHasher;
 
         public AdminSeedService(
             IUserRepository userRepository,
             IManagerRepository managerRepository,
             IConfiguration configuration,
-            ILogger<AdminSeedService> logger)
+            ILogger<AdminSeedService> logger,
+            IPasswordHasher<User> passwordHasher)
         {
+            _passwordHasher = passwordHasher;
             _userRepository = userRepository;
             _managerRepository = managerRepository;
             _configuration = configuration;
@@ -56,12 +60,12 @@ namespace BLL.Services
                     Name = adminName,
                     Email = adminEmail,
                     Phone = adminPhone,
-                    PasswordHash = PasswordHasher.Hash(adminPassword),
                     Role = UserRole.Admin,
                     IsEmailVerified = true,
                     IsPhoneVerified = true,
                     CreatedAt = DateTime.UtcNow
                 };
+                existingUser.PasswordHash = _passwordHasher.HashPassword(existingUser, adminPassword);
 
                 await _userRepository.AddAsync(existingUser);
             }

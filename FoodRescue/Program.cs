@@ -13,6 +13,7 @@ using DAL.Repositories;
 using FoodRescue.Hubs;
 using FoodRescue.Infrastructure;
 using FoodRescue.Middlewares;
+using FoodRescue.Extensions;
 using FoodRescue.Security;
 using Hangfire;
 using Hangfire.SqlServer;
@@ -206,7 +207,10 @@ builder.Services.AddScoped<NotificationDispatcher>();
 builder.Services.AddSingleton<ITokenService, TokenService>();
 builder.Services.AddScoped<IActionTokenService, ActionTokenService>();
 builder.Services.AddScoped<ILoginLockoutService, LoginLockoutService>();
+// ה-PasswordHasher של Microsoft (עם תמיכה באימות hash-ים בפורמט הישן של הפרויקט)
+builder.Services.AddScoped<Microsoft.AspNetCore.Identity.IPasswordHasher<DAL.Classes.User>, PasswordHasherWithLegacySupport>();
 builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<ISessionValidationService, SessionValidationService>();
 
 builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 
@@ -267,7 +271,10 @@ builder.Services.AddScoped<MaintenanceJobs>();
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 if (string.IsNullOrWhiteSpace(connectionString))
-    throw new InvalidOperationException("ConnectionStrings:DefaultConnection is not configured.");
+    throw new InvalidOperationException(
+        "ConnectionStrings:DefaultConnection is missing. Set it with User Secrets " +
+        "(dotnet user-secrets set \"ConnectionStrings:DefaultConnection\" \"...\") " +
+        "or with the environment variable ConnectionStrings__DefaultConnection.");
 
 builder.Services.AddDbContext<FoodRescueDbContext>(options => options.UseSqlServer(connectionString));
 
@@ -291,12 +298,11 @@ if (string.IsNullOrWhiteSpace(configuredImagesFolder))
 var imagesFolder = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, configuredImagesFolder));
 Directory.CreateDirectory(imagesFolder);
 
-builder.Services.AddScoped<IImageService>(sp =>
+// ImageService שומר רק את נתיב התיקייה, שלא משתנה, ולכן מופע אחד לכל האפליקציה מספיק (Singleton).
+// הבנאי מקבל את הנתיב כמחרוזת, וה-DI לא יודע לבד איזו מחרוזת לתת לו - לכן יוצרים את המופע בעצמנו.
+builder.Services.AddSingleton<IImageService>(sp =>
     new ImageService(imagesFolder, sp.GetRequiredService<ILogger<ImageService>>()));
-builder.Services.AddScoped(sp => new OrphanImageCleanupService(
-    sp.GetRequiredService<IDonationRepository>(),
-    imagesFolder,
-    sp.GetRequiredService<ILogger<OrphanImageCleanupService>>()));
+builder.Services.AddScoped<OrphanImageCleanupService>();
 
 builder.Services.AddHttpClient<IImageAnalysisService, GeminiImageAnalysisService>(client =>
 {
@@ -320,14 +326,15 @@ builder.Services.AddHangfireServer();
 // JWT Authentication
 // =========================================================
 
-var jwtSection = builder.Configuration.GetSection("JwtSettings");
-var jwtSecret = jwtSection["Secret"];
+// הערכים שאינם סודיים (Issuer, Audience, ExpiresMinutes) ב-appsettings.json. המפתח: משתנה סביבה Jwt__Key או User Secrets.
+var jwtSection = builder.Configuration.GetSection("Jwt");
+var jwtSecret = jwtSection["Key"];
 
 if (string.IsNullOrWhiteSpace(jwtSecret))
-    throw new InvalidOperationException("JwtSettings:Secret is not configured. Set it via user-secrets or environment variables.");
+    throw new InvalidOperationException("Jwt:Key is missing. Set the environment variable Jwt__Key, or in development: dotnet user-secrets set \"Jwt:Key\" \"<random value of at least 32 characters>\".");
 
 if (Encoding.UTF8.GetByteCount(jwtSecret) < 32)
-    throw new InvalidOperationException("JwtSettings:Secret must be at least 32 bytes long (use a random 256-bit value).");
+    throw new InvalidOperationException("Jwt:Key must be at least 32 bytes long (HS256 needs a 256-bit key). Use a long random value.");
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

@@ -1,8 +1,4 @@
-using DAL.Classes;
-using DAL.Interfaces;
 using FoodRescue.DTOs;
-using ApprovalStatus = DAL.Classes.ApprovalStatus;
-using RequestedRole = DAL.Classes.RequestedRole;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -11,9 +7,10 @@ namespace BLL.Interfaces
     // מנגנון האישור היחיד במערכת. גם ApprovalRequestsController וגם /{id}/approve של כל ישות
     // עוברים כאן, כך שבכל המסלולים: נשלח מייל, נשמר HandledByManagerId, בקשת האישור מתעדכנת
     // (גם בדחייה), והתפקיד (Role) של המשתמש נקבע באותו אופן.
+    // הממשק עובד רק עם DTOs (כולל ה-enum RequestedRole של DTOs), כדי שהקונטרולרים לא יכירו טיפוסים של DAL.
     public interface IApprovalRequestService
     {
-        Task<PagedResult<ApprovalRequestResponseDto>> GetPageAsync(PageRequest page);
+        Task<PagedResponse<ApprovalRequestResponseDto>> GetPageAsync(PageRequest page);
         Task<ApprovalRequestResponseDto?> GetByIdAsync(int id);
         Task<List<PendingApprovalRequestDto>> GetPendingAsync(RequestedRole? role);
 

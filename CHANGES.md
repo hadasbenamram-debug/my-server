@@ -4,6 +4,19 @@
 
 ## אחרי שמושכים את הקוד
 
+0. **סודות (חובה, פעם אחת בכל מחשב):** אין יותר אף סוד בקבצים שבפרויקט, גם לא מחרוזת החיבור. מגדירים אותם ב-User Secrets
+   (ב-Visual Studio: קליק ימני על הפרויקט `FoodRescue` ← **Manage User Secrets**), או מהטרמינל בתיקיית `FoodRescue`:
+
+   ```powershell
+   dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=(localdb)\mssqllocaldb;Database=FoodRescueDb;Trusted_Connection=True;MultipleActiveResultSets=true"
+   dotnet user-secrets set "Jwt:Key" "<מחרוזת אקראית של 32 תווים לפחות>"
+   dotnet user-secrets set "AdminSeed:Email" "<מייל המנהל>"
+   dotnet user-secrets set "AdminSeed:Password" "<סיסמת המנהל>"
+   ```
+
+   - בשרת משתמשים במשתני סביבה עם קו תחתון כפול: `ConnectionStrings__DefaultConnection`, `Jwt__Key` וכו'.
+   - **שם ההגדרה של מפתח ה-JWT השתנה** מ-`JwtSettings:Secret` ל-`Jwt:Key` (כמו במדריך). אם כבר הוגדר מפתח, מגדירים את **אותו ערך** בשם החדש. כך גם גופי ההודעות שכבר הוצפנו בתור נשארים קריאים.
+   - כשסוד חסר, השרת לא עולה ומציג הודעה שמסבירה בדיוק מה להגדיר.
 1. **Migration:** מריצים `dotnet ef database update` מתיקיית `FoodRescue`.
    - ה-Migration נקרא `WorkflowSecurityAndOutbox`. הוא מוסיף טבלאות ושדות חדשים, ומתקן נתונים קיימים:
      - חותמת אבטחה לכל משתמש.
@@ -13,12 +26,65 @@
      - תרומות שפג תוקפן מסומנות Expired.
      - נקבע ResponseDeadline לשידוכים שממתינים.
    - כל המשתמשים יצטרכו להתחבר מחדש פעם אחת.
+   - ה-Migration השני, `DonationImageFileNameOnly`, משנה את שם העמודה `ImageFilePath` ל-`Image` בלי לאבד נתונים, ומשאיר בה רק את שם הקובץ (מסיר את הקידומת `/images/`).
 2. **הגדרות חדשות ב-appsettings, כולן אופציונליות:**
-   - `Notifications:EncryptionKey`: מפתח להצפנת גוף ההודעות (Base64 של 32 בתים). אם הוא חסר, המפתח נגזר מ-`JwtSettings:Secret`.
+   - `Notifications:EncryptionKey`: מפתח להצפנת גוף ההודעות (Base64 של 32 בתים). אם הוא חסר, המפתח נגזר מ-`Jwt:Key`.
    - `Sms:Provider`: `Log` (ברירת מחדל, כותב ליומן) או `Twilio` (יחד עם `AccountSid`, `AuthToken` ו-`From`).
    - `MatchingPolicy`: ברירות המחדל של המנוע. מנהל יכול לשנות אותן במסך ההגדרות, והשינויים נשמרים במסד.
    - `ForwardedHeaders:KnownProxies`: אם השרת רץ מאחורי Reverse Proxy.
-3. **בדיקות:** `dotnet test` מתיקיית הפתרון. הפרויקט `Tests` נוסף ל-`FoodRescue.slnx`, ויש בו 162 בדיקות.
+3. **בדיקות:** `dotnet test` מתיקיית הפתרון. הפרויקט `Tests` נוסף ל-`FoodRescue.slnx`, ויש בו 174 בדיקות.
+4. **סיסמאות קיימות:** אין צורך לעשות דבר. סיסמה שנשמרה בפורמט הישן עדיין מתקבלת, ובהתחברות הבאה היא נשמרת מחדש עם ה-PasswordHasher של Microsoft.
+
+---
+
+## התאמה למדריכים
+
+### ההבדל בין Repository ל-Service
+
+| הדרישה | מה נעשה |
+|---|---|
+| Repositories ב-DAL, Services ב-BLL/Services | ה-Repositories ב-`DAL/Repositories`. כל ה-Services עברו ל-`BLL/Services`: גם מה שהיה ב-`BLL/Notifications` וב-`BLL/Security` (עכשיו `BLL/Services/Notifications` ו-`BLL/Services/Security`), וגם `MatchingPolicyProvider`. `LoginAttempt` עבר ל-`DAL/Classes`. |
+| ה-API מפנה ל-DAL רק לרישום ב-DI | `SecurityStampValidator` כבר לא קורא ל-`IUserRepository`. הבדיקה עברה ל-`ISessionValidationService` ב-BLL, שמחזיר `SessionStateDto`. |
+| הקונטרולר מכיר רק Services ו-DTOs | ה-Services מחזירים `PagedResponse<T>` (DTO) במקום `PagedResult<T>` של DAL. `IApprovalRequestService` והקונטרולרים משתמשים ב-enum `RequestedRole` של DTOs, וההמרה ל-enum של DAL נעשית ב-Service. |
+| לוגיקה עסקית לא ב-DAL | `DonationExtensions` (חישובי משקל ופגיעות) היה ב-namespace של DAL. עכשיו הוא ב-`BLL.Services`. |
+| בדיקה שזה נשמר | `ArchitectureTests` נכשל אם קונטרולר, Hub או רכיב אבטחה ב-API משתמש בטיפוס של DAL. הוא נכשל גם אם ממשק Service שהקונטרולרים מקבלים חושף טיפוס של DAL, אם Service משתמש ב-DbContext, או אם DAL מכיר את DTOs או את BLL. |
+
+### הגנה על מידע רגיש
+
+| הדרישה | מה נעשה |
+|---|---|
+| אין סודות בקבצי appsettings | מחרוזת החיבור הוסרה מ-`appsettings.Development.json`. כל הסודות ריקים ב-`appsettings.json`. |
+| User Secrets בפיתוח, משתני סביבה בשרת | הקוד קורא את כל הסודות לפי שם, והערך מגיע מ-User Secrets או ממשתנה סביבה. גם `DesignTimeDbContextFactory` (בשביל `Add-Migration` ו-`Update-Database`) קורא עכשיו User Secrets ומשתני סביבה. |
+| כשל ברור כשסוד חסר | מחרוזת חיבור חסרה, או `Jwt:Key` חסר או קצר מ-32 בתים, עוצרים את העלייה עם הודעה שמפרטת את הפקודה המדויקת. |
+| בדיקה לפני קומיט | `FoodRescue.csproj.user` הוצא מ-Git (הוא כבר היה ב-`.gitignore`). בהיסטוריית ה-Git לא נמצאו סודות. |
+
+### JWT
+
+| הדרישה | מה נעשה |
+|---|---|
+| `Jwt:Key` במשתנה הסביבה `Jwt__Key` | ההגדרות נקראות מהמקטע `Jwt` (`Issuer`, `Audience`, `ExpiresMinutes`, `Key`), והמפתח ריק ב-`appsettings.json`. |
+| hash עם PasswordHasher של Microsoft | `IPasswordHasher<User>` מוזרק לכל מקום שיוצר או בודק סיסמה. `PasswordHasherWithLegacySupport` משתמש ב-`PasswordHasher<User>` של Microsoft, ורק מאמת hash-ים ישנים כדי לשמור אותם מחדש. |
+| בטוקן רק מזהה, מייל ותפקיד | המייל עבר ל-`ClaimTypes.Email` (במקום `sub`). נשארו גם `sstamp` (ביטול טוקנים אחרי החלפת סיסמה), `jti` ו-`iat`. אף אחד מהם לא רגיש. |
+| ה-DTO לא מכיל שדות שהלקוח לא קובע | `CreateDonationDto` כבר לא מכיל `SupplierId`. ספק יוצר תרומה בשם עצמו, לפי הטוקן. מנהל יוצר בשם ספק בנקודה נפרדת: `POST api/admin/suppliers/{supplierId}/donations` (מנהלים בלבד). |
+| חיפוש לפי מזהה וגם לפי בעלים | נוספו ל-Repositories מתודות `GetOwned...`: תרומה של ספק, שידוך של מתנדב, שידוכי מסלול של מתנדב, פרופיל מתנדב ופרופיל ספק. ה-Services משתמשים בהן, ומחזירים 404 כשהאובייקט לא קיים או לא שייך למשתמש. |
+| `ClaimsPrincipalExtensions` | עבר ל-`FoodRescue/Extensions`. |
+| בדיקות ב-`.http` | נוספו: משתמש רגיל שיוצר תרומה בשם ספק מקבל 403, ומשתמש שמבטל תרומה של מישהו אחר מקבל 404. |
+
+### העלאת תמונה
+
+| הדרישה | מה נעשה |
+|---|---|
+| במסד רק שם הקובץ | השדה נקרא `Image` (בישות וב-DTOs) ומכיל רק שם, למשל `a1b2….jpg`. `analyze-image` מחזיר `image` (שם בלבד), והלקוח שולח אותו בחזרה ביצירת התרומה. נתיב או כתובת נדחים. |
+| Ignore ב-AutoMapper | `CreateDonationDto → Donation` מתעלם מ-`Image`. השירות ממלא אותו רק אחרי שבדק שהמשתמש עצמו העלה את הקובץ. |
+| רק ImageService שומר ומוחק קבצים | `OrphanImageCleanupService` כבר לא ניגש לדיסק. הוא מקבל את רשימת הקבצים מ-`IImageService.ListFileNames` ומוחק דרך `IImageService.Delete`. |
+| `AddSingleton` לשירות התמונות | `ImageService` רשום כ-Singleton עם נתיב התיקייה. |
+| הלקוח מחבר כתובת + שם | `src/utils/images.ts` מגדיר את `IMAGES_URL = '/images/'` במקום אחד. הקומפוננטה `DonationImage` מציגה את התמונה בפרטי התרומה, בתרומות הפתוחות של הספק, בתרומות הנכנסות לעמותה ובניהול התרומות. |
+
+### נשאר כמו שהוא, בכוונה
+
+- **העלאה בשני שלבים:** קודם `analyze-image`, ואחר כך יצירת התרומה, ולא טופס אחד. כך ה-AI ממלא את הטופס מראש מהתמונה.
+- **שמות הנתיבים:** `api/auth/register` ו-`api/auth/login`, ולא `api/user/...`. המדריך מציין במפורש שאפשר להתאים שמות.
+- **שמירת הטוקן ב-`localStorage`:** כמו במדריך JWT.
 
 ---
 

@@ -11,6 +11,9 @@ namespace DAL.Interfaces
         Task<List<Volunteer>> GetAvailableVolunteersAsync(DateTime todayUtc);
 
         Task<Volunteer?> GetByUserIdAsync(int userId);
+
+        // מתנדב עם המזהה הזה *וגם* של המשתמש הזה (null = לא קיים או לא שלו)
+        Task<Volunteer?> GetOwnedAsync(int id, int userId);
         Task<List<Volunteer>> GetAllWithUserAsync();
 
         // מתנדבים בסטטוס אישור מסוים (כולל פרטי המשתמש). take = הגבלת מספר התוצאות.

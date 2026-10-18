@@ -242,8 +242,9 @@ namespace DAL.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
 
-                    b.Property<string>("ImageFilePath")
-                        .HasColumnType("nvarchar(max)");
+                    b.Property<string>("Image")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<TimeSpan>("LatestPickupTime")
                         .HasColumnType("time");
