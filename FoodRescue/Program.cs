@@ -431,7 +431,7 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.UseStaticFiles();
+// רק תמונות התרומות, מתיקיית Images שברמת ה-Solution, בכתובת /images. אין קבצים ציבוריים ב-wwwroot.
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(imagesFolder),
