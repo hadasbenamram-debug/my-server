@@ -40,7 +40,7 @@ namespace FoodRescue.Tests
         public void Dispose() => _h.Dispose();
 
         [Fact]
-        public async Task Register_NormalizesEmail_ForcesUserRole_AndReturnsToken()
+        public async Task Register_NormalizesEmail_ForcesUserRole_AndDoesNotReturnToken()
         {
             var result = await Create().RegisterAsync(new RegisterDto
             {
@@ -48,7 +48,7 @@ namespace FoodRescue.Tests
             });
 
             Assert.True(result.Succeeded);
-            Assert.False(string.IsNullOrEmpty(result.Response!.Token));
+            Assert.Null(result.Response);   // את הטוקן מקבלים רק בהתחברות
             var saved = await Db.Users.SingleAsync();
             Assert.Equal("dana@example.com", saved.Email);
             Assert.Equal(UserRole.User, saved.Role);

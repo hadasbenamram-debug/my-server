@@ -16,17 +16,17 @@ namespace FoodRescue.Tests
             new AuthController(userService.Object);
 
         [Fact]
-        public async Task Register_Success_ReturnsOkWithAuthResponse()
+        public async Task Register_Success_ReturnsOkWithoutToken()
         {
-            var response = new AuthResponseDto { Token = "t", Role = "User" };
+            // ההרשמה רק יוצרת את המשתמש. את הטוקן מקבלים בהתחברות
             var service = new Mock<IUserService>();
             service.Setup(s => s.RegisterAsync(It.IsAny<RegisterDto>()))
-                   .ReturnsAsync(AuthResult.Success(response));
+                   .ReturnsAsync(AuthResult.Success());
 
             var result = await CreateController(service).Register(new RegisterDto());
 
             var ok = Assert.IsType<OkObjectResult>(result);
-            Assert.Same(response, ok.Value);
+            Assert.IsType<MessageResponse>(ok.Value);
         }
 
         [Fact]
