@@ -43,7 +43,8 @@ namespace BLL.Interfaces
 
         public bool Succeeded => Error == AuthError.None;
 
-        public static AuthResult Success(AuthResponseDto response) =>
+        // בהרשמה אין טוקן (Response נשאר null). בהתחברות מוחזר הטוקן.
+        public static AuthResult Success(AuthResponseDto? response = null) =>
             new() { Error = AuthError.None, Response = response };
 
         public static AuthResult Fail(AuthError error, string message) =>
@@ -54,7 +55,7 @@ namespace BLL.Interfaces
 
     public interface IUserService
     {
-        /// <summary>Creates a regular user (Role is always User) and returns a session token.</summary>
+        /// <summary>Creates a regular user (Role is always User). No token here: the token is issued only by LoginAsync.</summary>
         Task<AuthResult> RegisterAsync(RegisterDto dto);
 
         /// <summary>Validates credentials, enforces login lock-out (per e-mail + IP) and NGO/Supplier approval status.</summary>
