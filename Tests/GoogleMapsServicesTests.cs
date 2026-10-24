@@ -113,5 +113,51 @@ namespace FoodRescue.Tests
             await Assert.ThrowsAsync<ServiceUnavailableException>(() => Geocoder(google, key: "").GeocodeAsync("הרצל 10, תל אביב"));
             Assert.Null(google.LastRequestUri);
         }
+
+        // ---------------- Static Maps: תמונת מפה דרך השרת ----------------
+
+        private static GoogleStaticMapService StaticMaps(FakeGoogle google) =>
+            new(new HttpClient(google) { BaseAddress = new Uri(GoogleBaseUrl) },
+                TestDb.Config(new Dictionary<string, string?> { ["GoogleMaps:ApiKey"] = "test-key" }),
+                TestDb.Log<GoogleStaticMapService>());
+
+        [Fact]
+        public void StaticMap_Request_HasNumberedPinsAndRoute_SkipsPinsWithoutLocation_AndHasNoKey()
+        {
+            var request = GoogleStaticMapService.BuildRequestPath(new[]
+            {
+                new MapPin(32.1, 34.8, "e08a1e", '1'),
+                new MapPin(32.2, 34.9, "#159AA0", '2'),
+                new MapPin(0, 0, "33383a")          // 0,0 = אין מיקום - לא מוצג
+            }, encodedPolyline: null, connectPins: true);
+
+            Assert.StartsWith("staticmap?", request);
+            Assert.Contains(Uri.EscapeDataString("color:0xe08a1e|label:1|32.1,34.8"), request);
+            Assert.Contains(Uri.EscapeDataString("color:0x159aa0|label:2|32.2,34.9"), request);
+            Assert.DoesNotContain(Uri.EscapeDataString("color:0x33383a"), request);
+            Assert.Contains("&path=", request);
+            Assert.DoesNotContain("key=", request);
+        }
+
+        [Fact]
+        public async Task StaticMap_ReturnsTheImageFromGoogle()
+        {
+            var google = new FakeGoogle(HttpStatusCode.OK, "fake-png-bytes", "image/png");
+
+            var image = await StaticMaps(google).RenderAsync(new[] { new MapPin(32.1, 34.8, "e08a1e") });
+
+            Assert.Equal("image/png", image.ContentType);
+            Assert.NotEmpty(image.Content);
+            Assert.Contains("key=test-key", google.LastRequestUri!.Query);
+        }
+
+        [Fact]
+        public async Task StaticMap_ErrorFromGoogle_IsServiceUnavailable()
+        {
+            var google = new FakeGoogle(HttpStatusCode.Forbidden, "The Google Maps Platform server rejected your request.", "text/plain");
+
+            await Assert.ThrowsAsync<ServiceUnavailableException>(
+                () => StaticMaps(google).RenderAsync(new[] { new MapPin(32.1, 34.8, "e08a1e") }));
+        }
     }
 }
