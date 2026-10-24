@@ -174,7 +174,8 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // =========================================================
-// Google Maps: Routes API (מרחקים וזמני נסיעה) ו-Geocoding API (כתובת -> מיקום מדויק).
+// Google Maps: Routes API (מרחקים וזמני נסיעה), Geocoding API (כתובת -> מיקום מדויק)
+// ו-Maps Static API (תמונות המפה שהלקוח מציג).
 // המפתח נשאר בשרת בלבד (User Secrets / משתנה הסביבה GoogleMaps__ApiKey). הלקוח מקבל רק את התוצאות.
 // מרחקים נשמרים במטמון (DistanceCacheMinutes, ברירת מחדל 3 שעות) לפי קואורדינטות מעוגלות,
 // כך שהמנוע לא פונה ל-Google בכל ריצה (בעבר: ריצה כל 2 דקות ומטמון של 2 דקות).
@@ -203,6 +204,13 @@ builder.Services.AddHttpClient<IGeocodingService, GoogleGeocodingService>(client
 {
     client.BaseAddress = googleMapsBaseUrl;
     client.Timeout = TimeSpan.FromSeconds(10);
+});
+
+// תמונות מפה: השרת מביא את התמונה מ-Google ומחזיר אותה ללקוח (api/map/.../image)
+builder.Services.AddHttpClient<IStaticMapService, GoogleStaticMapService>(client =>
+{
+    client.BaseAddress = googleMapsBaseUrl;
+    client.Timeout = TimeSpan.FromSeconds(15);
 });
 
 // =========================================================

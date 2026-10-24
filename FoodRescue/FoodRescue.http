@@ -334,3 +334,19 @@ Content-Type: application/json
   "registrationNumber": "580000000",
   "regionId": 1
 }
+
+### ---------------------------------------------------------------------
+### 12. Maps as images from the server (the browser never gets the Google key)
+### EXPECT: 200 image/png
+GET {{host}}/api/map/all-entities/image?hide=volunteer
+Authorization: Bearer {{adminToken}}
+
+###
+### EXPECT: 403 (Admin only)
+GET {{host}}/api/map/all-entities/image
+Authorization: Bearer {{tokenA}}
+
+###
+### A route of someone else (or a route that does not exist) -> EXPECT: 404
+GET {{host}}/api/map/routes/1/image
+Authorization: Bearer {{tokenB}}
