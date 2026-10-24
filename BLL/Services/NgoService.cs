@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Identity;
 using AutoMapper;
 using BLL.Algorithms;
 using BLL.Exceptions;
+using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
 using BLL.Notifications;
 using DAL.Classes;
@@ -33,6 +34,7 @@ namespace BLL.Services
         private readonly IMapper _mapper;
         private readonly ILogger<NgoService> _logger;
         private readonly IPasswordHasher<User> _passwordHasher;
+        private readonly IGeocodingService _geocoding;
 
         public NgoService(
             INgoRepository ngoRepository,
@@ -44,7 +46,8 @@ namespace BLL.Services
             INotificationService notifications,
             IMapper mapper,
             ILogger<NgoService> logger,
-            IPasswordHasher<User> passwordHasher)
+            IPasswordHasher<User> passwordHasher,
+            IGeocodingService geocoding)
         {
             _passwordHasher = passwordHasher;
             _ngoRepository = ngoRepository;
@@ -56,6 +59,7 @@ namespace BLL.Services
             _notifications = notifications;
             _mapper = mapper;
             _logger = logger;
+            _geocoding = geocoding;
         }
 
         public async Task<object> GetNgosForCallerAsync(CurrentUserDto currentUser)
@@ -116,6 +120,9 @@ namespace BLL.Services
             var close = dto.SunToThuCloseTime ?? DefaultClose;
             ValidateHours(open, close, dto.ReceivesOnFriday, dto.FridayOpenTime, dto.FridayCloseTime);
 
+            // המיקום המדויק לפי הכתובת (Google Maps) - לפני הטרנזקציה, כדי לא להחזיק אותה פתוחה בזמן הפנייה ל-Google
+            var location = await _geocoding.GeocodeAsync(dto.Address);
+
             string tempPassword = TempPasswordGenerator.Generate();
             Ngo? ngoEntity = null;
 
@@ -142,8 +149,9 @@ namespace BLL.Services
                     NgoName = dto.NgoName.Trim(),
                     DailyCapacity = dto.DailyCapacity,
                     Address = dto.Address.Trim(),
-                    Latitude = dto.Latitude != 0 ? dto.Latitude : 32.0853,
-                    Longitude = dto.Longitude != 0 ? dto.Longitude : 34.7818,
+                    // המיקום נקבע בשרת לפי הכתובת, לא מהלקוח
+                    Latitude = location.Latitude,
+                    Longitude = location.Longitude,
                     RegistrationNumber = dto.RegistrationNumber.Trim(),
                     RegionId = dto.RegionId,
                     SunToThuOpenTime = open,
@@ -151,7 +159,7 @@ namespace BLL.Services
                     ReceivesOnFriday = dto.ReceivesOnFriday,
                     FridayOpenTime = dto.ReceivesOnFriday ? dto.FridayOpenTime : null,
                     FridayCloseTime = dto.ReceivesOnFriday ? dto.FridayCloseTime : null,
-                    GooglePlaceId = "N/A",
+                    GooglePlaceId = location.PlaceId,
                     ApprovalStatus = ApprovalStatus.Pending
                 };
 
@@ -179,9 +187,13 @@ namespace BLL.Services
             var close = dto.SunToThuCloseTime ?? ngo.SunToThuCloseTime;
             ValidateHours(open, close, dto.ReceivesOnFriday, dto.FridayOpenTime, dto.FridayCloseTime);
 
+            // בכל שמירה המיקום מחושב מחדש לפי הכתובת (Google Maps), כך שגם מיקום ישן ושגוי מתתקן
+            var location = await _geocoding.GeocodeAsync(dto.Address);
+
             ngo.Address = dto.Address.Trim();
-            ngo.Latitude = dto.Latitude;
-            ngo.Longitude = dto.Longitude;
+            ngo.Latitude = location.Latitude;
+            ngo.Longitude = location.Longitude;
+            ngo.GooglePlaceId = location.PlaceId;
             ngo.SunToThuOpenTime = open;
             ngo.SunToThuCloseTime = close;
             ngo.ReceivesOnFriday = dto.ReceivesOnFriday;

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Identity;
 using AutoMapper;
 using BLL.Algorithms;
 using BLL.Exceptions;
+using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
 using BLL.Notifications;
 using DAL.Classes;
@@ -23,6 +24,7 @@ namespace BLL.Services
         private readonly IUserRepository _userRepository;
         private readonly IApprovalRequestService _approvals;
         private readonly ILicenseFileService _licenseFileService;
+        private readonly IGeocodingService _geocoding;
         private readonly IUnitOfWork _unitOfWork;
         private readonly INotificationService _notifications;
         private readonly IMapper _mapper;
@@ -34,6 +36,7 @@ namespace BLL.Services
             IUserRepository userRepository,
             IApprovalRequestService approvals,
             ILicenseFileService licenseFileService,
+            IGeocodingService geocoding,
             IUnitOfWork unitOfWork,
             INotificationService notifications,
             IMapper mapper,
@@ -45,6 +48,7 @@ namespace BLL.Services
             _userRepository = userRepository;
             _approvals = approvals;
             _licenseFileService = licenseFileService;
+            _geocoding = geocoding;
             _unitOfWork = unitOfWork;
             _notifications = notifications;
             _mapper = mapper;
@@ -95,14 +99,19 @@ namespace BLL.Services
             if (dto.LicenseFile == null || dto.LicenseFile.Length == 0)
                 throw new ArgumentException("חובה לצרף קובץ רישיון עסק.");
 
+            // המיקום המדויק לפי הכתובת (Google Maps). לפני שמירת הקובץ, כדי שכתובת שגויה לא תשאיר קובץ יתום.
+            var location = await _geocoding.GeocodeAsync(dto.Address);
+
             // שמירת קובץ הרישיון דרך Service העזר (בתיקייה פרטית; במסד נשמר רק שם הקובץ)
             string licenseFileName = await _licenseFileService.SaveLicenseAsync(dto.LicenseFile);
 
             var supplierEntity = _mapper.Map<Supplier>(dto);
             supplierEntity.UserId = userId;
+            supplierEntity.Latitude = location.Latitude;
+            supplierEntity.Longitude = location.Longitude;
             supplierEntity.BusinessLicenseFilePath = licenseFileName;
             supplierEntity.ApprovalStatus = ApprovalStatus.Pending;
-            supplierEntity.GooglePlaceId = "N/A";
+            supplierEntity.GooglePlaceId = location.PlaceId;
 
             try
             {
@@ -132,6 +141,9 @@ namespace BLL.Services
             // יכול להוסיף לחשבון של מישהו אחר פרופיל "ממתין לאישור" ולחסום לו את ההתחברות.
             if (await _userRepository.GetByEmailAsync(email) != null)
                 throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
+
+            // המיקום המדויק לפי הכתובת (Google Maps). לפני שמירת הקובץ, כדי שכתובת שגויה לא תשאיר קובץ יתום.
+            var location = await _geocoding.GeocodeAsync(dto.Address);
 
             // שמירת קובץ הרישיון (בדיקת סיומת, גודל ותוכן) לפני יצירת המשתמש
             string licenseFileName = await _licenseFileService.SaveLicenseAsync(dto.LicenseFile);
@@ -163,12 +175,13 @@ namespace BLL.Services
                         UserId = user.Id,
                         BusinessName = dto.BusinessName.Trim(),
                         Address = dto.Address.Trim(),
-                        Latitude = dto.Latitude != 0 ? dto.Latitude : 32.0853,
-                        Longitude = dto.Longitude != 0 ? dto.Longitude : 34.7818,
+                        // המיקום נקבע בשרת לפי הכתובת, לא מהלקוח
+                        Latitude = location.Latitude,
+                        Longitude = location.Longitude,
                         TaxId = dto.TaxId.Trim(),
                         // שם הקובץ נקבע בשרת. הלקוח לא שולח נתיב.
                         BusinessLicenseFilePath = licenseFileName,
-                        GooglePlaceId = "N/A",
+                        GooglePlaceId = location.PlaceId,
                         ApprovalStatus = ApprovalStatus.Pending
                     };
 

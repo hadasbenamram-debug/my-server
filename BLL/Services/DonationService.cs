@@ -218,6 +218,10 @@ namespace BLL.Services
             if (supplier.ApprovalStatus != ApprovalStatus.Approved)
                 throw new ForbiddenException("הספק טרם אושר על ידי מנהל, ולכן לא ניתן ליצור תרומות.");
 
+            // מקום האיסוף הוא המיקום של העסק. בלי מיקום אי אפשר לתכנן מסלול איסוף.
+            if (supplier.Latitude == 0 && supplier.Longitude == 0)
+                throw new ArgumentException("לעסק אין עדיין מיקום על המפה, ולכן לא ניתן ליצור תרומה. יש לפנות למנהל המערכת.");
+
             await ValidateCategoriesAsync(dto.Categories);
 
             // בדיקה לפני השמירה: אזור שלא קיים היה מפיל את ה-INSERT על מפתח זר (500).
@@ -244,7 +248,10 @@ namespace BLL.Services
             // השלמת נתונים שהשרת קובע (לא הלקוח)
             donationEntity.Id = 0;
             donationEntity.Image = imageFileName;
-            donationEntity.GooglePlaceId = string.IsNullOrWhiteSpace(dto.GooglePlaceId) ? "N/A" : dto.GooglePlaceId.Trim();
+            // המיקום המדויק של העסק (נקבע בשרת לפי הכתובת, דרך Google Maps) - לא מה שהלקוח שולח
+            donationEntity.Latitude = supplier.Latitude;
+            donationEntity.Longitude = supplier.Longitude;
+            donationEntity.GooglePlaceId = string.IsNullOrWhiteSpace(supplier.GooglePlaceId) ? "N/A" : supplier.GooglePlaceId;
             donationEntity.SupplierId = supplier.Id;
             donationEntity.CreatedAt = now;
             donationEntity.LatestPickupTime = pickupTime;
