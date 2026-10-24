@@ -27,6 +27,7 @@ GET {{httpHost}}/api/region
 ### ---------------------------------------------------------------------
 ### 1. Registration (EXPECT 200 first time, 409 when the e-mail already exists)
 ### Role is not part of the request - the server always creates Role=User.
+### Registration only creates the user (no token in the response). The token comes from login (step 2).
 # @name registerA
 POST {{host}}/api/auth/register
 Content-Type: application/json

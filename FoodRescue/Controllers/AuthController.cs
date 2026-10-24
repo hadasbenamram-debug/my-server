@@ -22,7 +22,7 @@ namespace FoodRescue.Controllers
             _userService = userService;
         }
 
-        // רישום משתמש חדש במערכת (מחזיר טוקן התחברות מיד, כמו קודם)
+        // רישום משתמש חדש במערכת. ההרשמה רק יוצרת את המשתמש - את הטוקן מקבלים בהתחברות (api/auth/login)
         [HttpPost("register")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]
@@ -33,7 +33,7 @@ namespace FoodRescue.Controllers
             if (!result.Succeeded)
                 return Conflict(Error(409, result.Message));
 
-            return Ok(result.Response);
+            return Message("ההרשמה בוצעה בהצלחה. אפשר להתחבר עם כתובת המייל והסיסמה.");
         }
 
         // התחברות. הנעילה אחרי ניסיונות כושלים נשמרת במסד, לפי כתובת מייל + IP
