@@ -20,6 +20,8 @@
          ההפניה המפורשת מכריחה גרסה מתוקנת. -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="SixLabors.ImageSharp" Version="4.1.3" />
+    <!-- יצירת הטוקן ב-TokenService. אותה גרסה כמו בפרויקט ה-API, כדי שכל חבילות IdentityModel יהיו באותה גרסה. -->
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.19.2" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
   </ItemGroup>
 
