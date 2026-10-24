@@ -69,6 +69,7 @@ namespace FoodRescue.Middlewares
             UnauthorizedException e => Error(StatusCodes.Status401Unauthorized, "Unauthorized", e.Message, traceId),
             ForbiddenException e => Error(StatusCodes.Status403Forbidden, "Forbidden", e.Message, traceId),
             ConflictException e => Error(StatusCodes.Status409Conflict, "Conflict", e.Message, traceId),
+            ServiceUnavailableException e => Error(StatusCodes.Status503ServiceUnavailable, "ServiceUnavailable", e.Message, traceId),
             DbUpdateConcurrencyException => Error(StatusCodes.Status409Conflict, "Conflict",
                 "הנתונים שונו בינתיים על ידי פעולה אחרת. יש לרענן ולנסות שוב.", traceId),
             BadHttpRequestException e => Error(e.StatusCode, "BadRequest", "הבקשה אינה תקינה.", traceId),

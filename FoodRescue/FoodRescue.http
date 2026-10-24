@@ -151,7 +151,7 @@ POST {{host}}/api/admin/suppliers/1/donations
 Authorization: Bearer {{tokenA}}
 Content-Type: application/json
 
-{ "regionId": 1, "latitude": 32.08, "longitude": 34.78, "latestPickupTime": "18:00:00", "categories": [ { "categoryId": 1, "quantity": 1, "weightKg": 1 } ] }
+{ "regionId": 1, "latestPickupTime": "18:00:00", "categories": [ { "categoryId": 1, "quantity": 1, "weightKg": 1 } ] }
 
 ### Same endpoints as Admin -> 200 / 204 / 404 (never 401/403)
 ### EXPECT: 200
@@ -317,3 +317,20 @@ Content-Type: application/json
 ### EXPECT: 200 (array; total in the X-Total-Count header)
 GET {{host}}/api/notifications?page=1&pageSize=20
 Authorization: Bearer {{tokenA}}
+
+### ---------------------------------------------------------------------
+### 11. Exact location from the address (Google Geocoding - on the server, the key never reaches the client)
+### An address Google cannot find -> EXPECT: 400 with a clear message (nothing is created)
+POST {{host}}/api/ngos/register
+Content-Type: application/json
+
+{
+  "name": "Geo Test",
+  "email": "geo.test@example.com",
+  "phone": "0505555555",
+  "ngoName": "עמותת בדיקה",
+  "dailyCapacity": 50,
+  "address": "קקקקקקק 999999",
+  "registrationNumber": "580000000",
+  "regionId": 1
+}

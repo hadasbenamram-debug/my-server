@@ -174,10 +174,20 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // =========================================================
-// Google Maps Routes API
+// Google Maps: Routes API (מרחקים וזמני נסיעה) ו-Geocoding API (כתובת -> מיקום מדויק).
+// המפתח נשאר בשרת בלבד (User Secrets / משתנה הסביבה GoogleMaps__ApiKey). הלקוח מקבל רק את התוצאות.
 // מרחקים נשמרים במטמון (DistanceCacheMinutes, ברירת מחדל 3 שעות) לפי קואורדינטות מעוגלות,
 // כך שהמנוע לא פונה ל-Google בכל ריצה (בעבר: ריצה כל 2 דקות ומטמון של 2 דקות).
 // =========================================================
+
+if (string.IsNullOrWhiteSpace(builder.Configuration["GoogleMaps:ApiKey"]))
+    throw new InvalidOperationException(
+        "GoogleMaps:ApiKey is missing. Set it with User Secrets " +
+        "(dotnet user-secrets set \"GoogleMaps:ApiKey\" \"...\") " +
+        "or with the environment variable GoogleMaps__ApiKey.");
+
+var googleMapsBaseUrl = new Uri(
+    (builder.Configuration["GoogleMaps:BaseUrl"] ?? "https://maps.googleapis.com/maps/api/").TrimEnd('/') + "/");
 
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<RouteLegCache>();
@@ -187,6 +197,13 @@ builder.Services.AddHttpClient<IGoogleRoutesClient, GoogleRoutesClient>(client =
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 builder.Services.AddScoped<IGoogleMapsDistanceService, GoogleMapsDistanceService>();
+
+// כתובת -> מיקום מדויק: בהרשמת ספק ועמותה, ובעדכון הכתובת של עמותה
+builder.Services.AddHttpClient<IGeocodingService, GoogleGeocodingService>(client =>
+{
+    client.BaseAddress = googleMapsBaseUrl;
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 
 // =========================================================
 // התראות: מייל / SMS נשמרים בתור (Outbox) ונשלחים ברקע עם ניסיונות חוזרים.
