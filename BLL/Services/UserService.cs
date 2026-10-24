@@ -94,7 +94,8 @@ namespace BLL.Services
             if (!await _userRepository.TryAddAsync(user))
                 return EmailTaken();
 
-            return AuthResult.Success(BuildResponse(user));
+            // ההרשמה רק יוצרת את המשתמש. את הטוקן מקבלים בהתחברות (LoginAsync)
+            return AuthResult.Success();
         }
 
         private static AuthResult EmailTaken() =>
