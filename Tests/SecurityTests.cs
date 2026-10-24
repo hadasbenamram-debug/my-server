@@ -112,6 +112,7 @@ namespace FoodRescue.Tests
             Assert.Equal(403, ExceptionHandlingMiddleware.Map(new ForbiddenException("x"), null).Status);
             Assert.Equal(409, ExceptionHandlingMiddleware.Map(new ConflictException("x"), null).Status);
             Assert.Equal(409, ExceptionHandlingMiddleware.Map(new DbUpdateConcurrencyException("x"), null).Status);
+            Assert.Equal(503, ExceptionHandlingMiddleware.Map(new ServiceUnavailableException("x"), null).Status);
 
             var bad = ExceptionHandlingMiddleware.Map(new ArgumentException("שגיאה", "field"), "trace");
             Assert.Equal(400, bad.Status);

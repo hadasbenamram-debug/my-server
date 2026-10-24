@@ -43,7 +43,7 @@ namespace FoodRescue.Tests
 
         private CreateDonationDto NewDonationDto(TimeSpan pickup) => new()
         {
-            RegionId = _h.Region.Id, Latitude = 32.08, Longitude = 34.78, LatestPickupTime = pickup,
+            RegionId = _h.Region.Id, LatestPickupTime = pickup,
             Categories = new List<DonationCategoryLineDto> { new() { CategoryId = _h.Category.Id, Quantity = 3, WeightKg = 4.5 } }
         };
 
@@ -69,6 +69,47 @@ namespace FoodRescue.Tests
             Assert.Equal(4.5, created.TotalWeightKg, 3);
             Assert.Equal("מאפים", created.Categories.Single().CategoryName);
             Assert.Equal(_h.Supplier.BusinessName, created.SupplierName);
+        }
+
+        // המיקום של התרומה הוא המיקום המדויק של העסק (שנקבע בשרת לפי הכתובת)
+        [Fact]
+        public async Task Create_UsesTheSuppliersExactLocation()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;   // אין שעת איסוף אפשרית היום
+
+            var supplier = await _h.Db.Suppliers.SingleAsync(s => s.Id == _h.Supplier.Id);
+            supplier.Latitude = 32.0615;
+            supplier.Longitude = 34.7738;
+            supplier.GooglePlaceId = "place-of-the-supplier";
+            await _h.Db.SaveChangesAsync();
+            _h.Fresh();
+
+            await Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId);
+
+            _h.Fresh();
+            var saved = await _h.Db.Donations.SingleAsync();
+            Assert.Equal(32.0615, saved.Latitude, 6);
+            Assert.Equal(34.7738, saved.Longitude, 6);
+            Assert.Equal("place-of-the-supplier", saved.GooglePlaceId);
+        }
+
+        [Fact]
+        public async Task Create_WhenTheSupplierHasNoLocation_IsRejected()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            var supplier = await _h.Db.Suppliers.SingleAsync(s => s.Id == _h.Supplier.Id);
+            supplier.Latitude = 0;
+            supplier.Longitude = 0;
+            await _h.Db.SaveChangesAsync();
+            _h.Fresh();
+
+            await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId));
+            Assert.False(await _h.Db.Donations.AnyAsync());
         }
 
         [Fact]
