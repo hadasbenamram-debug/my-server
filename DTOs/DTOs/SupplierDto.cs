@@ -10,15 +10,10 @@ namespace FoodRescue.DTOs
         [StringLength(100, ErrorMessage = "שם העסק יכול להכיל עד 100 תווים.")]
         public string BusinessName { get; set; } = string.Empty;
 
+        // כתובת מלאה. המיקום המדויק (קו רוחב ואורך) נקבע בשרת לפי הכתובת, דרך Google Maps.
         [Required(ErrorMessage = "כתובת העסק היא שדה חובה.")]
         [StringLength(200, ErrorMessage = "הכתובת יכולה להכיל עד 200 תווים.")]
         public string Address { get; set; } = string.Empty;
-
-        [Range(-90, 90, ErrorMessage = "קו רוחב חייב להיות בין -90 ל-90.")]
-        public double Latitude { get; set; }
-
-        [Range(-180, 180, ErrorMessage = "קו אורך חייב להיות בין -180 ל-180.")]
-        public double Longitude { get; set; }
 
         // תוקן: המסד מקבל עד 20 תווים (Supplier.TaxId) - בעבר 50
         [Required(ErrorMessage = "יש להזין ח.פ / מספר עוסק.")]

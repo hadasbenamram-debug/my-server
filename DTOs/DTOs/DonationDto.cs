@@ -22,19 +22,11 @@ namespace FoodRescue.DTOs
 
     // DTO ליצירת תרומה. אין בו SupplierId: הספק נקבע בשרת לפי הטוקן (או לפי הנתיב, כשמנהל יוצר בשם ספק).
     // אין בו גם PriorityScore, NgoId או סטטוסים - כל אלה נקבעים במערכת.
+    // אין בו מיקום: מקום האיסוף הוא המיקום המדויק של העסק, שהשרת קבע לפי הכתובת (Google Maps).
     public class CreateDonationDto
     {
         [Range(1, int.MaxValue, ErrorMessage = "יש לבחור אזור.")]
         public int RegionId { get; set; }
-
-        [Range(-90, 90, ErrorMessage = "קו רוחב חייב להיות בין -90 ל-90.")]
-        public double Latitude { get; set; }
-
-        [Range(-180, 180, ErrorMessage = "קו אורך חייב להיות בין -180 ל-180.")]
-        public double Longitude { get; set; }
-
-        [StringLength(255, ErrorMessage = "מזהה המקום בגוגל יכול להכיל עד 255 תווים.")]
-        public string? GooglePlaceId { get; set; }
 
         // שם קובץ התמונה שהתקבל מ-analyze-image (רק שם, בלי נתיב)
         [StringLength(100, ErrorMessage = "שם קובץ התמונה ארוך מדי.")]

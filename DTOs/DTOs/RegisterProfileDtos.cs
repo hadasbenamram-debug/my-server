@@ -30,15 +30,10 @@ namespace FoodRescue.DTOs
         [StringLength(100, ErrorMessage = "שם העסק יכול להכיל עד 100 תווים.")]
         public string BusinessName { get; set; } = string.Empty;
 
+        // כתובת מלאה. המיקום המדויק (קו רוחב ואורך) נקבע בשרת לפי הכתובת, דרך Google Maps.
         [Required(ErrorMessage = "יש להזין את כתובת העסק.")]
         [StringLength(200, ErrorMessage = "הכתובת יכולה להכיל עד 200 תווים.")]
         public string Address { get; set; } = string.Empty;
-
-        [Range(-90, 90, ErrorMessage = "קו רוחב חייב להיות בין -90 ל-90.")]
-        public double Latitude { get; set; }
-
-        [Range(-180, 180, ErrorMessage = "קו אורך חייב להיות בין -180 ל-180.")]
-        public double Longitude { get; set; }
 
         [Required(ErrorMessage = "יש להזין ח.פ / מספר עוסק.")]
         [StringLength(20, MinimumLength = 5, ErrorMessage = "ח.פ / מספר עוסק יכול להכיל 5-20 תווים.")]
@@ -59,15 +54,10 @@ namespace FoodRescue.DTOs
         [Range(1, 100000, ErrorMessage = "הקיבולת היומית חייבת להיות מספר חיובי.")]
         public int DailyCapacity { get; set; }
 
+        // כתובת מלאה. המיקום המדויק (קו רוחב ואורך) נקבע בשרת לפי הכתובת, דרך Google Maps.
         [Required(ErrorMessage = "יש להזין את כתובת העמותה.")]
         [StringLength(200, ErrorMessage = "הכתובת יכולה להכיל עד 200 תווים.")]
         public string Address { get; set; } = string.Empty;
-
-        [Range(-90, 90, ErrorMessage = "קו רוחב חייב להיות בין -90 ל-90.")]
-        public double Latitude { get; set; }
-
-        [Range(-180, 180, ErrorMessage = "קו אורך חייב להיות בין -180 ל-180.")]
-        public double Longitude { get; set; }
 
         [Required(ErrorMessage = "יש להזין מספר רישום (עמותה / חברה).")]
         [StringLength(20, ErrorMessage = "מספר הרישום יכול להכיל עד 20 תווים.")]
