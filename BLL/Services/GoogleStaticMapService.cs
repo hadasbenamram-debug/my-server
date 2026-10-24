@@ -56,9 +56,11 @@ namespace BLL.Integrations.GoogleMaps
 
                 if (!response.IsSuccessStatusCode || !mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                 {
-                    // לא רושמים בלוג את כתובת הבקשה - יש בה את המפתח
-                    _logger.LogWarning("Google Maps Static API returned HTTP {StatusCode} ({MediaType}).",
-                        (int)response.StatusCode, mediaType);
+                    // Google כותב בתשובה למה הבקשה נדחתה (למשל: השירות לא הופעל, או שהמפתח מוגבל).
+                    // הסיבה נרשמת בלוג של השרת בלבד. את כתובת הבקשה לא רושמים - יש בה את המפתח.
+                    var reason = await ReadGoogleReasonAsync(response, mediaType, apiKey, cancellationToken);
+                    _logger.LogWarning("Google Maps Static API returned HTTP {StatusCode} ({MediaType}): {Reason}",
+                        (int)response.StatusCode, mediaType, reason);
                     throw new ServiceUnavailableException(UnavailableMessage);
                 }
 
@@ -74,6 +76,34 @@ namespace BLL.Integrations.GoogleMaps
                 _logger.LogWarning(ex, "Google Maps Static API call failed.");
                 throw new ServiceUnavailableException(UnavailableMessage);
             }
+        }
+
+        // הסיבה ש-Google נתן לשגיאה: טקסט התשובה (עד 500 תווים) והכותרת X-Staticmap-API-Warning.
+        // המפתח מוחלף ב-*** ליתר ביטחון, כדי שלא יגיע ללוג גם אם Google מחזיר אותו.
+        private static async Task<string> ReadGoogleReasonAsync(
+            HttpResponseMessage response, string mediaType, string apiKey, CancellationToken cancellationToken)
+        {
+            var parts = new List<string>();
+
+            if (mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                // לפי Google: תמונת שגיאה במקום מפה - בדרך כלל אין חיוב (Billing) בפרויקט, או שהמפתח לא תקין
+                parts.Add("Google returned an error image (usually: billing is not enabled on the project, or the key is not valid).");
+            }
+            else
+            {
+                var text = (await response.Content.ReadAsStringAsync(cancellationToken)).Trim();
+                if (text.Length > 500)
+                    text = text.Substring(0, 500);
+                if (text.Length > 0)
+                    parts.Add(text);
+            }
+
+            if (response.Headers.TryGetValues("X-Staticmap-API-Warning", out var warnings))
+                parts.AddRange(warnings);
+
+            var reason = parts.Count > 0 ? string.Join(" | ", parts) : "(no details from Google)";
+            return reason.Replace(apiKey.Trim(), "***", StringComparison.Ordinal);
         }
 
         // כל חלקי הבקשה ל-Google חוץ מהמפתח (ציבורי כדי שאפשר יהיה לבדוק אותו בטסט)

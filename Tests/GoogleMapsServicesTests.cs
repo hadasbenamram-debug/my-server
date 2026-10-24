@@ -1,5 +1,6 @@
 ﻿using BLL.Exceptions;
 using BLL.Integrations.GoogleMaps;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -116,10 +117,23 @@ namespace FoodRescue.Tests
 
         // ---------------- Static Maps: תמונת מפה דרך השרת ----------------
 
-        private static GoogleStaticMapService StaticMaps(FakeGoogle google) =>
+        private static GoogleStaticMapService StaticMaps(FakeGoogle google, ILogger<GoogleStaticMapService>? logger = null) =>
             new(new HttpClient(google) { BaseAddress = new Uri(GoogleBaseUrl) },
                 TestDb.Config(new Dictionary<string, string?> { ["GoogleMaps:ApiKey"] = "test-key" }),
-                TestDb.Log<GoogleStaticMapService>());
+                logger ?? TestDb.Log<GoogleStaticMapService>());
+
+        // לוגר שזוכר את ההודעות, כדי לבדוק מה נכתב ללוג
+        private sealed class ListLogger<T> : ILogger<T>
+        {
+            public List<string> Messages { get; } = new();
+
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+        }
 
         [Fact]
         public void StaticMap_Request_HasNumberedPinsAndRoute_SkipsPinsWithoutLocation_AndHasNoKey()
@@ -158,6 +172,23 @@ namespace FoodRescue.Tests
 
             await Assert.ThrowsAsync<ServiceUnavailableException>(
                 () => StaticMaps(google).RenderAsync(new[] { new MapPin(32.1, 34.8, "e08a1e") }));
+        }
+
+        // הסיבה של Google נכתבת ללוג של השרת, אבל המפתח לא
+        [Fact]
+        public async Task StaticMap_ErrorFromGoogle_LogsGooglesReason_WithoutTheKey()
+        {
+            var google = new FakeGoogle(HttpStatusCode.Forbidden,
+                "This API project is not authorized to use this API. key=test-key", "text/plain");
+            var logger = new ListLogger<GoogleStaticMapService>();
+
+            await Assert.ThrowsAsync<ServiceUnavailableException>(
+                () => StaticMaps(google, logger).RenderAsync(new[] { new MapPin(32.1, 34.8, "e08a1e") }));
+
+            var message = Assert.Single(logger.Messages);
+            Assert.Contains("403", message);
+            Assert.Contains("not authorized to use this API", message);
+            Assert.DoesNotContain("test-key", message);
         }
     }
 }
