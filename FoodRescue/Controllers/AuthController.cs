@@ -56,7 +56,9 @@ namespace FoodRescue.Controllers
                 AuthError.NgoPendingApproval or
                 AuthError.NgoRejected or
                 AuthError.SupplierPendingApproval or
-                AuthError.SupplierRejected => StatusCode(403, Error(403, result.Message, result.Error.ToString())),
+                AuthError.SupplierRejected or
+                AuthError.VolunteerPendingApproval or
+                AuthError.VolunteerRejected => StatusCode(403, Error(403, result.Message, result.Error.ToString())),
 
                 _ => Unauthorized(Error(401, result.Message, "InvalidCredentials"))
             };

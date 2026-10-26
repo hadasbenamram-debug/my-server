@@ -108,7 +108,7 @@ namespace FoodRescue.Controllers
         public async Task<IActionResult> RegisterVolunteerWithUser([FromBody] RegisterVolunteerDto model)
         {
             await _volunteerService.RegisterWithUserAsync(model);
-            return Message("הרישום בוצע בהצלחה! סיסמה זמנית נשלחה לכתובת האימייל שלך.");
+            return Message("הרישום בוצע בהצלחה! סיסמה זמנית נשלחה לכתובת האימייל שלך. אפשר יהיה להתחבר אחרי שמנהל המערכת יאשר את הבקשה.");
         }
     }
 

@@ -48,6 +48,8 @@ namespace FoodRescue.Tests
         [InlineData(AuthError.NgoRejected, 403)]
         [InlineData(AuthError.SupplierPendingApproval, 403)]
         [InlineData(AuthError.SupplierRejected, 403)]
+        [InlineData(AuthError.VolunteerPendingApproval, 403)]
+        [InlineData(AuthError.VolunteerRejected, 403)]
         public async Task Login_Failure_MapsToExpectedStatusCode(AuthError error, int expectedStatus)
         {
             var service = new Mock<IUserService>();

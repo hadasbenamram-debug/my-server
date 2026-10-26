@@ -22,7 +22,7 @@ namespace FoodRescue.Tests
         private FoodRescueDbContext Db => _h.Db;
 
         private UserService Create() => new(
-            new UserRepository(Db), new NgoRepository(Db), new SupplierRepository(Db),
+            new UserRepository(Db), new NgoRepository(Db), new SupplierRepository(Db), new VolunteerRepository(Db),
             new LoginLockoutService(new LoginAttemptRepository(Db)),
             _h.ActionTokens, _h.NotificationService,
             new TokenService(TestDb.Config()), TestDb.Config(),
@@ -172,6 +172,28 @@ namespace FoodRescue.Tests
             var result = await Create().LoginAsync(new LoginDto { Email = "a@b.com", Password = "correct-password" });
 
             Assert.Equal(AuthError.NgoPendingApproval, result.Error);
+        }
+
+        // תוקן: מתנדב שנרשם יכול היה להתחבר לפני שהמנהל אישר אותו
+        [Theory]
+        [InlineData(DAL.Classes.ApprovalStatus.Pending, AuthError.VolunteerPendingApproval)]
+        [InlineData(DAL.Classes.ApprovalStatus.Rejected, AuthError.VolunteerRejected)]
+        [InlineData(DAL.Classes.ApprovalStatus.Approved, AuthError.None)]
+        public async Task Login_Volunteer_OnlyAfterAdminApproval(DAL.Classes.ApprovalStatus status, AuthError expected)
+        {
+            var user = await AddUserAsync(role: UserRole.Volunteer);
+            Db.Volunteers.Add(new Volunteer
+            {
+                UserId = user.Id, VehicleType = "רכב", MaxCapacityKg = 50, IdNumber = "000000018",
+                DriverLicenseNumber = "1234567", DriverLicenseExpiry = DateTime.UtcNow.AddYears(1),
+                DateOfBirth = new DateTime(1990, 1, 1), ApprovalStatus = status, RowVersion = new byte[8]
+            });
+            await Db.SaveChangesAsync();
+
+            var result = await Create().LoginAsync(new LoginDto { Email = "a@b.com", Password = "correct-password" });
+
+            Assert.Equal(expected, result.Error);
+            Assert.Equal(expected == AuthError.None, result.Response != null);
         }
 
         [Fact]

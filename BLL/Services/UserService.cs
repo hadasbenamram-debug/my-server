@@ -28,6 +28,7 @@ namespace BLL.Services
         private readonly IUserRepository _userRepository;
         private readonly INgoRepository _ngoRepository;
         private readonly ISupplierRepository _supplierRepository;
+        private readonly IVolunteerRepository _volunteerRepository;
         private readonly ILoginLockoutService _lockout;
         private readonly IActionTokenService _actionTokens;
         private readonly INotificationService _notifications;
@@ -45,6 +46,7 @@ namespace BLL.Services
             IUserRepository userRepository,
             INgoRepository ngoRepository,
             ISupplierRepository supplierRepository,
+            IVolunteerRepository volunteerRepository,
             ILoginLockoutService lockout,
             IActionTokenService actionTokens,
             INotificationService notifications,
@@ -58,6 +60,7 @@ namespace BLL.Services
             _userRepository = userRepository;
             _ngoRepository = ngoRepository;
             _supplierRepository = supplierRepository;
+            _volunteerRepository = volunteerRepository;
             _lockout = lockout;
             _actionTokens = actionTokens;
             _notifications = notifications;
@@ -141,7 +144,8 @@ namespace BLL.Services
                 await _userRepository.UpdateAsync(user);
             }
 
-            // --- approval status for NGOs and suppliers ---
+            // --- approval status for NGOs, suppliers and volunteers ---
+            // (נבדק רק אחרי שהסיסמה נכונה, כך שמי שלא יודע את הסיסמה לא לומד מה מצב החשבון)
             var ngo = await _ngoRepository.GetByUserIdAsync(user.Id);
             if (ngo != null)
             {
@@ -160,6 +164,19 @@ namespace BLL.Services
 
                 if (supplier.ApprovalStatus == ApprovalStatus.Rejected)
                     return AuthResult.Fail(AuthError.SupplierRejected, "בקשת הצטרפות הספק שלך נדחתה.");
+            }
+
+            // תוקן: מתנדב יכול היה להתחבר מיד אחרי ההרשמה, עוד לפני שהמנהל אישר אותו.
+            // עכשיו - כמו ספק ועמותה - ההתחברות נפתחת רק אחרי אישור המנהל.
+            var volunteer = await _volunteerRepository.GetByUserIdAsync(user.Id);
+            if (volunteer != null)
+            {
+                if (volunteer.ApprovalStatus == ApprovalStatus.Pending)
+                    return AuthResult.Fail(AuthError.VolunteerPendingApproval,
+                        "בקשת ההצטרפות שלך כמתנדב/ת ממתינה לאישור מנהל מערכת. אחרי האישור יישלח אליך מייל ותוכל/י להתחבר.");
+
+                if (volunteer.ApprovalStatus == ApprovalStatus.Rejected)
+                    return AuthResult.Fail(AuthError.VolunteerRejected, "בקשת ההצטרפות שלך כמתנדב/ת נדחתה.");
             }
 
             await _lockout.RecordAsync(email, ipAddress, user.Id, success: true);
