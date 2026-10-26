@@ -213,5 +213,100 @@ namespace FoodRescue.Tests
             var answer = await Controller(h, user).RespondByLink(new RespondByLinkDto { Token = token, Accept = true });
             Assert.IsAssignableFrom<ObjectResult>(answer.Result);
         }
+
+        // ---------------- תיקון 14: אף פעם לא שני מתנדבים במקביל לאותה תרומה ----------------
+
+        // בקשת המתנדב (הקשר אחד) וג'וב "לא ענה בזמן" (הקשר אחר, כמו תהליך אחר) על אותו מסד
+        private static async Task<(EngineHarness Request, EngineHarness Job, Match Stale)> RaceAsync()
+        {
+            var name = Guid.NewGuid().ToString();
+            var request = new EngineHarness(databaseName: name);
+            await request.SeedBasicsAsync();
+            await request.AddVolunteerAsync("a@test");
+            await request.AddVolunteerAsync("b@test");
+            await request.AddDonationAsync();
+            await request.Engine.RunBatchAsync("Manual");
+            request.Fresh();
+
+            // הבקשה של המתנדב כבר טענה את השידוך (עדיין "ממתין") ...
+            var stale = await request.Db.Matches.SingleAsync();
+            return (request, new EngineHarness(databaseName: name), stale);
+        }
+
+        [Fact]
+        public async Task TimeoutWinsTheRace_TheLastSecondAcceptIsNotSaved()
+        {
+            var (request, job, stale) = await RaceAsync();
+            using var _ = request;
+            using var __ = job;
+
+            // ... ובאותו רגע הג'וב מסמן "לא ענה בזמן" ומשחרר את התרומה למתנדב הבא
+            var expired = await job.Db.Matches.SingleAsync();
+            Assert.Equal(RouteResponseResult.Done, await job.Workflow.DeclineAsync(expired, expired.VolunteerId, MatchStatus.TimedOut));
+
+            // האישור (על המצב הישן) נכשל במקום לדרוס - לא "גם מאושר וגם אצל מתנדב אחר"
+            Assert.Equal(RouteResponseResult.NotAwaiting, await request.Workflow.AcceptAsync(stale, stale.VolunteerId));
+
+            job.Fresh();
+            var match = await job.Db.Matches.SingleAsync();
+            Assert.Equal(MatchStatus.TimedOut, match.Status);
+            Assert.False(match.IsActive);
+            Assert.True((await job.Db.Volunteers.SingleAsync(v => v.Id == match.VolunteerId)).IsAvailable);
+        }
+
+        [Fact]
+        public async Task AcceptWinsTheRace_TheTimeoutDoesNotHandTheDonationToAnotherVolunteer()
+        {
+            var (request, job, _) = await RaceAsync();
+            using var _ = request;
+            using var __ = job;
+
+            // הג'וב טען את השידוך כשהוא עוד "ממתין" ...
+            var staleInJob = await job.Db.Matches.SingleAsync();
+
+            // ... המתנדב אישר שנייה לפני סוף הזמן ...
+            var fresh = await request.Db.Matches.SingleAsync();
+            Assert.Equal(RouteResponseResult.Done, await request.Workflow.AcceptAsync(fresh, fresh.VolunteerId));
+
+            // ... והג'וב לא דורס את האישור ולא שולח את התרומה למתנדב נוסף
+            Assert.Equal(RouteResponseResult.NotAwaiting, await job.Workflow.DeclineAsync(staleInJob, staleInJob.VolunteerId, MatchStatus.TimedOut));
+            Assert.False(job.Jobs.Has<BLL.Algorithms.DonationMatchingBatchService>(nameof(BLL.Algorithms.DonationMatchingBatchService.ReassignDonationAsync)));
+
+            request.Fresh();
+            var match = await request.Db.Matches.SingleAsync();
+            Assert.Equal(MatchStatus.Confirmed, match.Status);
+            Assert.True(match.IsActive);
+            Assert.Equal(DonationStatus.Matched, (await request.Db.Donations.SingleAsync()).Status);
+        }
+
+        [Fact]
+        public async Task Decline_HandsTheDonationOnRightAway_AndThereIsNeverMoreThanOneOpenOffer()
+        {
+            var h = new EngineHarness();
+            using var _ = h;
+            await h.SeedBasicsAsync();
+            await h.AddVolunteerAsync("a@test");
+            await h.AddVolunteerAsync("b@test");
+            await h.AddVolunteerAsync("c@test");
+            var d = await h.AddDonationAsync();
+            await h.Engine.RunBatchAsync("Manual");
+
+            // כל עוד יש הצעה פתוחה - אין הצעה נוספת לאותה תרומה, גם לא בהרצה נוספת של המנוע
+            await h.Engine.RunBatchAsync("Manual");
+            Assert.False((await h.Engine.MatchDonationAsync(d.Id, "Manual"))!.Matched);
+            h.Fresh();
+            Assert.Single(await h.Db.Matches.Where(m => m.IsActive).ToListAsync());
+
+            // דחייה: התרומה עוברת מיד (בלי לחכות לסוף 5 הדקות) - ושוב רק הצעה פתוחה אחת
+            var first = await h.Db.Matches.SingleAsync(m => m.IsActive);
+            var firstUser = await h.Db.Users.SingleAsync(u => u.VolunteerProfile != null && u.VolunteerProfile.Id == first.VolunteerId);
+            Assert.Equal(RouteResponseResult.Done, await h.MatchService.DeclineAsync(first.Id, As(firstUser)));
+            Assert.True((await h.Engine.MatchDonationAsync(d.Id, "Reassign"))!.Matched);
+
+            h.Fresh();
+            var open = Assert.Single(await h.Db.Matches.Where(m => m.IsActive).ToListAsync());
+            Assert.NotEqual(first.VolunteerId, open.VolunteerId);
+            Assert.Equal(MatchStatus.AwaitingVolunteerConfirmation, open.Status);
+        }
     }
 }

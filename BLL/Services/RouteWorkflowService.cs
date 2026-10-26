@@ -106,7 +106,9 @@ namespace BLL.Services
             if (await _matchRepository.HasActiveConfirmedMatchAsync(volunteerId, match.Id, match.VolunteerRouteId))
                 return RouteResponseResult.VolunteerBusy;
 
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            // תיקון 14: אם בדיוק באותו רגע הבקשה סומנה "לא ענה בזמן" (או נענתה במכשיר אחר) - העדכון שלנו נכשל
+            // (הסטטוס הוא Concurrency Token) והאישור לא נשמר. אין מצב של שני מתנדבים לאותה תרומה.
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 foreach (var m in group)
                 {
@@ -114,14 +116,22 @@ namespace BLL.Services
                     m.RespondedAt = now;
                 }
 
+                // קודם הסטטוס (זה העדכון שנבדק מול שינוי במקביל), ורק אחריו שאר השינויים
+                await _matchRepository.UpdateAsync(group[0]);
+
                 // המתנדב מסומן "תפוס" עד סיום המסלול
                 var volunteer = group[0].Volunteer ?? await _volunteerRepository.GetByIdAsync(volunteerId);
                 if (volunteer != null)
+                {
                     volunteer.IsAvailable = false;
+                    await _volunteerRepository.UpdateAsync(volunteer);
+                }
 
-                await _matchRepository.UpdateAsync(group[0]);
                 await RevokeLinkTokensAsync(group[0]);
             });
+
+            if (!saved)
+                return RouteResponseResult.NotAwaiting;
 
             await NotifyParticipantsAsync(group, "המתנדב אישר את המסלול", $"המתנדב יגיע לאיסוף בסביבות {EtaText(group)}.");
             await PublishStatusAsync(group);
@@ -144,7 +154,9 @@ namespace BLL.Services
 
             var now = DateTime.UtcNow;
 
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            // תיקון 14: אם בדיוק באותו רגע המתנדב אישר (או שהבקשה כבר טופלה בתהליך אחר) - לא דורסים,
+            // ולא שולחים את התרומה למתנדב נוסף
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 foreach (var m in group)
                 {
@@ -152,16 +164,22 @@ namespace BLL.Services
                     m.IsActive = false;
                     if (outcome == MatchStatus.Declined)
                         m.RespondedAt = now;
-
-                    // התרומה חוזרת למאגר הפתוחות
-                    if (m.Donation != null && m.Donation.Status == DonationStatus.Matched)
-                        m.Donation.Status = DonationStatus.Pending;
                 }
+
+                // קודם הסטטוס (זה העדכון שנבדק מול שינוי במקביל), ורק אחריו שאר השינויים
+                await _matchRepository.UpdateAsync(group[0]);
+
+                // התרומה חוזרת למאגר הפתוחות
+                foreach (var m in group.Where(m => m.Donation != null && m.Donation.Status == DonationStatus.Matched))
+                    m.Donation.Status = DonationStatus.Pending;
 
                 await _matchRepository.UpdateAsync(group[0]);
                 await CloseRouteIfDoneAsync(group[0], all, releaseVolunteer: false);
                 await RevokeLinkTokensAsync(group[0]);
             });
+
+            if (!saved)
+                return RouteResponseResult.NotAwaiting;
 
             if (outcome == MatchStatus.TimedOut && group[0].Volunteer != null)
             {
@@ -194,7 +212,7 @@ namespace BLL.Services
                 throw new ArgumentException("יש לאשר את המסלול לפני היציאה לדרך.");
 
             var now = DateTime.UtcNow;
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 foreach (var m in matches.Where(m => m.Status == MatchStatus.Confirmed))
                     m.Status = MatchStatus.InPickup;
@@ -208,6 +226,7 @@ namespace BLL.Services
 
                 await _matchRepository.UpdateAsync(matches[0]);
             });
+            EnsureSaved(saved);
 
             await NotifyParticipantsAsync(matches, "המתנדב יצא לדרך", "אפשר לעקוב אחרי המיקום שלו בזמן אמת.");
             await PublishStatusAsync(matches);
@@ -223,7 +242,7 @@ namespace BLL.Services
                 throw new ArgumentException("אפשר לסמן איסוף רק לשיבוץ שאושר ועדיין לא נאסף.");
 
             var now = DateTime.UtcNow;
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 match.Status = MatchStatus.InTransit;
                 match.PickedUpAt = now;
@@ -243,6 +262,7 @@ namespace BLL.Services
 
                 await _matchRepository.UpdateAsync(match);
             });
+            EnsureSaved(saved);
 
             await NotifyParticipantsAsync(new[] { match }, $"תרומה #{match.DonationId} נאספה", "המתנדב בדרך לעמותה.");
             await PublishStatusAsync(new[] { match });
@@ -257,7 +277,7 @@ namespace BLL.Services
             var now = DateTime.UtcNow;
             var group = await GetGroupAsync(match);
 
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 match.PickedUpAt ??= now;
                 match.DeliveredAt = now;
@@ -271,6 +291,7 @@ namespace BLL.Services
                 await _matchRepository.UpdateAsync(match);
                 await CloseRouteIfDoneAsync(match, group, releaseVolunteer: true);
             });
+            EnsureSaved(saved);
 
             if (match.Ngo != null)
             {
@@ -306,7 +327,7 @@ namespace BLL.Services
             var now = DateTime.UtcNow;
             var group = await GetGroupAsync(match);
 
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 if (IsActiveStatus(match.Status))
                 {
@@ -322,6 +343,7 @@ namespace BLL.Services
                 await _matchRepository.UpdateAsync(match);
                 await CloseRouteIfDoneAsync(match, group, releaseVolunteer: true);
             });
+            EnsureSaved(saved);
 
             if (donation.Supplier != null)
                 await _notifications.NotifyUserAsync(donation.Supplier.UserId, $"העמותה אישרה את קבלת תרומה #{donation.Id}", "תודה על התרומה!", type: "success");
@@ -350,7 +372,7 @@ namespace BLL.Services
 
             int volunteerId = group[0].VolunteerId;
 
-            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 foreach (var m in group)
                 {
@@ -363,6 +385,7 @@ namespace BLL.Services
                 await _matchRepository.UpdateAsync(group[0]);
                 await CloseRouteIfDoneAsync(group[0], all, releaseVolunteer: true);
             });
+            EnsureSaved(saved);
 
             // ציון האמינות יורד (MatchingPolicy:NoShowReliabilityPenalty)
             await _reliability.RecalculateAsync(volunteerId);
@@ -423,6 +446,14 @@ namespace BLL.Services
         // =========================================================
         // עזר
         // =========================================================
+
+        // תיקון 14: השידוך השתנה בדיוק באותו רגע בתהליך אחר (הסטטוס הוא Concurrency Token) - שום דבר לא נשמר.
+        // בעבר הפעולה "הצליחה" בלי שנשמר כלום; עכשיו המשתמש מתבקש לרענן ולנסות שוב.
+        private static void EnsureSaved(bool saved)
+        {
+            if (!saved)
+                throw new ConflictException("המצב של השיבוץ השתנה בדיוק עכשיו. נא לרענן את הדף ולנסות שוב.");
+        }
 
         // כשאין יותר שידוכים פעילים במסלול - סוגרים אותו, והמתנדב חוזר להיות זמין
         private async Task CloseRouteIfDoneAsync(Match match, List<Match> group, bool releaseVolunteer)

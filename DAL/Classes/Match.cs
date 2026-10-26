@@ -20,7 +20,10 @@ namespace DAL.Classes
         public int? VolunteerRouteId { get; set; }
         public VolunteerRoute VolunteerRoute { get; set; }
 
-        [Required] public MatchStatus Status { get; set; } = MatchStatus.AwaitingVolunteerConfirmation;
+        // תיקון 14: Concurrency Token. אם שני תהליכים משנים את הסטטוס באותו רגע - למשל המתנדב מאשר בשנייה
+        // האחרונה בדיוק כשהג'וב מסמן "לא ענה בזמן" - רק הראשון מצליח, והשני נכשל במקום לדרוס.
+        // כך לא ייתכן שהתרומה מאושרת אצל מתנדב אחד ובמקביל נשלחת למתנדב אחר.
+        [Required, ConcurrencyCheck] public MatchStatus Status { get; set; } = MatchStatus.AwaitingVolunteerConfirmation;
 
         // נוסף: מסמן איזו רשומת Match היא הניסיון הפעיל הנוכחי, לעומת ניסיונות
         // קודמים (Declined/NoShow) שנשמרים כהיסטוריה. לכל תרומה - Match אחד

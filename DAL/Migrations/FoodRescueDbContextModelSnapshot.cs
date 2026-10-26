@@ -475,6 +475,7 @@ namespace DAL.Migrations
                         .HasColumnType("datetime2");
 
                     b.Property<int>("Status")
+                        .IsConcurrencyToken()
                         .HasColumnType("int");
 
                     b.Property<int>("VolunteerId")

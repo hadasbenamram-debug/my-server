@@ -84,9 +84,12 @@ namespace FoodRescue.Tests
 
     public static class TestDb
     {
+        // שורש משותף: שני DbContext עם אותו שם רואים את אותו מסד (כמו שני תהליכים מול אותו SQL Server)
+        private static readonly Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot SharedRoot = new();
+
         public static FoodRescueDbContext New(string? name = null) =>
             new(new DbContextOptionsBuilder<FoodRescueDbContext>()
-                .UseInMemoryDatabase(name ?? Guid.NewGuid().ToString())
+                .UseInMemoryDatabase(name ?? Guid.NewGuid().ToString(), SharedRoot)
                 .AddInterceptors(new RowVersionInterceptor())
                 .Options);
 
@@ -183,12 +186,13 @@ namespace FoodRescue.Tests
         public MatchService MatchService { get; }
         public MatchTimeoutService Timeouts { get; }
 
-        public EngineHarness(MatchingPolicyOptions? policy = null, DateTime? localNow = null)
+        // databaseName: שתי "רתמות" עם אותו שם עובדות על אותו מסד - כמו בקשה של המתנדב וג'וב ברקע שרצים במקביל
+        public EngineHarness(MatchingPolicyOptions? policy = null, DateTime? localNow = null, string? databaseName = null)
         {
             LocalClock.Configure("Asia/Jerusalem");
             LocalNow = localNow ?? DefaultLocalNow;
 
-            Db = TestDb.New();
+            Db = TestDb.New(databaseName);
             Clock = new TestClock(LocalClock.ToUtc(LocalNow));
             Policy = new StaticMatchingPolicyProvider(policy ?? new MatchingPolicyOptions { AutoNoShowGraceMinutes = 30 });
             var config = TestDb.Config();
