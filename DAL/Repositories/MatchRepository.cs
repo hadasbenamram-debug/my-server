@@ -35,6 +35,20 @@ namespace DAL.Repositories
                 .ToListAsync();
         }
 
+        // תיקון 16: ההיסטוריה כוללת גם שיבוצים שהסתיימו (Completed / Declined / TimedOut...) - לא רק פעילים.
+        // הצעה שעדיין ממתינה לתשובה מופיעה ב"בקשה נכנסת", לא בהיסטוריה.
+        public async Task<List<Match>> GetHistoryForVolunteerAsync(int volunteerId, int take)
+        {
+            return await WithDetails()
+                .Where(m => m.VolunteerId == volunteerId &&
+                            !(m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation))
+                .OrderByDescending(m => m.DeliveredAt ?? m.RespondedAt ?? m.AssignedAt)
+                .ThenByDescending(m => m.Id)
+                .Take(take)
+                .AsNoTracking()
+                .ToListAsync();
+        }
+
         public async Task<List<Match>> GetActiveForParticipantAsync(int volunteerId, int ngoId, int supplierId)
         {
             return await WithDetails()

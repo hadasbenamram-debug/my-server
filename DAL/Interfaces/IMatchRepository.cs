@@ -52,6 +52,9 @@ namespace DAL.Interfaces
         // כמה שידוכים יש לכל עמותה ביום מסוים: NgoId -> מספר שידוכים
         Task<Dictionary<int, int>> CountByNgoOnDateAsync(IEnumerable<int> ngoIds, DateTime dayStartUtc, DateTime dayEndUtc);
 
+        // תיקון 16: כל השיבוצים של מתנדב (גם שהסתיימו), מהחדש לישן - להיסטוריית השיבוצים שלו
+        Task<List<Match>> GetHistoryForVolunteerAsync(int volunteerId, int take);
+
         // מתנדבים שיש להם כרגע הצעה או שיבוץ פעיל
         Task<HashSet<int>> GetVolunteerIdsWithActiveMatchesAsync();
 

@@ -100,6 +100,20 @@ namespace BLL.Services
             return _mapper.Map<List<MatchResponseDto>>(matches);
         }
 
+        // תיקון 16: בעבר עמוד ההיסטוריה של המתנדב השתמש ב-matches/active - שמחזיר רק שיבוצים פעילים,
+        // ולכן שיבוץ שהסתיים (נמסר) נעלם מההיסטוריה במקום להופיע בה.
+        private const int HistoryLimit = 200;
+
+        public async Task<List<MatchResponseDto>> GetMyVolunteerHistoryAsync(CurrentUserDto currentUser)
+        {
+            var caller = await _caller.GetAsync(currentUser);
+            if (caller.Volunteer == null)
+                return new List<MatchResponseDto>();
+
+            var matches = await _matchRepository.GetHistoryForVolunteerAsync(caller.Volunteer.Id, HistoryLimit);
+            return _mapper.Map<List<MatchResponseDto>>(matches);
+        }
+
         // =========================================================
         // המנוע
         // =========================================================

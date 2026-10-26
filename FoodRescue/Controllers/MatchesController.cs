@@ -47,6 +47,11 @@ namespace FoodRescue.Controllers
         public async Task<ActionResult<List<MatchResponseDto>>> GetActiveMatches() =>
             Ok(await _matchService.GetActiveAsync(CurrentUser));
 
+        // תיקון 16: היסטוריית השיבוצים של המתנדב המחובר (גם שיבוצים שכבר הסתיימו), מהחדש לישן
+        [HttpGet("my-history")]
+        public async Task<ActionResult<List<MatchResponseDto>>> GetMyHistory() =>
+            Ok(await _matchService.GetMyVolunteerHistoryAsync(CurrentUser));
+
         // ---------------- המנוע (מנהל) ----------------
 
         // הפעלה ידנית של אותו מנוע שרץ לפי לוח הזמנים - שומר שידוכים ומסלולים בפועל

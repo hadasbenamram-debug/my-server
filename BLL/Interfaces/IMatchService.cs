@@ -14,6 +14,9 @@ namespace BLL.Interfaces
         // השידוכים הפעילים שהמשתמש משתתף בהם (מנהל - כולם)
         Task<List<MatchResponseDto>> GetActiveAsync(CurrentUserDto currentUser);
 
+        // תיקון 16: היסטוריית השיבוצים של המתנדב המחובר - כולל שיבוצים שהסתיימו
+        Task<List<MatchResponseDto>> GetMyVolunteerHistoryAsync(CurrentUserDto currentUser);
+
         // הפעלה ידנית של אותו מנוע שרץ כל שעה
         Task<EngineRunResultDto> RunEngineAsync();
         Task<EngineStatusDto> GetEngineStatusAsync();
