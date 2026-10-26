@@ -26,7 +26,8 @@ namespace FoodRescue.Tests
             new LoginLockoutService(new LoginAttemptRepository(Db)),
             _h.ActionTokens, _h.NotificationService,
             new TokenService(TestDb.Config()), TestDb.Config(),
-            TestDb.Log<UserService>(), TestDb.Mapper, new PasswordHasherWithLegacySupport());
+            TestDb.Log<UserService>(), TestDb.Mapper, new PasswordHasherWithLegacySupport(),
+            new RegistrationNoticeService(_h.NotificationService, _h.Notifications, TestDb.Config()));
 
         private async Task<User> AddUserAsync(string email = "a@b.com", string password = "correct-password", UserRole role = UserRole.User)
         {
@@ -47,8 +48,7 @@ namespace FoodRescue.Tests
                 Name = " Dana ", Email = "  Dana@Example.COM ", Phone = "0501234567", Password = "longenough1"
             });
 
-            Assert.True(result.Succeeded);
-            Assert.Null(result.Response);   // את הטוקן מקבלים רק בהתחברות
+            Assert.Equal(RegistrationResult.Created, result);   // את הטוקן מקבלים רק בהתחברות
             var saved = await Db.Users.SingleAsync();
             Assert.Equal("dana@example.com", saved.Email);
             Assert.Equal(UserRole.User, saved.Role);
@@ -56,18 +56,28 @@ namespace FoodRescue.Tests
             Assert.False(string.IsNullOrEmpty(saved.SecurityStamp));
         }
 
+        // תוקן: מייל רשום החזיר "כבר קיים משתמש" (חשף אילו מיילים רשומים). עכשיו לא נוצר כלום,
+        // ובעל החשבון מקבל מייל "ניסו להירשם עם המייל שלך" - פעם אחת בלבד ברבע שעה.
         [Fact]
-        public async Task Register_ExistingEmail_ReturnsEmailTaken()
+        public async Task Register_ExistingEmail_CreatesNothing_AndEmailsTheOwnerOnce()
         {
-            await AddUserAsync("a@b.com");
+            var owner = await AddUserAsync("a@b.com");
 
-            var result = await Create().RegisterAsync(new RegisterDto
+            var first = await Create().RegisterAsync(new RegisterDto
             {
                 Name = "A B", Email = "A@B.com", Phone = "0501234567", Password = "longenough1"
             });
+            var again = await Create().RegisterAsync(new RegisterDto
+            {
+                Name = "A B", Email = "a@b.com", Phone = "0501234567", Password = "longenough1"
+            });
 
-            Assert.Equal(AuthError.EmailTaken, result.Error);
+            Assert.Equal(RegistrationResult.ExistingAccount, first);
+            Assert.Equal(RegistrationResult.ExistingAccount, again);
             Assert.Single(await Db.Users.ToListAsync());
+            var notices = await Db.Notifications
+                .Where(n => n.UserId == owner.Id && n.Subject == RegistrationNoticeService.Subject).ToListAsync();
+            Assert.Single(notices);
         }
 
         [Fact]

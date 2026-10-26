@@ -20,7 +20,8 @@ namespace BLL.Interfaces
         Task<List<AvailabilitySlotResponseDto>> GetAvailabilityAsync(int id, CurrentUserDto currentUser);
         Task SaveAvailabilityAsync(int id, List<CreateAvailabilitySlotDto> slots, CurrentUserDto currentUser);
 
-        Task RegisterWithUserAsync(RegisterVolunteerDto dto);
+        // מייל שכבר רשום לא יוצר כלום ולא זורק חריגה - בעל החשבון מקבל מייל (הקונטרולר עונה זהה בשני המקרים)
+        Task<RegistrationResult> RegisterWithUserAsync(RegisterVolunteerDto dto);
 
         // עדכון מיקום חי (GPS) של המתנדב המחובר + שידור למי שעוקב אחרי המסלול
         Task UpdateMyLocationAsync(int userId, double latitude, double longitude);

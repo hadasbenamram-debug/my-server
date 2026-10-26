@@ -35,6 +35,7 @@ namespace BLL.Services
         private readonly ILogger<NgoService> _logger;
         private readonly IPasswordHasher<User> _passwordHasher;
         private readonly IGeocodingService _geocoding;
+        private readonly IRegistrationNoticeService _registrationNotices;
 
         public NgoService(
             INgoRepository ngoRepository,
@@ -47,9 +48,11 @@ namespace BLL.Services
             IMapper mapper,
             ILogger<NgoService> logger,
             IPasswordHasher<User> passwordHasher,
-            IGeocodingService geocoding)
+            IGeocodingService geocoding,
+            IRegistrationNoticeService registrationNotices)
         {
             _passwordHasher = passwordHasher;
+            _registrationNotices = registrationNotices;
             _ngoRepository = ngoRepository;
             _userRepository = userRepository;
             _regionRepository = regionRepository;
@@ -105,26 +108,32 @@ namespace BLL.Services
             return _mapper.Map<List<AdminNgoListItemDto>>(ngos);
         }
 
-        public async Task<NgoResponseDto> RegisterWithUserAsync(RegisterNgoDto dto)
+        public async Task<RegistrationResult> RegisterWithUserAsync(RegisterNgoDto dto)
         {
             string email = EmailNormalizer.Normalize(dto.Email);
 
             if (!await _regionRepository.ExistsAsync(dto.RegionId))
                 throw new ArgumentException("האזור שנבחר אינו קיים.");
 
-            // הרשמה אנונימית לא מצרפת פרופיל לחשבון קיים
-            if (await _userRepository.GetByEmailAsync(email) != null)
-                throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
-
             var open = dto.SunToThuOpenTime ?? DefaultOpen;
             var close = dto.SunToThuCloseTime ?? DefaultClose;
             ValidateHours(open, close, dto.ReceivesOnFriday, dto.FridayOpenTime, dto.FridayCloseTime);
 
-            // המיקום המדויק לפי הכתובת (Google Maps) - לפני הטרנזקציה, כדי לא להחזיק אותה פתוחה בזמן הפנייה ל-Google
+            // המיקום המדויק לפי הכתובת (Google Maps) - לפני הטרנזקציה, כדי לא להחזיק אותה פתוחה בזמן הפנייה ל-Google.
+            // נבדק לפני בדיקת המייל, כך שגם כתובת שגויה לא מגלה אם המייל רשום.
             var location = await _geocoding.GeocodeAsync(dto.Address);
 
+            // הרשמה אנונימית לא מצרפת פרופיל לחשבון קיים.
+            // תוקן: בעבר נזרקה כאן ConflictException שחשפה שהמייל רשום. עכשיו - אותה תשובה, ומייל לבעל החשבון.
+            var existing = await _userRepository.GetByEmailAsync(email);
+            if (existing != null)
+            {
+                await _registrationNotices.NotifyExistingAccountAsync(existing, RoleTitle);
+                return RegistrationResult.ExistingAccount;
+            }
+
             string tempPassword = TempPasswordGenerator.Generate();
-            Ngo? ngoEntity = null;
+            bool emailTakenMeanwhile = false;
 
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
@@ -140,10 +149,14 @@ namespace BLL.Services
                 };
                 user.PasswordHash = _passwordHasher.HashPassword(user, tempPassword);
 
+                // נרשם באותו רגע בבקשה אחרת עם אותו מייל - לא יוצרים כלום
                 if (!await _userRepository.TryAddAsync(user))
-                    throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
+                {
+                    emailTakenMeanwhile = true;
+                    return;
+                }
 
-                ngoEntity = new Ngo
+                var ngoEntity = new Ngo
                 {
                     UserId = user.Id,
                     NgoName = dto.NgoName.Trim(),
@@ -170,13 +183,24 @@ namespace BLL.Services
                     user.Id,
                     user.Email,
                     "פרטי ההתחברות שלך למערכת הצלת מזון",
-                    $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות של העמותה שלך התקבלה בהצלחה.<br/>" +
-                    $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
+                    $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות של העמותה שלך התקבלה בהצלחה ועברה לאישור מנהל המערכת.<br/>" +
+                    $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>" +
+                    "אפשר יהיה להתחבר אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
                     summary: "נשלחו פרטי התחברות");
             });
 
-            return _mapper.Map<NgoResponseDto>(ngoEntity);
+            if (emailTakenMeanwhile)
+            {
+                var winner = await _userRepository.GetByEmailAsync(email);
+                if (winner != null)
+                    await _registrationNotices.NotifyExistingAccountAsync(winner, RoleTitle);
+                return RegistrationResult.ExistingAccount;
+            }
+
+            return RegistrationResult.Created;
         }
+
+        private const string RoleTitle = "כעמותה";
 
         public async Task UpdateMyHoursAsync(int userId, UpdateNgoHoursDto dto)
         {

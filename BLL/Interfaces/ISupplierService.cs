@@ -16,7 +16,8 @@ namespace BLL.Interfaces
         Task<SupplierResponseDto?> GetCurrentAsync(int userId);
 
         Task<SupplierResponseDto> CreateAsync(int userId, CreateSupplierDto dto);
-        Task<SupplierResponseDto> RegisterWithUserAsync(RegisterSupplierDto dto);
+        // מייל שכבר רשום לא יוצר כלום ולא זורק חריגה - בעל החשבון מקבל מייל (הקונטרולר עונה זהה בשני המקרים)
+        Task<RegistrationResult> RegisterWithUserAsync(RegisterSupplierDto dto);
 
         // קובץ הרישיון של ספק (למנהל בלבד). מחזיר null אם הספק או הקובץ לא נמצאו.
         Task<LicenseFileInfo?> GetLicenseFileAsync(int supplierId);

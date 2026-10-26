@@ -30,6 +30,7 @@ namespace BLL.Services
         private readonly IMapper _mapper;
         private readonly ILogger<SupplierService> _logger;
         private readonly IPasswordHasher<User> _passwordHasher;
+        private readonly IRegistrationNoticeService _registrationNotices;
 
         public SupplierService(
             ISupplierRepository supplierRepository,
@@ -41,9 +42,11 @@ namespace BLL.Services
             INotificationService notifications,
             IMapper mapper,
             ILogger<SupplierService> logger,
-            IPasswordHasher<User> passwordHasher)
+            IPasswordHasher<User> passwordHasher,
+            IRegistrationNoticeService registrationNotices)
         {
             _passwordHasher = passwordHasher;
+            _registrationNotices = registrationNotices;
             _supplierRepository = supplierRepository;
             _userRepository = userRepository;
             _approvals = approvals;
@@ -130,25 +133,33 @@ namespace BLL.Services
             return _mapper.Map<SupplierResponseDto>(supplierEntity);
         }
 
-        public async Task<SupplierResponseDto> RegisterWithUserAsync(RegisterSupplierDto dto)
+        public async Task<RegistrationResult> RegisterWithUserAsync(RegisterSupplierDto dto)
         {
             if (dto.LicenseFile == null || dto.LicenseFile.Length == 0)
                 throw new ArgumentException("חובה לצרף קובץ רישיון עסק.");
 
             string email = EmailNormalizer.Normalize(dto.Email);
 
-            // הרשמה אנונימית לא מצרפת פרופיל לחשבון קיים: אחרת כל אחד שיודע כתובת מייל
-            // יכול להוסיף לחשבון של מישהו אחר פרופיל "ממתין לאישור" ולחסום לו את ההתחברות.
-            if (await _userRepository.GetByEmailAsync(email) != null)
-                throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
-
+            // הבדיקות של הכתובת והקובץ נעשות לפני בדיקת המייל - כך שגם שגיאה בהן לא מגלה אם המייל רשום.
             // המיקום המדויק לפי הכתובת (Google Maps). לפני שמירת הקובץ, כדי שכתובת שגויה לא תשאיר קובץ יתום.
             var location = await _geocoding.GeocodeAsync(dto.Address);
 
             // שמירת קובץ הרישיון (בדיקת סיומת, גודל ותוכן) לפני יצירת המשתמש
             string licenseFileName = await _licenseFileService.SaveLicenseAsync(dto.LicenseFile);
+
+            // הרשמה אנונימית לא מצרפת פרופיל לחשבון קיים: אחרת כל אחד שיודע כתובת מייל
+            // יכול להוסיף לחשבון של מישהו אחר פרופיל "ממתין לאישור" ולחסום לו את ההתחברות.
+            // תוקן: בעבר נזרקה כאן ConflictException שחשפה שהמייל רשום. עכשיו - אותה תשובה, ומייל לבעל החשבון.
+            var existing = await _userRepository.GetByEmailAsync(email);
+            if (existing != null)
+            {
+                _licenseFileService.DeleteLicense(licenseFileName);
+                await _registrationNotices.NotifyExistingAccountAsync(existing, RoleTitle);
+                return RegistrationResult.ExistingAccount;
+            }
+
             string tempPassword = TempPasswordGenerator.Generate();
-            Supplier? supplierEntity = null;
+            bool emailTakenMeanwhile = false;
 
             try
             {
@@ -167,10 +178,14 @@ namespace BLL.Services
                     };
                     user.PasswordHash = _passwordHasher.HashPassword(user, tempPassword);
 
+                    // נרשם באותו רגע בבקשה אחרת עם אותו מייל - לא יוצרים כלום
                     if (!await _userRepository.TryAddAsync(user))
-                        throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
+                    {
+                        emailTakenMeanwhile = true;
+                        return;
+                    }
 
-                    supplierEntity = new Supplier
+                    var supplierEntity = new Supplier
                     {
                         UserId = user.Id,
                         BusinessName = dto.BusinessName.Trim(),
@@ -192,8 +207,9 @@ namespace BLL.Services
                         user.Id,
                         user.Email,
                         "פרטי ההתחברות שלך למערכת הצלת מזון",
-                        $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות שלך כספק למערכת התקבלה בהצלחה.<br/>" +
-                        $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
+                        $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות שלך כספק למערכת התקבלה בהצלחה ועברה לאישור מנהל המערכת.<br/>" +
+                        $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>" +
+                        "אפשר יהיה להתחבר אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
                         summary: "נשלחו פרטי התחברות");
                 });
             }
@@ -204,8 +220,19 @@ namespace BLL.Services
                 throw;
             }
 
-            return _mapper.Map<SupplierResponseDto>(supplierEntity);
+            if (emailTakenMeanwhile)
+            {
+                _licenseFileService.DeleteLicense(licenseFileName);
+                var winner = await _userRepository.GetByEmailAsync(email);
+                if (winner != null)
+                    await _registrationNotices.NotifyExistingAccountAsync(winner, RoleTitle);
+                return RegistrationResult.ExistingAccount;
+            }
+
+            return RegistrationResult.Created;
         }
+
+        private const string RoleTitle = "כספק / תורם";
 
         public async Task<LicenseFileInfo?> GetLicenseFileAsync(int supplierId)
         {

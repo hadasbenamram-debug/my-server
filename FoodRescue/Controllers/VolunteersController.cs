@@ -101,14 +101,15 @@ namespace FoodRescue.Controllers
         public async Task<ActionResult<VolunteerResponseDto>> CreateVolunteer([FromBody] CreateVolunteerDto volunteerDto) =>
             Ok(await _volunteerService.CreateAsync(RequireUserId(), volunteerDto));
 
-        // הרשמה מלאה (משתמש + פרופיל) - סיסמה זמנית נשלחת במייל וחייבים להחליף אותה בכניסה הראשונה
+        // הרשמה מלאה (משתמש + פרופיל) - סיסמה זמנית נשלחת במייל וחייבים להחליף אותה בכניסה הראשונה.
+        // התשובה זהה גם כשהמייל כבר רשום (לא חושפים אילו מיילים קיימים) - הפרטים נשלחים למייל.
         [HttpPost("register")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]
         public async Task<IActionResult> RegisterVolunteerWithUser([FromBody] RegisterVolunteerDto model)
         {
             await _volunteerService.RegisterWithUserAsync(model);
-            return Message("הרישום בוצע בהצלחה! סיסמה זמנית נשלחה לכתובת האימייל שלך. אפשר יהיה להתחבר אחרי שמנהל המערכת יאשר את הבקשה.");
+            return Message(RegistrationAcceptedMessage);
         }
     }
 

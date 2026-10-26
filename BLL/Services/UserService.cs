@@ -40,6 +40,7 @@ namespace BLL.Services
         private readonly ILogger<UserService> _logger;
         private readonly IMapper _mapper;
         private readonly IPasswordHasher<User> _passwordHasher;
+        private readonly IRegistrationNoticeService _registrationNotices;
 
         // hash קבוע לבדיקה מול מייל שלא קיים, כדי שזמן התגובה יהיה דומה (לא חושף אילו מיילים רשומים)
         private static readonly Lazy<string> DummyHash =
@@ -57,9 +58,11 @@ namespace BLL.Services
             IConfiguration configuration,
             ILogger<UserService> logger,
             IMapper mapper,
-            IPasswordHasher<User> passwordHasher)
+            IPasswordHasher<User> passwordHasher,
+            IRegistrationNoticeService registrationNotices)
         {
             _passwordHasher = passwordHasher;
+            _registrationNotices = registrationNotices;
             _userRepository = userRepository;
             _ngoRepository = ngoRepository;
             _supplierRepository = supplierRepository;
@@ -77,12 +80,15 @@ namespace BLL.Services
         // Register
         // =====================================================
 
-        public async Task<AuthResult> RegisterAsync(RegisterDto dto)
+        // תוקן: הרשמה עם מייל שכבר רשום החזירה "כבר קיים משתמש עם כתובת אימייל זו" (409) - כך שאפשר היה
+        // לבדוק אילו מיילים רשומים. עכשיו: אותה תשובה כמו בהרשמה חדשה, ובעל החשבון מקבל מייל (רק הוא רואה אותו).
+        public async Task<RegistrationResult> RegisterAsync(RegisterDto dto)
         {
             string email = EmailNormalizer.Normalize(dto.Email);
 
-            if (await _userRepository.GetByEmailAsync(email) != null)
-                return EmailTaken();
+            var existing = await _userRepository.GetByEmailAsync(email);
+            if (existing != null)
+                return await ExistingAccountAsync(existing, dto.Password);
 
             var user = new User
             {
@@ -98,16 +104,25 @@ namespace BLL.Services
 
             // Two simultaneous registrations may hit the unique index on Email.
             if (!await _userRepository.TryAddAsync(user))
-                return EmailTaken();
+            {
+                var winner = await _userRepository.GetByEmailAsync(email);
+                if (winner != null)
+                    await _registrationNotices.NotifyExistingAccountAsync(winner, null);
+                return RegistrationResult.ExistingAccount;
+            }
 
             // ההרשמה רק יוצרת את המשתמש. את הטוקן מקבלים בהתחברות (LoginAsync)
-            return AuthResult.Success();
+            return RegistrationResult.Created;
         }
 
-        private static AuthResult EmailTaken() =>
-            AuthResult.Fail(
-                AuthError.EmailTaken,
-                "כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
+        // מייל כבר רשום: לא יוצרים כלום ולא זורקים חריגה. מחשבים hash כמו בהרשמה חדשה,
+        // כדי שזמן התגובה יהיה דומה, ושולחים לבעל החשבון מייל "כבר יש לך חשבון".
+        private async Task<RegistrationResult> ExistingAccountAsync(User existing, string password)
+        {
+            _ = _passwordHasher.HashPassword(new User(), password);
+            await _registrationNotices.NotifyExistingAccountAsync(existing, null);
+            return RegistrationResult.ExistingAccount;
+        }
 
         // =====================================================
         // Login - נעילה לפי (מייל + IP) ולפי IP, נשמרת במסד

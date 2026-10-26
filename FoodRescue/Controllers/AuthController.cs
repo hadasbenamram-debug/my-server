@@ -22,18 +22,16 @@ namespace FoodRescue.Controllers
             _userService = userService;
         }
 
-        // רישום משתמש חדש במערכת. ההרשמה רק יוצרת את המשתמש - את הטוקן מקבלים בהתחברות (api/auth/login)
+        // רישום משתמש חדש במערכת. ההרשמה רק יוצרת את המשתמש - את הטוקן מקבלים בהתחברות (api/auth/login).
+        // תוקן: מייל שכבר רשום קיבל 409 "כבר קיים משתמש" (חשף אילו מיילים רשומים). עכשיו התשובה זהה תמיד,
+        // ובעל החשבון הקיים מקבל מייל.
         [HttpPost("register")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]
         public async Task<IActionResult> Register([FromBody] RegisterDto dto)
         {
-            var result = await _userService.RegisterAsync(dto);
-
-            if (!result.Succeeded)
-                return Conflict(Error(409, result.Message));
-
-            return Message("ההרשמה בוצעה בהצלחה. אפשר להתחבר עם כתובת המייל והסיסמה.");
+            await _userService.RegisterAsync(dto);
+            return Message(RegistrationAcceptedMessage);
         }
 
         // התחברות. הנעילה אחרי ניסיונות כושלים נשמרת במסד, לפי כתובת מייל + IP

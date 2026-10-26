@@ -13,6 +13,11 @@ namespace FoodRescue.Controllers
     {
         public const string TotalCountHeader = "X-Total-Count";
 
+        // תשובה אחידה לכל טפסי ההרשמה - גם כשהמייל חדש וגם כשהוא כבר רשום, כדי לא לחשוף אילו מיילים קיימים.
+        // הפרטים (סיסמה זמנית / "כבר יש לך חשבון") נשלחים רק לתיבת המייל עצמה.
+        public const string RegistrationAcceptedMessage =
+            "תודה! הבקשה נקלטה, ושלחנו לכתובת המייל שהזנת הודעה עם המשך התהליך. אם המייל לא הגיע תוך כמה דקות - כדאי לבדוק גם בתיקיית הספאם.";
+
         protected CurrentUserDto CurrentUser => User.ToCurrentUser();
 
         // מזהה המשתמש מתוך ה-JWT. אם חסר - 401.

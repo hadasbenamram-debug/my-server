@@ -191,7 +191,8 @@ namespace FoodRescue.Tests
             var service = new VolunteerService(
                 h.Volunteers, h.Users, new AvailabilitySlotRepository(db), new RegionRepository(db), h.Routes,
                 new Mock<IApprovalRequestService>().Object, new ValidationService(), h.UnitOfWork, h.NotificationService,
-                TestDb.Mapper, TestDb.Log<VolunteerService>(), new BLL.Security.PasswordHasherWithLegacySupport());
+                TestDb.Mapper, TestDb.Log<VolunteerService>(), new BLL.Security.PasswordHasherWithLegacySupport(),
+                new RegistrationNoticeService(h.NotificationService, h.Notifications, TestDb.Config()));
 
             return (service, await db.Users.SingleAsync(u => u.Id == v.UserId), db);
         }
@@ -244,6 +245,29 @@ namespace FoodRescue.Tests
             Assert.Equal(2, saved.Count);
             Assert.Contains(saved, s => s.ToRegionId == north && s.ToRegionName == "צפון");
             Assert.Contains(saved, s => s.ToRegionId == null && s.EndTime == "18:30");
+        }
+
+        // תוקן: הרשמה עם מייל קיים זרקה ConflictException ("כבר קיים משתמש...") - חשף שהמייל רשום,
+        // ובהרצה מ-Visual Studio עצר את השרת. עכשיו: בלי חריגה, לא נוצר כלום, ובעל החשבון מקבל מייל.
+        [Fact]
+        public async Task RegisterVolunteer_WithAnExistingEmail_CreatesNothing_AndEmailsTheOwner()
+        {
+            var (service, user, db) = await VolunteerServiceAsync();
+            using var _ = db;
+            int usersBefore = await db.Users.CountAsync();
+
+            var result = await service.RegisterWithUserAsync(new RegisterVolunteerDto
+            {
+                Name = "מישהו אחר", Email = "  VOL@test ", Phone = "0501234567", VehicleType = "רכב",
+                MaxCapacityKg = 50, IdNumber = "000000018", DriverLicenseNumber = "1234567",
+                DriverLicenseExpiry = DateTime.UtcNow.AddYears(1), DateOfBirth = new DateTime(1990, 1, 1)
+            });
+
+            Assert.Equal(RegistrationResult.ExistingAccount, result);
+            Assert.Equal(usersBefore, await db.Users.CountAsync());
+            Assert.Single(await db.Volunteers.ToListAsync());
+            Assert.Single(await db.Notifications
+                .Where(n => n.UserId == user.Id && n.Subject == RegistrationNoticeService.Subject).ToListAsync());
         }
 
         // ---------------- ציון אמינות ----------------

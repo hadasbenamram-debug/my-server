@@ -15,30 +15,21 @@ namespace FoodRescue.Tests
         private static AuthController CreateController(Mock<IUserService> userService) =>
             new AuthController(userService.Object);
 
-        [Fact]
-        public async Task Register_Success_ReturnsOkWithoutToken()
+        // ההרשמה רק יוצרת את המשתמש (את הטוקן מקבלים בהתחברות). מייל חדש ומייל שכבר רשום מקבלים
+        // בדיוק אותה תשובה - כדי שאי אפשר יהיה לבדוק דרך ההרשמה אילו מיילים קיימים במערכת.
+        [Theory]
+        [InlineData(RegistrationResult.Created)]
+        [InlineData(RegistrationResult.ExistingAccount)]
+        public async Task Register_AnswersTheSame_ForNewAndExistingEmails(RegistrationResult outcome)
         {
-            // ההרשמה רק יוצרת את המשתמש. את הטוקן מקבלים בהתחברות
             var service = new Mock<IUserService>();
-            service.Setup(s => s.RegisterAsync(It.IsAny<RegisterDto>()))
-                   .ReturnsAsync(AuthResult.Success());
+            service.Setup(s => s.RegisterAsync(It.IsAny<RegisterDto>())).ReturnsAsync(outcome);
 
             var result = await CreateController(service).Register(new RegisterDto());
 
             var ok = Assert.IsType<OkObjectResult>(result);
-            Assert.IsType<MessageResponse>(ok.Value);
-        }
-
-        [Fact]
-        public async Task Register_EmailTaken_Returns409()
-        {
-            var service = new Mock<IUserService>();
-            service.Setup(s => s.RegisterAsync(It.IsAny<RegisterDto>()))
-                   .ReturnsAsync(AuthResult.Fail(AuthError.EmailTaken, "taken"));
-
-            var result = await CreateController(service).Register(new RegisterDto());
-
-            Assert.IsType<ConflictObjectResult>(result);
+            var body = Assert.IsType<MessageResponse>(ok.Value);
+            Assert.Equal(ApiControllerBase.RegistrationAcceptedMessage, body.Message);
         }
 
         [Theory]

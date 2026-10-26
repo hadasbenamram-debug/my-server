@@ -17,7 +17,8 @@ namespace BLL.Interfaces
 
         Task<NgoResponseDto?> GetMineAsync(int userId);
         Task<List<AdminNgoListItemDto>> GetAdminListAsync();
-        Task<NgoResponseDto> RegisterWithUserAsync(RegisterNgoDto dto);
+        // מייל שכבר רשום לא יוצר כלום ולא זורק חריגה - בעל החשבון מקבל מייל (הקונטרולר עונה זהה בשני המקרים)
+        Task<RegistrationResult> RegisterWithUserAsync(RegisterNgoDto dto);
         Task UpdateMyHoursAsync(int userId, UpdateNgoHoursDto dto);
     }
 }

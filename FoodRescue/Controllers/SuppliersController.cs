@@ -51,8 +51,9 @@ namespace FoodRescue.Controllers
         [RequestSizeLimit(6 * 1024 * 1024)]
         public async Task<IActionResult> RegisterSupplierWithUser([FromForm] RegisterSupplierDto model)
         {
-            var supplier = await _supplierService.RegisterWithUserAsync(model);
-            return Ok(new { message = "הרישום בוצע בהצלחה! סיסמה זמנית נשלחה לכתובת האימייל שלך.", data = supplier });
+            // התשובה זהה גם כשהמייל כבר רשום (לא חושפים אילו מיילים קיימים) - הפרטים נשלחים למייל
+            await _supplierService.RegisterWithUserAsync(model);
+            return Message(RegistrationAcceptedMessage);
         }
 
         // תוקן: האישור מחפש לפי מזהה ספק בלבד (בעבר: אם לא נמצא ספק - ניסה כמזהה משתמש, ויכול היה לאשר ספק אחר)

@@ -234,6 +234,7 @@ builder.Services.AddScoped<IActionTokenService, ActionTokenService>();
 builder.Services.AddScoped<ILoginLockoutService, LoginLockoutService>();
 // ה-PasswordHasher של Microsoft (עם תמיכה באימות hash-ים בפורמט הישן של הפרויקט)
 builder.Services.AddScoped<Microsoft.AspNetCore.Identity.IPasswordHasher<DAL.Classes.User>, PasswordHasherWithLegacySupport>();
+builder.Services.AddScoped<IRegistrationNoticeService, RegistrationNoticeService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<ISessionValidationService, SessionValidationService>();
 

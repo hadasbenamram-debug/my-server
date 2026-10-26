@@ -73,8 +73,11 @@ namespace BLL.Interfaces
 
     public interface IUserService
     {
-        /// <summary>Creates a regular user (Role is always User). No token here: the token is issued only by LoginAsync.</summary>
-        Task<AuthResult> RegisterAsync(RegisterDto dto);
+        /// <summary>
+        /// Creates a regular user (Role is always User). No token here: the token is issued only by LoginAsync.
+        /// An e-mail that is already registered creates nothing and e-mails the owner; the caller answers both cases the same way.
+        /// </summary>
+        Task<RegistrationResult> RegisterAsync(RegisterDto dto);
 
         /// <summary>Validates credentials, enforces login lock-out (per e-mail + IP) and NGO/Supplier approval status.</summary>
         Task<AuthResult> LoginAsync(LoginDto dto, string? ipAddress = null);

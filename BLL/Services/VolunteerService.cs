@@ -38,6 +38,7 @@ namespace BLL.Services
         private readonly IMapper _mapper;
         private readonly ILogger<VolunteerService> _logger;
         private readonly IPasswordHasher<User> _passwordHasher;
+        private readonly IRegistrationNoticeService _registrationNotices;
 
         public VolunteerService(
             IVolunteerRepository volunteerRepository,
@@ -51,9 +52,11 @@ namespace BLL.Services
             INotificationService notifications,
             IMapper mapper,
             ILogger<VolunteerService> logger,
-            IPasswordHasher<User> passwordHasher)
+            IPasswordHasher<User> passwordHasher,
+            IRegistrationNoticeService registrationNotices)
         {
             _passwordHasher = passwordHasher;
+            _registrationNotices = registrationNotices;
             _volunteerRepository = volunteerRepository;
             _userRepository = userRepository;
             _availabilitySlotRepository = availabilitySlotRepository;
@@ -197,15 +200,24 @@ namespace BLL.Services
         // הרשמת מתנדב חדש + יצירת משתמש (פתוח לכולם)
         // =========================================================
 
-        public async Task RegisterWithUserAsync(RegisterVolunteerDto dto)
+        public async Task<RegistrationResult> RegisterWithUserAsync(RegisterVolunteerDto dto)
         {
             string email = EmailNormalizer.Normalize(dto.Email);
 
-            if (await _userRepository.GetByEmailAsync(email) != null)
-                throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
+            // תוקן: מייל שכבר רשום זרק ConflictException ("כבר קיים משתמש עם כתובת אימייל זו") - חשף אילו מיילים
+            // רשומים, ובהרצה מ-Visual Studio גם עצר את השרת בדיבאגר. עכשיו: בלי חריגה, אותה תשובה כמו בהרשמה חדשה,
+            // ובעל החשבון מקבל מייל.
+            var existing = await _userRepository.GetByEmailAsync(email);
+            if (existing != null)
+            {
+                _ = _passwordHasher.HashPassword(new User(), TempPasswordGenerator.Generate());   // זמן תגובה דומה להרשמה חדשה
+                await _registrationNotices.NotifyExistingAccountAsync(existing, RoleTitle);
+                return RegistrationResult.ExistingAccount;
+            }
 
             string tempPassword = TempPasswordGenerator.Generate();
             var (passed, details) = _validation.ValidateVolunteer(dto.IdNumber, dto.DriverLicenseNumber, dto.DriverLicenseExpiry, dto.DateOfBirth);
+            bool emailTakenMeanwhile = false;
 
             // תוקן: המשתמש, הפרופיל ובקשת האישור נשמרים יחד או לא נשמרים בכלל.
             // בעבר, כשהפרופיל נכשל (למשל ערך ארוך מדי), המשתמש כבר נשמר והמייל שלו נשאר "תפוס".
@@ -222,8 +234,12 @@ namespace BLL.Services
                 };
                 user.PasswordHash = _passwordHasher.HashPassword(user, tempPassword);
 
+                // נרשם באותו רגע בבקשה אחרת עם אותו מייל - לא יוצרים כלום
                 if (!await _userRepository.TryAddAsync(user))
-                    throw new ConflictException("כבר קיים במערכת משתמש הרשום עם כתובת אימייל זו.");
+                {
+                    emailTakenMeanwhile = true;
+                    return;
+                }
 
                 await _volunteerRepository.AddAsync(new Volunteer
                 {
@@ -248,7 +264,19 @@ namespace BLL.Services
                     "אפשר יהיה להתחבר רק אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
                     summary: "נשלחו פרטי התחברות");
             });
+
+            if (emailTakenMeanwhile)
+            {
+                var winner = await _userRepository.GetByEmailAsync(email);
+                if (winner != null)
+                    await _registrationNotices.NotifyExistingAccountAsync(winner, RoleTitle);
+                return RegistrationResult.ExistingAccount;
+            }
+
+            return RegistrationResult.Created;
         }
+
+        private const string RoleTitle = "כמתנדב/ת";
 
         // =========================================================
         // מיקום חי

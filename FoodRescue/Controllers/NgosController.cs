@@ -43,8 +43,9 @@ namespace FoodRescue.Controllers
         [EnableRateLimiting("auth")]
         public async Task<IActionResult> RegisterNgoWithUser([FromBody] RegisterNgoDto model)
         {
-            var ngo = await _ngoService.RegisterWithUserAsync(model);
-            return Ok(new { message = "הרישום בוצע בהצלחה! סיסמה זמנית נשלחה לכתובת האימייל שלך.", data = ngo });
+            // התשובה זהה גם כשהמייל כבר רשום (לא חושפים אילו מיילים קיימים) - הפרטים נשלחים למייל
+            await _ngoService.RegisterWithUserAsync(model);
+            return Message(RegistrationAcceptedMessage);
         }
 
         // תוקן: אישור/דחייה עוברים במנגנון האחיד - נשלח מייל, נשמר HandledByManagerId,
