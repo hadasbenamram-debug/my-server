@@ -9,8 +9,13 @@ namespace FoodRescue.DTOs
     {
         public int Id { get; set; }
         public int? ParentCommentId { get; set; }
-        public int? DonationId { get; set; }
-        public int? MatchId { get; set; }
+
+        // תיקון 18: כל תגובה שייכת לתרומה (חובה). אין יותר MatchId
+        public int DonationId { get; set; }
+
+        // שם הספק של התרומה - כדי להציג על איזו תרומה מדובר ("תרומה #21 – מאפיית אורן")
+        public string? DonationSupplierName { get; set; }
+
         public string AuthorName { get; set; } = string.Empty;
         public string Text { get; set; } = string.Empty;
         public DateTime CreatedAt { get; set; }

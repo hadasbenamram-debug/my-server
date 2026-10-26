@@ -51,6 +51,7 @@ namespace DAL.Classes
         public double? GoogleMapsDurationMinutes { get; set; }
 
         public Feedback Feedback { get; set; }
-        public ICollection<Comment> Comments { get; set; }
+
+        // תיקון 18: אין יותר תגובות על שיבוץ - כל תגובה שייכת לתרומה (Donation.Comments)
     }
 }

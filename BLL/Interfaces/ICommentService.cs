@@ -6,8 +6,9 @@ namespace BLL.Interfaces
 {
     public interface ICommentService
     {
-        // עץ התגובות: מנהל רואה הכל, כל משתמש אחר רק תגובות על תרומות/שידוכים שהוא קשור אליהם
-        Task<List<CommentDto>> GetTreeAsync(CurrentUserDto currentUser);
+        // עץ התגובות: מנהל רואה הכל, כל משתמש אחר רק תגובות על תרומות שהוא קשור אליהן.
+        // תיקון 18: role (לא חובה) - רק התרומות שהמשתמש קשור אליהן בתפקיד הזה (למשתמש עם כמה תפקידים)
+        Task<List<CommentDto>> GetTreeAsync(CurrentUserDto currentUser, RequestedRole? role = null);
 
         Task<CommentDto> AddAsync(CreateCommentDto dto, CurrentUserDto currentUser);
 

@@ -18,12 +18,13 @@ namespace FoodRescue.Controllers
             _commentService = commentService;
         }
 
-        // עץ התגובות (רקורסיבי) - מנהל רואה הכל, כל משתמש אחר רק תגובות על תרומות/שידוכים שהוא קשור אליהם
+        // עץ התגובות (רקורסיבי) - מנהל רואה הכל, כל משתמש אחר רק תגובות על תרומות שהוא קשור אליהן
+        // תיקון 18: ?role=Volunteer / Supplier / Ngo - רק התרומות של התפקיד הזה (למשתמש עם כמה תפקידים)
         [HttpGet("tree")]
-        public async Task<ActionResult<List<CommentDto>>> GetCommentTree() =>
-            Ok(await _commentService.GetTreeAsync(CurrentUser));
+        public async Task<ActionResult<List<CommentDto>>> GetCommentTree([FromQuery] RequestedRole? role = null) =>
+            Ok(await _commentService.GetTreeAsync(CurrentUser, role));
 
-        // תגובה חדשה חייבת להיות על תרומה/שידוך (DonationId / MatchId), או תשובה לתגובה קיימת (ParentCommentId)
+        // תיקון 18: תגובה חדשה חייבת להיות על תרומה (DonationId), או תשובה לתגובה קיימת (ParentCommentId) - על אותה תרומה
         [HttpPost]
         public async Task<ActionResult<CommentDto>> AddComment([FromBody] CreateCommentDto dto) =>
             Ok(await _commentService.AddAsync(dto, CurrentUser));

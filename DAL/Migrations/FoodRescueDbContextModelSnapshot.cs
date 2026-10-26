@@ -172,10 +172,7 @@ namespace DAL.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
-                    b.Property<int?>("DonationId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("MatchId")
+                    b.Property<int>("DonationId")
                         .HasColumnType("int");
 
                     b.Property<int?>("ParentCommentId")
@@ -184,8 +181,6 @@ namespace DAL.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("DonationId");
-
-                    b.HasIndex("MatchId");
 
                     b.HasIndex("ParentCommentId");
 
@@ -975,19 +970,15 @@ namespace DAL.Migrations
                 {
                     b.HasOne("DAL.Classes.Donation", "Donation")
                         .WithMany("Comments")
-                        .HasForeignKey("DonationId");
-
-                    b.HasOne("DAL.Classes.Match", "Match")
-                        .WithMany("Comments")
-                        .HasForeignKey("MatchId");
+                        .HasForeignKey("DonationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.HasOne("DAL.Classes.Comment", "ParentComment")
                         .WithMany("Replies")
                         .HasForeignKey("ParentCommentId");
 
                     b.Navigation("Donation");
-
-                    b.Navigation("Match");
 
                     b.Navigation("ParentComment");
                 });
@@ -1194,8 +1185,6 @@ namespace DAL.Migrations
 
             modelBuilder.Entity("DAL.Classes.Match", b =>
                 {
-                    b.Navigation("Comments");
-
                     b.Navigation("Feedback")
                         .IsRequired();
                 });

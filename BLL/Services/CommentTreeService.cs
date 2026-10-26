@@ -68,7 +68,7 @@ namespace BLL.Algorithms
             Id = c.Id,
             ParentCommentId = c.ParentCommentId,
             DonationId = c.DonationId,
-            MatchId = c.MatchId,
+            DonationSupplierName = c.Donation?.Supplier?.BusinessName,
             AuthorName = c.Author,
             Text = c.Content,
             CreatedAt = c.CreatedAt

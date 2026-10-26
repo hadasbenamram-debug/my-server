@@ -72,6 +72,13 @@ namespace DAL
                 .WithMany(r => r.Donations)
                 .HasForeignKey(d => d.RegionId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // תיקון 18: כל תגובה שייכת לתרומה (חובה). Restrict - כמו קודם, מחיקת תרומה לא מוחקת תגובות בשקט
+            modelBuilder.Entity<Comment>()
+                .HasOne(c => c.Donation)
+                .WithMany(d => d.Comments)
+                .HasForeignKey(c => c.DonationId)
+                .OnDelete(DeleteBehavior.Restrict);
             // Unique constraint על אימייל
             modelBuilder.Entity<User>()
                 .HasIndex(u => u.Email)

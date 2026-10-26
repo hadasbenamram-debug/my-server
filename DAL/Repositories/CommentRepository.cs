@@ -13,29 +13,31 @@ namespace DAL.Repositories
 
         public async Task<List<Comment>> GetAllReadOnlyAsync()
         {
-            return await _context.Comments.OrderBy(c => c.CreatedAt).AsNoTracking().ToListAsync();
+            return await _context.Comments
+                .Include(c => c.Donation).ThenInclude(d => d.Supplier)
+                .OrderBy(c => c.CreatedAt)
+                .AsNoTracking()
+                .ToListAsync();
         }
 
+        // תיקון 18: כל תגובה שייכת לתרומה. רואים אותה הספק של התרומה, וכל מתנדב / עמותה שהיה להם שיבוץ על התרומה
+        // (כמו הכלל שהיה קודם לתגובות על תרומה; התגובות שהיו על שיבוץ הועברו לתרומה של השיבוץ).
         public async Task<List<Comment>> GetForParticipantAsync(int volunteerId, int ngoId, int supplierId)
         {
             return await _context.Comments
+                .Include(c => c.Donation).ThenInclude(d => d.Supplier)
                 .AsNoTracking()
                 .Where(c =>
-                    (c.DonationId != null &&
-                        (c.Donation.SupplierId == supplierId ||
-                         c.Donation.Matches.Any(m => m.VolunteerId == volunteerId || m.NgoId == ngoId))) ||
-                    (c.MatchId != null &&
-                        (c.Match.VolunteerId == volunteerId ||
-                         c.Match.NgoId == ngoId ||
-                         c.Match.Donation.SupplierId == supplierId)))
+                    c.Donation.SupplierId == supplierId ||
+                    c.Donation.Matches.Any(m => m.VolunteerId == volunteerId || m.NgoId == ngoId))
                 .OrderBy(c => c.CreatedAt)
                 .ToListAsync();
         }
 
-        public async Task<List<Comment>> GetForTargetAsync(int? donationId, int? matchId)
+        public async Task<List<Comment>> GetForDonationAsync(int donationId)
         {
             return await _context.Comments
-                .Where(c => c.DonationId == donationId && c.MatchId == matchId)
+                .Where(c => c.DonationId == donationId)
                 .ToListAsync();
         }
 

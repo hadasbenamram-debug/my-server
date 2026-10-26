@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using RequestedRole = FoodRescue.DTOs.RequestedRole;
 
 namespace BLL.Services
 {
@@ -36,50 +37,53 @@ namespace BLL.Services
             _caller = caller;
         }
 
-        public async Task<List<CommentDto>> GetTreeAsync(CurrentUserDto currentUser)
+        // תיקון 18: role - למשתמש עם כמה תפקידים, דף התגובות של כל תפקיד מציג רק את התרומות של התפקיד הזה
+        // (למשל ספק שהוא גם מתנדב: בדף של המתנדב - התרומות שהוא אוסף, לא התרומות שהוא פרסם). בלי role - הכל, כמו קודם.
+        public async Task<List<CommentDto>> GetTreeAsync(CurrentUserDto currentUser, RequestedRole? role = null)
         {
             var caller = await _caller.GetAsync(currentUser);
 
+            bool any = role == null;
             var comments = caller.IsAdmin
                 ? await _commentRepository.GetAllReadOnlyAsync()
                 // -1 never matches a real Id, so a missing profile simply matches nothing.
                 : await _commentRepository.GetForParticipantAsync(
-                    caller.Volunteer?.Id ?? -1,
-                    caller.Ngo?.Id ?? -1,
-                    caller.Supplier?.Id ?? -1);
+                    any || role == RequestedRole.Volunteer ? caller.Volunteer?.Id ?? -1 : -1,
+                    any || role == RequestedRole.Ngo ? caller.Ngo?.Id ?? -1 : -1,
+                    any || role == RequestedRole.Supplier ? caller.Supplier?.Id ?? -1 : -1);
 
             return _commentTreeService.BuildCommentTree(comments);
         }
 
+        // תיקון 18: כל תגובה היא על תרומה מסוימת - DonationId חובה (בתשובה לתגובה: התרומה של התגובה שאליה עונים).
+        // אין יותר תגובות על שיבוץ (MatchId): מתנדב מגיב על התרומה שהוא אוסף.
         public async Task<CommentDto> AddAsync(CreateCommentDto dto, CurrentUserDto currentUser)
         {
             var caller = await _caller.GetAsync(currentUser);
             if (caller.UserId == null)
                 throw new UnauthorizedException("המשתמש המחובר לא זוהה.");
 
-            int? donationId = dto.DonationId;
-            int? matchId = dto.MatchId;
+            int donationId;
 
             if (dto.ParentCommentId.HasValue)
             {
                 var parent = await _commentRepository.GetByIdAsync(dto.ParentCommentId.Value)
                              ?? throw new ArgumentException("תגובת האב אינה תקינה.");
 
-                // תגובה לתגובה שייכת תמיד לאותה תרומה / אותו שידוך של האב
-                if ((donationId.HasValue && donationId != parent.DonationId) || (matchId.HasValue && matchId != parent.MatchId))
-                    throw new ArgumentException("תגובת האב אינה תקינה.");
+                // תשובה לתגובה שייכת תמיד לאותה תרומה של האב
+                if (dto.DonationId.HasValue && dto.DonationId != parent.DonationId)
+                    throw new ArgumentException("תשובה לתגובה חייבת להיות על אותה תרומה.");
 
                 donationId = parent.DonationId;
-                matchId = parent.MatchId;
+            }
+            else
+            {
+                donationId = dto.DonationId ?? throw new ArgumentException("יש לבחור את התרומה שעליה התגובה.");
             }
 
-            // בדיוק אחד מהשניים: תרומה או שידוך
-            if (donationId.HasValue == matchId.HasValue)
-                throw new ArgumentException("יש לציין תרומה או שידוך (בדיוק אחד מהם).");
-
             // אין הרשאה = אותה תשובה כמו "לא קיים", כדי לא לחשוף מזהים.
-            if (!await CanCommentOnAsync(caller, donationId, matchId))
-                throw new NotFoundException("היעד של התגובה לא נמצא.");
+            if (!await CanCommentOnAsync(caller, donationId))
+                throw new NotFoundException("התרומה של התגובה לא נמצאה.");
 
             var user = await _userRepository.GetByIdAsync(caller.UserId.Value)
                        ?? throw new UnauthorizedException("המשתמש המחובר לא נמצא.");
@@ -91,8 +95,7 @@ namespace BLL.Services
                 Content = dto.Content.Trim(),
                 CreatedAt = DateTime.UtcNow,              // שעון השרת
                 ParentCommentId = dto.ParentCommentId,
-                DonationId = donationId,
-                MatchId = matchId
+                DonationId = donationId
             };
 
             await _commentRepository.AddAsync(comment);
@@ -110,9 +113,9 @@ namespace BLL.Services
             var comment = await _commentRepository.GetByIdAsync(id)
                           ?? throw new NotFoundException("התגובה לא נמצאה.");
 
-            var sameTarget = await _commentRepository.GetForTargetAsync(comment.DonationId, comment.MatchId);
-            var toDelete = CommentTreeService.CollectSubtree(sameTarget, comment.Id);
-            toDelete.Add(sameTarget.FirstOrDefault(c => c.Id == comment.Id) ?? comment);
+            var sameDonation = await _commentRepository.GetForDonationAsync(comment.DonationId);
+            var toDelete = CommentTreeService.CollectSubtree(sameDonation, comment.Id);
+            toDelete.Add(sameDonation.FirstOrDefault(c => c.Id == comment.Id) ?? comment);
 
             // מוחקים מהעלים כלפי מעלה (ה-FK ParentCommentId לא מוגדר Cascade)
             toDelete.Reverse();
@@ -121,21 +124,8 @@ namespace BLL.Services
         }
 
         // Permission: admin, or the supplier who owns the donation, or the volunteer / NGO that is part of a match on it.
-        private async Task<bool> CanCommentOnAsync(CallerProfile caller, int? donationId, int? matchId)
+        private async Task<bool> CanCommentOnAsync(CallerProfile caller, int id)
         {
-            if (matchId.HasValue)
-            {
-                var match = await _matchRepository.GetByIdWithDonationAsync(matchId.Value);
-                if (match == null) return false;
-
-                return caller.IsAdmin ||
-                       (caller.Volunteer != null && match.VolunteerId == caller.Volunteer.Id) ||
-                       (caller.Ngo != null && match.NgoId == caller.Ngo.Id) ||
-                       (caller.Supplier != null && match.Donation != null && match.Donation.SupplierId == caller.Supplier.Id);
-            }
-
-            int id = donationId!.Value;
-
             if (!await _donationRepository.ExistsAsync(id)) return false;
             if (caller.IsAdmin) return true;
 
