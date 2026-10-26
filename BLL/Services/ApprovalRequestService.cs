@@ -1,4 +1,5 @@
 ﻿using AutoMapper;
+using BLL.Algorithms;
 using BLL.Exceptions;
 using BLL.Interfaces;
 using BLL.Notifications;
@@ -195,6 +196,15 @@ namespace BLL.Services
         {
             if (!approve && string.IsNullOrWhiteSpace(reason))
                 throw new ArgumentException("יש לציין סיבת דחייה.");
+
+            // מתנדב שרישיון הנהיגה שלו לא בתוקף לא מאושר (ממילא המנוע לא היה משבץ אותו)
+            if (approve && role == RequestedRole.Volunteer)
+            {
+                var volunteer = await _volunteerRepository.GetByUserIdAsync(userId);
+                if (volunteer != null && !DriverLicensePolicy.IsValid(volunteer.DriverLicenseExpiry, DateTime.UtcNow))
+                    throw new ArgumentException("לא ניתן לאשר את המתנדב: " + DriverLicensePolicy.NotValidMessage +
+                                                " אפשר לדחות את הבקשה ולבקש ממנו להירשם עם רישיון בתוקף.");
+            }
 
             var manager = await GetOrCreateManagerAsync(managerUserId);
             var user = await _userRepository.GetByIdAsync(userId) ?? throw new NotFoundException("המשתמש המקושר לא נמצא.");

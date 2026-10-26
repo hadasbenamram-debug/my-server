@@ -251,8 +251,9 @@ namespace BLL.Algorithms
                 Donations = await _donationRepository.GetAvailableDonationsAsync(now, dayStartUtc),
                 // תוקן: עמותה שעדיין לא אושרה יכלה לקבל שידוך
                 Ngos = await _ngoRepository.GetApprovedAsync(),
-                // תוקן: מתנדב שעדיין לא אושר יכול היה לקבל שידוך
-                Volunteers = await _volunteerRepository.GetAvailableVolunteersAsync(now),
+                // תוקן: מתנדב שעדיין לא אושר יכול היה לקבל שידוך.
+                // רק מתנדבים שרישיון הנהיגה שלהם בתוקף היום (לפי התאריך בישראל) - DriverLicensePolicy
+                Volunteers = await _volunteerRepository.GetAvailableVolunteersAsync(DriverLicensePolicy.TodayLocal(now)),
                 // מתנדב שכבר יש לו הצעה או מסלול פעיל לא מקבל הצעה נוספת
                 BusyVolunteerIds = await _matchRepository.GetVolunteerIdsWithActiveMatchesAsync(),
                 Regions = regions

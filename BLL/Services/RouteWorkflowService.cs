@@ -86,6 +86,16 @@ namespace BLL.Services
             if (group.Any(m => m.ResponseDeadline.HasValue && m.ResponseDeadline.Value < now))
                 throw new ArgumentException("פג זמן התגובה לבקשה זו.");
 
+            // בדיקה חוזרת של רישיון הנהיגה ברגע האישור (המנוע בדק אותו כשבחר את המתנדב, אבל הרישיון
+            // יכול לפוג בין ההצעה לאישור - למשל בחצות). רישיון לא בתוקף: הבקשה עוברת מיד למתנדב הבא.
+            var volunteerProfile = group[0].Volunteer ?? await _volunteerRepository.GetByIdAsync(volunteerId);
+            if (volunteerProfile != null && !DriverLicensePolicy.IsValid(volunteerProfile.DriverLicenseExpiry, now))
+            {
+                await DeclineAsync(match, volunteerId, MatchStatus.Declined);
+                throw new ConflictException("לא ניתן לאשר: " + DriverLicensePolicy.NotValidMessage +
+                                            " הבקשה הועברה למתנדב אחר. לעדכון תוקף הרישיון יש לפנות למנהל המערכת.");
+            }
+
             if (await _matchRepository.HasActiveConfirmedMatchAsync(volunteerId, match.Id, match.VolunteerRouteId))
                 throw new ConflictException("למתנדב כבר יש שיבוץ פעיל אחר.");
 

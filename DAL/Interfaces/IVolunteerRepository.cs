@@ -7,8 +7,9 @@ namespace DAL.Interfaces
 {
     public interface IVolunteerRepository : IRepository<Volunteer>
     {
-        // מתנדבים שאפשר לשבץ: מאושרים, זמינים, ורישיון הנהיגה שלהם לא פג (todayUtc)
-        Task<List<Volunteer>> GetAvailableVolunteersAsync(DateTime todayUtc);
+        // מתנדבים שאפשר לשבץ: מאושרים, זמינים, ורישיון הנהיגה שלהם בתוקף בתאריך licenseValidOn
+        // (התאריך של היום בישראל). רישיון בלי תאריך תוקף לא נחשב בתוקף.
+        Task<List<Volunteer>> GetAvailableVolunteersAsync(DateTime licenseValidOn);
 
         Task<Volunteer?> GetByUserIdAsync(int userId);
 

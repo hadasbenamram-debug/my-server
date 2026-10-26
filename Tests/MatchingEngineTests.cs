@@ -175,6 +175,45 @@ namespace FoodRescue.Tests
             Assert.Equal(0, result.RoutesCreated);
         }
 
+        // תוקן: רישיון בלי תאריך תוקף נחשב "בתוקף" ומתנדב כזה שובץ
+        [Fact]
+        public async Task VolunteerWithoutLicenseExpiry_IsNotMatched()
+        {
+            var h = new EngineHarness();
+            using var _ = h;
+            await h.SeedBasicsAsync();
+            var v = await h.AddVolunteerAsync("nolicense@test");
+            v.DriverLicenseExpiry = null;
+            await h.Db.SaveChangesAsync();
+            await h.AddDonationAsync();
+
+            var result = await h.Engine.RunBatchAsync("Manual");
+
+            Assert.Equal(0, result.RoutesCreated);
+        }
+
+        // הרישיון נבדק שוב ברגע האישור: אם פג בין ההצעה לאישור - האישור נדחה והתרומה עוברת הלאה
+        [Fact]
+        public async Task Accept_WhenTheLicenseExpiredAfterTheOffer_IsRejected_AndTheDonationIsReleased()
+        {
+            var (h, v, _) = await SetupAsync();
+            using var _ = h;
+            await h.Engine.RunBatchAsync("Manual");
+            h.Fresh();
+            var match = await h.Db.Matches.SingleAsync();
+            var volunteer = await h.Db.Volunteers.SingleAsync(x => x.Id == v.Id);
+            volunteer.DriverLicenseExpiry = DateTime.UtcNow.AddDays(-2);
+            await h.Db.SaveChangesAsync();
+            var volunteerUser = await h.Db.Users.SingleAsync(u => u.Id == v.UserId);
+
+            await Assert.ThrowsAsync<ConflictException>(() => h.MatchService.AcceptAsync(match.Id, As(volunteerUser)));
+
+            h.Fresh();
+            Assert.Equal(MatchStatus.Declined, (await h.Db.Matches.SingleAsync()).Status);
+            Assert.Equal(DonationStatus.Pending, (await h.Db.Donations.SingleAsync()).Status);
+            Assert.True(h.Jobs.Has<DonationMatchingBatchService>(nameof(DonationMatchingBatchService.ReassignDonationAsync)));
+        }
+
         // ---------------- שיבוץ ידני: שידוך אחד, מייל אחד ----------------
 
         [Fact]

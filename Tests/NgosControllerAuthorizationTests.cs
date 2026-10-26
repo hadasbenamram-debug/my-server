@@ -269,6 +269,31 @@ namespace FoodRescue.Tests
             Assert.Equal(ApprovalStatus.Approved, (await db.Suppliers.SingleAsync(s => s.Id == second.Id)).ApprovalStatus);
         }
 
+        // מתנדב שרישיון הנהיגה שלו פג (או לא הוזן) לא מאושר
+        [Fact]
+        public async Task ApproveVolunteer_WithExpiredLicense_IsRejected()
+        {
+            using var f = new Fixture();
+            await f.SeedAsync();
+            var user = EngineHarness.NewUser("vol@test", UserRole.Volunteer);
+            f.Harness.Db.Users.Add(user);
+            await f.Harness.Db.SaveChangesAsync();
+            var volunteer = new Volunteer
+            {
+                UserId = user.Id, VehicleType = "רכב", MaxCapacityKg = 50, IdNumber = "000000018", DriverLicenseNumber = "1234567",
+                DriverLicenseExpiry = DateTime.UtcNow.AddDays(-3), DateOfBirth = new DateTime(1990, 1, 1),
+                ApprovalStatus = ApprovalStatus.Pending, RowVersion = new byte[8]
+            };
+            f.Harness.Db.Volunteers.Add(volunteer);
+            await f.Harness.Db.SaveChangesAsync();
+
+            await Assert.ThrowsAsync<ArgumentException>(() =>
+                f.Approvals.ApproveProfileAsync(FoodRescue.DTOs.RequestedRole.Volunteer, volunteer.Id, f.Admin.Id));
+
+            f.Harness.Fresh();
+            Assert.Equal(ApprovalStatus.Pending, (await f.Harness.Db.Volunteers.SingleAsync()).ApprovalStatus);
+        }
+
         [Fact]
         public async Task PendingList_IncludesProfileDetails()
         {
