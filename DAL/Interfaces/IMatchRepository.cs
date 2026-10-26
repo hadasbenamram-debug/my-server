@@ -68,5 +68,15 @@ namespace DAL.Interfaces
         Task<int> CountActiveAsync();
         Task<int> CountByStatusSinceAsync(MatchStatus status, DateTime sinceUtc);
         Task<int> CountCreatedSinceAsync(DateTime sinceUtc);
+
+        // תיקון 17: המתנדבים עם הכי הרבה משלוחים שהושלמו (Completed), מהמוביל ומטה. רק מי שהשלים לפחות משלוח אחד.
+        Task<List<VolunteerDeliveriesCount>> GetTopVolunteersByDeliveriesAsync(int take);
+
+        // תיקון 17: כמה זמן לקח למתנדבים לענות להצעות (אישור או דחייה). תשובה אחת לכל הצעה,
+        // גם כשההצעה כוללת כמה תחנות. הצעה שלא נענתה בזמן (TimedOut) לא נספרת.
+        Task<List<TimeSpan>> GetOfferResponseTimesAsync();
     }
+
+    // תיקון 17: שורה בדוח "מובילי ביצועי מתנדבים"
+    public sealed record VolunteerDeliveriesCount(int VolunteerId, string? VolunteerName, int Deliveries);
 }

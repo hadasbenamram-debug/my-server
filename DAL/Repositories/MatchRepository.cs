@@ -240,5 +240,35 @@ namespace DAL.Repositories
         {
             return await _context.Matches.CountAsync(m => m.AssignedAt >= sinceUtc);
         }
+
+        // תיקון 17: משלוח מוצלח = שיבוץ שהושלם (המתנדב מסר את התרומה לעמותה)
+        public async Task<List<VolunteerDeliveriesCount>> GetTopVolunteersByDeliveriesAsync(int take)
+        {
+            var rows = await _context.Matches
+                .Where(m => m.Status == MatchStatus.Completed)
+                .GroupBy(m => new { m.VolunteerId, m.Volunteer.User.Name })
+                .Select(g => new { g.Key.VolunteerId, g.Key.Name, Deliveries = g.Count() })
+                .OrderByDescending(x => x.Deliveries)
+                .ThenBy(x => x.VolunteerId)
+                .Take(take)
+                .ToListAsync();
+
+            return rows.Select(x => new VolunteerDeliveriesCount(x.VolunteerId, x.Name, x.Deliveries)).ToList();
+        }
+
+        public async Task<List<TimeSpan>> GetOfferResponseTimesAsync()
+        {
+            var rows = await _context.Matches
+                .Where(m => m.RespondedAt != null)
+                .Select(m => new { m.Id, m.VolunteerRouteId, m.AssignedAt, RespondedAt = m.RespondedAt!.Value })
+                .ToListAsync();
+
+            // הצעה של כמה תחנות (אותו מסלול) נענית בפעולה אחת - כל התחנות שלה מקבלות אותו זמן תשובה
+            return rows
+                .GroupBy(r => new { Offer = r.VolunteerRouteId ?? -r.Id, r.RespondedAt })
+                .Select(g => g.Key.RespondedAt - g.Min(r => r.AssignedAt))
+                .Where(t => t >= TimeSpan.Zero)
+                .ToList();
+        }
     }
 }

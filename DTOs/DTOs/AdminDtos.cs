@@ -43,17 +43,27 @@ namespace FoodRescue.DTOs
     }
 
     // דוח מערכת (GET api/admin/volunteers/reports)
+    // תיקון 17: כל הערכים מחושבים מהנתונים בפועל (בעבר היו קבועים בקוד)
     public class SystemReportDto
     {
+        // ק"ג מזון בתרומות שהגיעו לעמותות
         public int TotalDonationsVolume { get; set; }
+
+        // זמן התגובה הממוצע של מתנדב להצעה, בדקות ("2.5"). "—" כשאין עדיין נתונים
         public string AverageResponseTime { get; set; }
+
+        // אחוז התרומות שהגיעו לעמותה מתוך התרומות שהסתיימו ("87%"). "—" כשאין עדיין נתונים
         public string SuccessRate { get; set; }
+
+        // המתנדבים עם הכי הרבה משלוחים שהושלמו
         public List<TopVolunteerDto> TopVolunteers { get; set; } = new List<TopVolunteerDto>();
     }
 
     public class TopVolunteerDto
     {
         public string Name { get; set; }
+
+        // משלוחים שהושלמו (שיבוצים במצב Completed)
         public int DeliveriesCount { get; set; }
     }
 

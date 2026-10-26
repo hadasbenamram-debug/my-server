@@ -138,6 +138,13 @@ namespace DAL.Repositories
             return await _context.Donations.CountAsync(d => d.Status == status);
         }
 
+        public async Task<double> SumDeliveredWeightKgAsync()
+        {
+            return await _context.DonationFoodCategories
+                .Where(x => x.Donation.Status == DonationStatus.Delivered || x.Donation.Status == DonationStatus.Completed)
+                .SumAsync(x => x.WeightKg);
+        }
+
         public async Task<bool> TryUpdateAsync(Donation donation)
         {
             try

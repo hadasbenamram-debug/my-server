@@ -39,6 +39,9 @@ namespace DAL.Interfaces
         Task<bool> AnyInRegionAsync(int regionId);
         Task<int> CountByStatusAsync(DonationStatus status);
 
+        // תיקון 17: סך המשקל (ק"ג) של התרומות שהגיעו לעמותות (Delivered / Completed)
+        Task<double> SumDeliveredWeightKgAsync();
+
         // מחזיר false אם התרומה עודכנה במקביל ע"י בקשה אחרת (RowVersion)
         Task<bool> TryUpdateAsync(Donation donation);
 

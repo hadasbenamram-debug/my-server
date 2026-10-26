@@ -6,6 +6,7 @@ using DAL.Interfaces;
 using FoodRescue.DTOs;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using ApprovalStatus = DAL.Classes.ApprovalStatus;
@@ -40,23 +41,37 @@ namespace BLL.Services
             _mapper = mapper;
         }
 
+        // תיקון 17: בעבר "מובילי ביצועי מתנדבים" הציג את 5 המתנדבים עם ציון האמינות הגבוה, וכולם עם 0 משלוחים
+        // (המספר היה קבוע בקוד). גם שאר המספרים בדוח היו קבועים: "4 דקות", "95%", ומספר המתנדבים כפול 50.
+        // עכשיו הכול מחושב מהנתונים בפועל.
+        private const int TopVolunteersCount = 5;
+        private const string NoData = "—";
+
         public async Task<SystemReportDto> GetSystemReportAsync()
         {
-            var totalVolunteersCount = await _volunteerRepository.CountByApprovalStatusAsync(ApprovalStatus.Approved);
+            var topVolunteers = await _matchRepository.GetTopVolunteersByDeliveriesAsync(TopVolunteersCount);
+            var responseTimes = await _matchRepository.GetOfferResponseTimesAsync();
+            var deliveredKg = await _donationRepository.SumDeliveredWeightKgAsync();
 
-            // מתנדבים מובילים לפי ציון אמינות (5 הראשונים מבין המאושרים)
-            var topVolunteers = await _volunteerRepository.GetByApprovalStatusWithUserAsync(ApprovalStatus.Approved, take: 5);
+            // אחוז הצלחה: מתוך התרומות שהסתיימו - כמה הגיעו לעמותה (ולא פג תוקפן). תרומה שבוטלה לא נספרת.
+            int delivered = await _donationRepository.CountByStatusAsync(DonationStatus.Delivered)
+                          + await _donationRepository.CountByStatusAsync(DonationStatus.Completed);
+            int expired = await _donationRepository.CountByStatusAsync(DonationStatus.Expired);
 
             return new SystemReportDto
             {
-                TotalDonationsVolume = totalVolunteersCount * 50,
-                AverageResponseTime = "4 דקות",
-                SuccessRate = "95%",
+                TotalDonationsVolume = (int)Math.Round(deliveredKg),
+                AverageResponseTime = responseTimes.Count == 0
+                    ? NoData
+                    : responseTimes.Average(t => t.TotalMinutes).ToString("0.0", CultureInfo.InvariantCulture),
+                SuccessRate = delivered + expired == 0
+                    ? NoData
+                    : $"{(int)Math.Round(100.0 * delivered / (delivered + expired))}%",
                 TopVolunteers = topVolunteers
                     .Select(v => new TopVolunteerDto
                     {
-                        Name = v.User != null ? v.User.Name : "מתנדב",
-                        DeliveriesCount = 0
+                        Name = v.VolunteerName ?? $"מתנדב #{v.VolunteerId}",
+                        DeliveriesCount = v.Deliveries
                     })
                     .ToList()
             };
