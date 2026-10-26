@@ -301,6 +301,31 @@ namespace FoodRescue.Tests
             Assert.False(updated.MustChangePassword);
         }
 
+        // המנהל מחליף סיסמה כמו כל משתמש (פרופיל אישי -> החלפת סיסמה), והזריעה בעליית השרת לא דורסת אותה
+        [Fact]
+        public async Task Admin_CanChangePassword_AndTheStartupSeedDoesNotOverwriteIt()
+        {
+            var config = TestDb.Config(new() { ["AdminSeed:Email"] = "boss@test", ["AdminSeed:Password"] = "Seed-Pass-123" });
+            var seed = new AdminSeedService(new UserRepository(Db), new ManagerRepository(Db), config,
+                TestDb.Log<AdminSeedService>(), new PasswordHasherWithLegacySupport());
+            await seed.SeedAdminAsync();
+            var admin = await Db.Users.SingleAsync(u => u.Email == "boss@test");
+
+            var changed = await Create().ChangePasswordAsync(admin.Id, new ChangePasswordDto
+            {
+                CurrentPassword = "Seed-Pass-123", NewPassword = "Brand-New-456"
+            });
+            Assert.Equal(ChangePasswordResult.Success, changed.Result);
+
+            _h.Fresh();
+            await seed.SeedAdminAsync();   // כמו הפעלה מחדש של השרת
+
+            var login = await Create().LoginAsync(new LoginDto { Email = "boss@test", Password = "Brand-New-456" });
+            Assert.True(login.Succeeded);
+            Assert.Equal("Admin", login.Response!.Role);
+            Assert.False((await Create().LoginAsync(new LoginDto { Email = "boss@test", Password = "Seed-Pass-123" })).Succeeded);
+        }
+
         [Fact]
         public async Task ChangePassword_WrongCurrentPassword_IsRejected()
         {
