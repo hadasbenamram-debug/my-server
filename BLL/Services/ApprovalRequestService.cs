@@ -2,6 +2,7 @@
 using BLL.Exceptions;
 using BLL.Interfaces;
 using BLL.Notifications;
+using BLL.Security;
 using DAL;
 using DAL.Classes;
 using DAL.Interfaces;
@@ -23,6 +24,9 @@ namespace BLL.Services
     {
         private const string RequestNotFound = "בקשת האישור לא נמצאה.";
 
+        // קישור הכניסה במייל האישור: חד-פעמי, ותקף 3 ימים (אחר כך - התחברות רגילה עם מייל וסיסמה)
+        public static readonly TimeSpan LoginLinkLifetime = TimeSpan.FromDays(3);
+
         private readonly IApprovalRequestRepository _approvalRequestRepository;
         private readonly IVolunteerRepository _volunteerRepository;
         private readonly ISupplierRepository _supplierRepository;
@@ -32,6 +36,7 @@ namespace BLL.Services
         private readonly IUnitOfWork _unitOfWork;
         private readonly IValidationService _validationService;
         private readonly INotificationService _notifications;
+        private readonly IActionTokenService _actionTokens;
         private readonly IConfiguration _configuration;
         private readonly IMapper _mapper;
         private readonly ILogger<ApprovalRequestService> _logger;
@@ -46,6 +51,7 @@ namespace BLL.Services
             IUnitOfWork unitOfWork,
             IValidationService validationService,
             INotificationService notifications,
+            IActionTokenService actionTokens,
             IConfiguration configuration,
             IMapper mapper,
             ILogger<ApprovalRequestService> logger)
@@ -59,6 +65,7 @@ namespace BLL.Services
             _unitOfWork = unitOfWork;
             _validationService = validationService;
             _notifications = notifications;
+            _actionTokens = actionTokens;
             _configuration = configuration;
             _mapper = mapper;
             _logger = logger;
@@ -228,14 +235,20 @@ namespace BLL.Services
                     await _userRepository.UpdateAsync(user);
                 }
 
-                await QueueDecisionEmailAsync(user, role, approve, reason);
+                // חדש: במייל האישור יש קישור כניסה אישי וחד-פעמי, כך שהמשתמש נכנס ישר למסך הראשון
+                // של התפקיד (למתנדב - הגדרת הזמינות) בלי לעבור קודם במסך ההתחברות.
+                string? loginToken = approve
+                    ? await _actionTokens.CreateLinkTokenAsync(user.Id, ActionTokenPurpose.LoginLink, LoginLinkLifetime, (int)role)
+                    : null;
+
+                await QueueDecisionEmailAsync(user, role, approve, reason, loginToken);
             });
 
             await _notifications.NotifyUserAsync(
                 user.Id,
                 approve ? "בקשת ההצטרפות שלך אושרה" : "בקשת ההצטרפות שלך נדחתה",
                 approve ? "אפשר להתחיל לפעול במערכת." : $"סיבה: {reason}",
-                link: approve ? HomeLink(role) : null,
+                link: approve ? FrontendLinks.RoleHomePath(role) : null,
                 type: approve ? "success" : "warning");
         }
 
@@ -266,8 +279,9 @@ namespace BLL.Services
             }
         }
 
-        // מייל ההחלטה. בלי טוקן בקישור (בעבר נשלח JWT מלא ל-3 שעות בתוך הכתובת) - המשתמש מתחבר כרגיל.
-        private async Task QueueDecisionEmailAsync(User user, RequestedRole role, bool approved, string? reason)
+        // מייל ההחלטה. בעבר נשלח JWT מלא ל-3 שעות בתוך הכתובת, ואחר כך הקישור הוביל רק למסך ההתחברות.
+        // עכשיו: טוקן אקראי חד-פעמי (במסד נשמר רק ה-Hash שלו) שמוחלף בשרת בכניסה אחת (POST api/auth/link-login).
+        private async Task QueueDecisionEmailAsync(User user, RequestedRole role, bool approved, string? reason, string? loginToken)
         {
             if (string.IsNullOrWhiteSpace(user.Email))
                 return;
@@ -278,18 +292,23 @@ namespace BLL.Services
 
             if (approved)
             {
-                string loginUrl = FrontendLinks.TryBuild(_configuration, "app/login") ?? "";
+                string enterUrl = (loginToken == null
+                                      ? null
+                                      : FrontendLinks.TryBuild(_configuration, $"app/welcome?token={WebUtility.UrlEncode(loginToken)}"))
+                                  ?? FrontendLinks.TryBuild(_configuration, "app/login")
+                                  ?? "";
                 string nextStep = role switch
                 {
-                    RequestedRole.Volunteer => "אחרי ההתחברות יש להגדיר את ימי ושעות הזמינות שלך (בתפריט \"ניהול זמינות\").",
-                    RequestedRole.Ngo => "אחרי ההתחברות יש לעדכן את כתובת העמותה ושעות הקבלה (בתפריט \"מיקום ושעות קבלה\").",
-                    _ => "אחרי ההתחברות אפשר להזין תרומות."
+                    RequestedRole.Volunteer => "בלחיצה על הקישור תיכנס/י ישר למסך הגדרת הזמינות - הימים והשעות שבהם תוכל/י להתנדב.",
+                    RequestedRole.Ngo => "בלחיצה על הקישור תיכנסו ישר למסך עדכון כתובת העמותה ושעות הקבלה.",
+                    _ => "בלחיצה על הקישור תיכנסו ישר למערכת ותוכלו להזין תרומות."
                 };
 
                 subject = "בקשת ההצטרפות שלך אושרה - לתת באהבה";
                 body = $"שלום {name},<br/><br/>שמחים לעדכן כי בקשת ההצטרפות שלך <b>אושרה על ידי המנהל!</b><br/>{nextStep}<br/><br/>" +
-                       (string.IsNullOrEmpty(loginUrl) ? "" : $"<a href='{loginUrl}' target='_blank'>כניסה למערכת</a><br/><br/>") +
-                       "תודה רבה!";
+                       (string.IsNullOrEmpty(enterUrl) ? "" : $"<a href='{enterUrl}' target='_blank'>כניסה למערכת</a><br/>") +
+                       (loginToken == null ? "" : "<small>הקישור אישי, לשימוש אחד ותקף ל-3 ימים. אחר כך נכנסים כרגיל עם המייל והסיסמה.</small><br/>") +
+                       "<br/>תודה רבה!";
             }
             else
             {
@@ -369,13 +388,6 @@ namespace BLL.Services
             RequestedRole.Supplier => UserRole.Supplier,
             RequestedRole.Volunteer => UserRole.Volunteer,
             _ => UserRole.Ngo
-        };
-
-        private static string HomeLink(RequestedRole role) => role switch
-        {
-            RequestedRole.Volunteer => "/app/volunteer/availability",
-            RequestedRole.Supplier => "/app/supplier/dashboard",
-            _ => "/app/ngo/hours"
         };
     }
 }

@@ -64,6 +64,25 @@ namespace FoodRescue.Controllers
             };
         }
 
+        // חדש: כניסה מהקישור שבמייל "הבקשה שלך אושרה" - בלי לעבור במסך ההתחברות.
+        // הטוקן חד-פעמי ונשלח בגוף הבקשה (לא נשאר בכתובת). מי שעדיין עם הסיסמה הזמנית מקבל
+        // requiresPassword=true, בוחר סיסמה אישית ושולח שוב עם newPassword.
+        [HttpPost("link-login")]
+        [AllowAnonymous]
+        [EnableRateLimiting("auth")]
+        public async Task<IActionResult> LinkLogin([FromBody] LinkLoginDto dto)
+        {
+            var ip = HttpContext?.Connection.RemoteIpAddress?.ToString();
+            var outcome = await _userService.LinkLoginAsync(dto, ip);
+
+            return outcome.Status switch
+            {
+                LinkLoginStatus.Success or LinkLoginStatus.RequiresPassword => Ok(outcome.Response),
+                LinkLoginStatus.Blocked => StatusCode(403, Error(403, outcome.Message, outcome.Error.ToString())),
+                _ => BadRequest(Error(400, outcome.Message, "InvalidLink"))
+            };
+        }
+
         [HttpPost("forgot-password")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]

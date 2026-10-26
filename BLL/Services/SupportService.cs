@@ -70,7 +70,7 @@ namespace BLL.Services
 <div dir=""rtl"" style=""font-family:Arial,sans-serif"">
   <p>שלום {name},</p>
   <p>קיבלנו את פנייתך בנושא ""{WebUtility.HtmlEncode(subject)}"" ונחזור אליך בהקדם.</p>
-  <p>תודה,<br/>צוות FoodBridge</p>
+  <p>תודה,<br/>צוות לתת באהבה</p>
 </div>";
                 await _notifications.QueueEmailAsync(userId, dto.Email.Trim(), "קיבלנו את פנייתך", confirmBody,
                     summary: "אישור קבלת פנייה");

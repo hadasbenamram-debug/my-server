@@ -34,6 +34,18 @@ namespace FoodRescue.DTOs
         public string NewPassword { get; set; } = string.Empty;
     }
 
+    // כניסה מקישור אישי וחד-פעמי במייל "הבקשה שלך אושרה" (POST api/auth/link-login).
+    // NewPassword נשלח רק כשהשרת ביקש (המשתמש עדיין עם הסיסמה הזמנית מההרשמה).
+    public class LinkLoginDto
+    {
+        [Required(ErrorMessage = "חסר קישור כניסה.")]
+        [StringLength(200)]
+        public string Token { get; set; } = string.Empty;
+
+        [StringLength(100, MinimumLength = 8, ErrorMessage = "הסיסמה חייבת להכיל 8-100 תווים.")]
+        public string? NewPassword { get; set; }
+    }
+
     public class VerifyCodeDto
     {
         [Required(ErrorMessage = "יש לספק קוד אימות.")]

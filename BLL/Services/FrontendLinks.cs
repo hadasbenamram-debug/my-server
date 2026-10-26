@@ -18,5 +18,13 @@ namespace BLL.Services
 
             return $"{baseUrl.TrimEnd('/')}/{pathAndQuery.TrimStart('/')}";
         }
+
+        // המסך הראשון של כל תפקיד אחרי האישור (גם בהתראה וגם בקישור הכניסה מהמייל)
+        public static string RoleHomePath(DAL.Classes.RequestedRole role) => role switch
+        {
+            DAL.Classes.RequestedRole.Volunteer => "/app/volunteer/availability",
+            DAL.Classes.RequestedRole.Supplier => "/app/supplier/dashboard",
+            _ => "/app/ngo/hours"
+        };
     }
 }

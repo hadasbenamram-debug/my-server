@@ -91,7 +91,7 @@ namespace FoodRescue.Tests
                 Approvals = new ApprovalRequestService(
                     new ApprovalRequestRepository(db), new VolunteerRepository(db), new SupplierRepository(db), new NgoRepository(db),
                     new ManagerRepository(db), new UserRepository(db), new UnitOfWork(db), new ValidationService(),
-                    Harness.NotificationService, TestDb.Config(), TestDb.Mapper, TestDb.Log<ApprovalRequestService>());
+                    Harness.NotificationService, Harness.ActionTokens, TestDb.Config(), TestDb.Mapper, TestDb.Log<ApprovalRequestService>());
             }
 
             public async Task SeedAsync()
@@ -238,8 +238,14 @@ namespace FoodRescue.Tests
             Assert.Equal(manager.Id, request.HandledByManagerId);
 
             var email = Assert.Single(await db.Notifications.Where(n => n.UserId == ngo.UserId && n.Channel == NotificationChannel.Email).ToListAsync());
-            // מייל ההחלטה כולל קישור התחברות רגיל - בלי טוקן
-            Assert.DoesNotContain("token=", f.Harness.Protector.Unprotect(email.ProtectedPayload!));
+            // מייל ההחלטה כולל קישור כניסה אישי וחד-פעמי (לא JWT): במסד נשמר רק ה-Hash שלו
+            var body = f.Harness.Protector.Unprotect(email.ProtectedPayload!);
+            Assert.Contains("app/welcome?token=", body);
+            var token = Uri.UnescapeDataString(body.Split("token=")[1].Split('"', '\'', '&', '<', ' ')[0]);
+            Assert.DoesNotContain(".", token);
+            var stored = Assert.Single(await db.ActionTokens.Where(t => t.UserId == ngo.UserId && t.Purpose == ActionTokenPurpose.LoginLink).ToListAsync());
+            Assert.NotEqual(token, stored.TokenHash);
+            Assert.Equal((int)RequestedRole.Ngo, stored.TargetId);
         }
 
         // תוקן: אישור ספק ניסה גם כמזהה משתמש אם לא נמצא ספק - ויכול היה לאשר ספק אחר

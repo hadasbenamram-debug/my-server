@@ -196,6 +196,38 @@ namespace FoodRescue.Tests
             Assert.Equal(expected == AuthError.None, result.Response != null);
         }
 
+        // חדש: הקישור במייל האישור מכניס בלי מסך התחברות. עם סיסמה זמנית - בוחרים סיסמה באותו מסך.
+        [Fact]
+        public async Task LinkLogin_AsksForAPassword_ThenLogsIn_OpensTheRoleHome_AndIsSingleUse()
+        {
+            var user = await AddUserAsync(role: UserRole.Volunteer);
+            user.MustChangePassword = true;
+            var oldStamp = user.SecurityStamp;
+            await Db.SaveChangesAsync();
+            var link = await _h.ActionTokens.CreateLinkTokenAsync(user.Id, ActionTokenPurpose.LoginLink, TimeSpan.FromDays(3),
+                (int)DAL.Classes.RequestedRole.Volunteer);
+
+            var first = await Create().LinkLoginAsync(new LinkLoginDto { Token = link });
+            Assert.Equal(LinkLoginStatus.RequiresPassword, first.Status);
+            Assert.True(first.Response!.RequiresPassword);
+            Assert.True(string.IsNullOrEmpty(first.Response.Token));
+
+            var second = await Create().LinkLoginAsync(new LinkLoginDto { Token = link, NewPassword = "my-own-pass1" });
+            Assert.Equal(LinkLoginStatus.Success, second.Status);
+            Assert.False(string.IsNullOrEmpty(second.Response!.Token));
+            Assert.Equal("/app/volunteer/availability", second.Response.NextPath);
+            Assert.False(second.Response.MustChangePassword);
+
+            _h.Fresh();
+            var updated = await Db.Users.SingleAsync(u => u.Id == user.Id);
+            Assert.False(updated.MustChangePassword);
+            Assert.NotEqual(oldStamp, updated.SecurityStamp);
+
+            // חד-פעמי
+            Assert.Equal(LinkLoginStatus.InvalidLink, (await Create().LinkLoginAsync(new LinkLoginDto { Token = link })).Status);
+            Assert.Equal(LinkLoginStatus.InvalidLink, (await Create().LinkLoginAsync(new LinkLoginDto { Token = "nope" })).Status);
+        }
+
         [Fact]
         public async Task ResetPassword_UnknownToken_ReturnsFalse()
         {

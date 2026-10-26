@@ -14,12 +14,15 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using ApprovalStatus = DAL.Classes.ApprovalStatus;
+using RequestedRole = DAL.Classes.RequestedRole;
 
 namespace BLL.Services
 {
     public sealed class UserService : IUserService
     {
         private const string InvalidCredentialsMessage = "שם משתמש או סיסמה שגויים.";
+        private const string InvalidLoginLinkMessage =
+            "קישור הכניסה אינו בתוקף (פג תוקפו או שכבר השתמשו בו). אפשר להתחבר כרגיל עם המייל והסיסמה.";
         private const int MaxVerificationAttempts = 5;
         private static readonly TimeSpan ResendCooldown = TimeSpan.FromMinutes(1);
         private static readonly TimeSpan ResetTokenLifetime = TimeSpan.FromMinutes(30);
@@ -146,6 +149,19 @@ namespace BLL.Services
 
             // --- approval status for NGOs, suppliers and volunteers ---
             // (נבדק רק אחרי שהסיסמה נכונה, כך שמי שלא יודע את הסיסמה לא לומד מה מצב החשבון)
+            var blocked = await CheckApprovalAsync(user);
+            if (blocked != null)
+                return blocked;
+
+            await _lockout.RecordAsync(email, ipAddress, user.Id, success: true);
+
+            return AuthResult.Success(BuildResponse(user));
+        }
+
+        // האם החשבון רשאי להיכנס: עמותה / ספק / מתנדב שממתינים לאישור או שנדחו - לא נכנסים.
+        // null = מותר להיכנס. משותף להתחברות רגילה ולכניסה מהקישור שבמייל האישור.
+        private async Task<AuthResult?> CheckApprovalAsync(User user)
+        {
             var ngo = await _ngoRepository.GetByUserIdAsync(user.Id);
             if (ngo != null)
             {
@@ -179,9 +195,60 @@ namespace BLL.Services
                     return AuthResult.Fail(AuthError.VolunteerRejected, "בקשת ההצטרפות שלך כמתנדב/ת נדחתה.");
             }
 
-            await _lockout.RecordAsync(email, ipAddress, user.Id, success: true);
+            return null;
+        }
 
-            return AuthResult.Success(BuildResponse(user));
+        // =====================================================
+        // כניסה מהקישור שבמייל "הבקשה שלך אושרה" - בלי מסך התחברות
+        // =====================================================
+
+        // הקישור אישי, חד-פעמי ותקף 3 ימים (במסד נשמר רק Hash שלו). מי שעדיין עם הסיסמה הזמנית
+        // מההרשמה בוחר סיסמה אישית באותו מסך (בלי להקליד את הסיסמה הזמנית) - ורק אז הקישור מנוצל.
+        public async Task<LinkLoginOutcome> LinkLoginAsync(LinkLoginDto dto, string? ipAddress = null)
+        {
+            var token = await _actionTokens.FindValidLinkTokenAsync(ActionTokenPurpose.LoginLink, dto.Token);
+            if (token?.UserId == null)
+                return new LinkLoginOutcome(LinkLoginStatus.InvalidLink, Message: InvalidLoginLinkMessage);
+
+            var user = await _userRepository.GetByIdAsync(token.UserId.Value);
+            if (user == null)
+                return new LinkLoginOutcome(LinkLoginStatus.InvalidLink, Message: InvalidLoginLinkMessage);
+
+            var blocked = await CheckApprovalAsync(user);
+            if (blocked != null)
+                return new LinkLoginOutcome(LinkLoginStatus.Blocked, Error: blocked.Error, Message: blocked.Message);
+
+            if (user.MustChangePassword)
+            {
+                // הקישור עוד לא נוצל - הלקוח מציג "בחירת סיסמה" ושולח שוב עם NewPassword
+                if (string.IsNullOrEmpty(dto.NewPassword))
+                    return new LinkLoginOutcome(LinkLoginStatus.RequiresPassword,
+                        new LinkLoginResponseDto { RequiresPassword = true, Email = user.Email });
+
+                user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
+                user.MustChangePassword = false;
+                user.SecurityStamp = NewStamp();          // טוקנים ישנים (עם הסיסמה הזמנית) מפסיקים לעבוד
+                await _userRepository.UpdateAsync(user);
+                await _actionTokens.RevokeAsync(user.Id, ActionTokenPurpose.PasswordReset);
+            }
+
+            await _actionTokens.ConsumeAsync(token);
+            await _lockout.RecordAsync(user.Email, ipAddress, user.Id, success: true);
+
+            var auth = BuildResponse(user);
+            var role = token.TargetId is int roleValue && Enum.IsDefined(typeof(RequestedRole), roleValue)
+                ? (RequestedRole?)roleValue
+                : null;
+
+            return new LinkLoginOutcome(LinkLoginStatus.Success, new LinkLoginResponseDto
+            {
+                Token = auth.Token,
+                Role = auth.Role,
+                ExpiresAt = auth.ExpiresAt,
+                MustChangePassword = auth.MustChangePassword,
+                NextPath = role.HasValue ? FrontendLinks.RoleHomePath(role.Value) : null,
+                Email = user.Email
+            });
         }
 
         // =====================================================
