@@ -154,9 +154,14 @@ namespace FoodRescue.Controllers
         private IActionResult SendResult(VerificationResult result, string success, string alreadyVerified) => result switch
         {
             VerificationResult.Success => Message(success),
+            // סביבת פיתוח בלי ספק SMS: אומרים את האמת - ה-SMS לא נשלח, והקוד נמצא ביומן השרת
+            VerificationResult.SentToLogOnly => Message(
+                "סביבת פיתוח: לא הוגדר ספק SMS, ולכן ההודעה לא נשלחה לטלפון בפועל. הקוד נכתב ביומן (Console) של השרת."),
             VerificationResult.UserNotFound => Unauthorized(),
             VerificationResult.AlreadyVerified => BadRequest(Error(400, alreadyVerified)),
             VerificationResult.Cooldown => StatusCode(429, Error(429, "נשלח קוד לאחרונה. נסו שוב בעוד דקה.")),
+            VerificationResult.SmsNotConfigured => StatusCode(503, Error(503,
+                "שליחת מסרונים (SMS) עדיין לא הוגדרה במערכת, ולכן אי אפשר לשלוח קוד לטלפון. נא לפנות למנהל המערכת.", "SmsNotConfigured")),
             _ => StatusCode(503, Error(503, "לא ניתן לשלוח את הקוד כרגע. נסו שוב מאוחר יותר."))
         };
 

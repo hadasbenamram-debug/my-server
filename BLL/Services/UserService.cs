@@ -41,6 +41,7 @@ namespace BLL.Services
         private readonly IMapper _mapper;
         private readonly IPasswordHasher<User> _passwordHasher;
         private readonly IRegistrationNoticeService _registrationNotices;
+        private readonly ISmsSender _sms;
 
         // hash קבוע לבדיקה מול מייל שלא קיים, כדי שזמן התגובה יהיה דומה (לא חושף אילו מיילים רשומים)
         private static readonly Lazy<string> DummyHash =
@@ -59,10 +60,12 @@ namespace BLL.Services
             ILogger<UserService> logger,
             IMapper mapper,
             IPasswordHasher<User> passwordHasher,
-            IRegistrationNoticeService registrationNotices)
+            IRegistrationNoticeService registrationNotices,
+            ISmsSender sms)
         {
             _passwordHasher = passwordHasher;
             _registrationNotices = registrationNotices;
+            _sms = sms;
             _userRepository = userRepository;
             _ngoRepository = ngoRepository;
             _supplierRepository = supplierRepository;
@@ -373,6 +376,15 @@ namespace BLL.Services
             if (string.IsNullOrWhiteSpace(user.Phone))
                 return VerificationResult.SendFailed;
 
+            // תוקן: בלי ספק SMS (ברירת המחדל הייתה Sms:Provider = "Log") הקוד לא נשלח לטלפון, אבל המשתמש קיבל
+            // "קוד אימות נשלח במסרון". עכשיו: בלי ספק מוגדר - הודעה ברורה שה-SMS לא זמין, ושום דבר לא נכנס לתור.
+            var mode = _sms.Mode;
+            if (mode == SmsMode.NotConfigured)
+            {
+                _logger.LogWarning("Phone verification requested but SMS is not configured (Sms:Provider).");
+                return VerificationResult.SmsNotConfigured;
+            }
+
             if (await InCooldownAsync(user.Id, ActionTokenPurpose.PhoneVerification))
                 return VerificationResult.Cooldown;
 
@@ -384,7 +396,7 @@ namespace BLL.Services
                 $"לתת באהבה: קוד האימות שלך הוא {code}. תקף ל-15 דקות.",
                 summary: "נשלח קוד לאימות מספר הטלפון");
 
-            return VerificationResult.Success;
+            return mode == SmsMode.DevelopmentLog ? VerificationResult.SentToLogOnly : VerificationResult.Success;
         }
 
         public async Task<VerificationResult> VerifyPhoneAsync(int userId, string code)

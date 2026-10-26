@@ -19,7 +19,14 @@ namespace FoodRescue.Tests
     public sealed class UserServiceTests : IDisposable
     {
         private readonly EngineHarness _h = new();
+        private readonly FakeSms _sms = new();
         private FoodRescueDbContext Db => _h.Db;
+
+        private sealed class FakeSms : ISmsSender
+        {
+            public SmsMode Mode { get; set; } = SmsMode.Israel019;
+            public Task<string?> SendAsync(string phoneNumber, string text) => Task.FromResult<string?>("sms-1");
+        }
 
         private UserService Create() => new(
             new UserRepository(Db), new NgoRepository(Db), new SupplierRepository(Db), new VolunteerRepository(Db),
@@ -27,7 +34,7 @@ namespace FoodRescue.Tests
             _h.ActionTokens, _h.NotificationService,
             new TokenService(TestDb.Config()), TestDb.Config(),
             TestDb.Log<UserService>(), TestDb.Mapper, new PasswordHasherWithLegacySupport(),
-            new RegistrationNoticeService(_h.NotificationService, _h.Notifications, TestDb.Config()));
+            new RegistrationNoticeService(_h.NotificationService, _h.Notifications, TestDb.Config()), _sms);
 
         private async Task<User> AddUserAsync(string email = "a@b.com", string password = "correct-password", UserRole role = UserRole.User)
         {
@@ -328,6 +335,23 @@ namespace FoodRescue.Tests
 
             _h.Fresh();
             Assert.True((await Db.Users.SingleAsync(u => u.Id == user.Id)).IsEmailVerified);
+        }
+
+        // תוקן: בלי ספק SMS המשתמש קיבל "קוד נשלח במסרון" למרות ששום דבר לא נשלח לטלפון
+        [Theory]
+        [InlineData(SmsMode.NotConfigured, VerificationResult.SmsNotConfigured, 0)]
+        [InlineData(SmsMode.DevelopmentLog, VerificationResult.SentToLogOnly, 1)]
+        [InlineData(SmsMode.Israel019, VerificationResult.Success, 1)]
+        [InlineData(SmsMode.Twilio, VerificationResult.Success, 1)]
+        public async Task SendPhoneVerification_TellsTheTruthAboutSending(SmsMode mode, VerificationResult expected, int queuedSms)
+        {
+            var user = await AddUserAsync();
+            user.IsPhoneVerified = false;
+            await Db.SaveChangesAsync();
+            _sms.Mode = mode;
+
+            Assert.Equal(expected, await Create().SendPhoneVerificationAsync(user.Id));
+            Assert.Equal(queuedSms, await Db.Notifications.CountAsync(n => n.UserId == user.Id && n.Channel == NotificationChannel.Sms));
         }
 
         [Fact]

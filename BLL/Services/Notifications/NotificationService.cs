@@ -36,6 +36,7 @@ namespace BLL.Notifications
         private readonly IBackgroundJobClient _jobs;
         private readonly IRealtimeNotifier _realtime;
         private readonly ILogger<NotificationService> _logger;
+        private readonly ISmsSender? _sms;
 
         public NotificationService(
             INotificationRepository repository,
@@ -43,7 +44,8 @@ namespace BLL.Notifications
             IPayloadProtector protector,
             IBackgroundJobClient jobs,
             IRealtimeNotifier realtime,
-            ILogger<NotificationService> logger)
+            ILogger<NotificationService> logger,
+            ISmsSender? sms = null)
         {
             _repository = repository;
             _userRepository = userRepository;
@@ -51,13 +53,23 @@ namespace BLL.Notifications
             _jobs = jobs;
             _realtime = realtime;
             _logger = logger;
+            _sms = sms;
         }
 
         public Task QueueEmailAsync(int? userId, string toEmail, string subject, string htmlBody, string? summary = null) =>
             QueueAsync(NotificationChannel.Email, userId, toEmail, subject, htmlBody, summary);
 
-        public Task QueueSmsAsync(int? userId, string phoneNumber, string text, string? summary = null) =>
-            QueueAsync(NotificationChannel.Sms, userId, phoneNumber, null, text, summary);
+        public Task QueueSmsAsync(int? userId, string phoneNumber, string text, string? summary = null)
+        {
+            // בלי ספק SMS מוגדר אין טעם להכניס לתור (ההודעה הייתה נכשלת 5 פעמים ברקע)
+            if (_sms?.Mode == SmsMode.NotConfigured)
+            {
+                _logger.LogWarning("SMS is not configured (Sms:Provider); the SMS '{Summary}' was not queued.", summary);
+                return Task.CompletedTask;
+            }
+
+            return QueueAsync(NotificationChannel.Sms, userId, phoneNumber, null, text, summary);
+        }
 
         private async Task QueueAsync(NotificationChannel channel, int? userId, string recipient, string? subject, string body, string? summary)
         {

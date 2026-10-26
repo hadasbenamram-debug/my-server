@@ -229,6 +229,7 @@ namespace FoodRescue.Tests
 
         private sealed class NoSms : ISmsSender
         {
+            public SmsMode Mode => SmsMode.NotConfigured;
             public Task<string?> SendAsync(string to, string text) => Task.FromResult<string?>(null);
         }
 

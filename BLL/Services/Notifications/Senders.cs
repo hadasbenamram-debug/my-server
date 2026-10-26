@@ -19,9 +19,20 @@ namespace BLL.Notifications
         Task<string?> SendAsync(string toEmail, string subject, string htmlBody);
     }
 
+    // איך השרת שולח SMS כרגע - לפי Sms:Provider והפרטים שהוגדרו
+    public enum SmsMode
+    {
+        NotConfigured,    // אין ספק SMS תקין - לא שולחים (ומחזירים למשתמש הודעה ברורה)
+        DevelopmentLog,   // סביבת פיתוח בלי ספק: ההודעה נכתבת ביומן השרת במקום להישלח (כדי שאפשר יהיה לבדוק)
+        Twilio,
+        Israel019         // 019 SMS (ספק ישראלי)
+    }
+
     // שליחה בפועל של SMS. מחזיר מזהה הודעה אצל הספק (אם יש).
     public interface ISmsSender
     {
+        SmsMode Mode { get; }
+
         Task<string?> SendAsync(string phoneNumber, string text);
     }
 
@@ -82,10 +93,15 @@ namespace BLL.Notifications
         }
     }
 
-    // SMS: Sms:Provider = "Twilio" (Sms:AccountSid, Sms:AuthToken, Sms:From) או "Log" (פיתוח - רק לוג).
-    // נשלח ישירות ל-REST API של Twilio, בלי חבילה חיצונית.
+    // SMS - נשלח ישירות ל-REST API של הספק, בלי חבילה חיצונית. Sms:Provider:
+    //   "019"    - ספק ישראלי (019sms.co.il): Sms:Username, Sms:ApiToken, Sms:Source (שם שולח מאושר, עד 11 תווים באנגלית/ספרות)
+    //   "Twilio" - Sms:AccountSid, Sms:AuthToken, Sms:From
+    //   "Log"    - פיתוח בלבד: לא נשלח, ההודעה נכתבת ביומן השרת
+    // תוקן: בעבר ברירת המחדל הייתה "Log" גם כשלא בפיתוח, וההודעה סומנה "נשלחה" בלי שנשלחה בפועל.
     public sealed class SmsSender : ISmsSender
     {
+        private const string Default019Url = "https://019sms.co.il/api";
+
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
         private readonly IHostEnvironment _environment;
@@ -99,45 +115,134 @@ namespace BLL.Notifications
             _logger = logger;
         }
 
-        public async Task<string?> SendAsync(string phoneNumber, string text)
+        public SmsMode Mode => ResolveMode(_configuration, _environment);
+
+        public static SmsMode ResolveMode(IConfiguration configuration, IHostEnvironment environment)
         {
-            var provider = _configuration["Sms:Provider"];
+            var provider = configuration["Sms:Provider"]?.Trim();
 
             if (string.Equals(provider, "Twilio", StringComparison.OrdinalIgnoreCase))
-            {
-                var sid = _configuration["Sms:AccountSid"];
-                var token = _configuration["Sms:AuthToken"];
-                var from = _configuration["Sms:From"];
-                if (string.IsNullOrWhiteSpace(sid) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(from))
-                    throw new InvalidOperationException("Sms:AccountSid / Sms:AuthToken / Sms:From are not configured.");
+                return HasAll(configuration, "Sms:AccountSid", "Sms:AuthToken", "Sms:From") ? SmsMode.Twilio : SmsMode.NotConfigured;
 
-                using var request = new HttpRequestMessage(HttpMethod.Post,
-                    $"https://api.twilio.com/2010-04-01/Accounts/{Uri.EscapeDataString(sid)}/Messages.json");
-                request.Headers.Authorization = new AuthenticationHeaderValue(
-                    "Basic", Convert.ToBase64String(Encoding.ASCII.GetBytes($"{sid}:{token}")));
-                request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            if (string.Equals(provider, "019", StringComparison.OrdinalIgnoreCase))
+                return HasAll(configuration, "Sms:Username", "Sms:ApiToken", "Sms:Source") ? SmsMode.Israel019 : SmsMode.NotConfigured;
+
+            // "Log" / ריק: רק בסביבת פיתוח
+            if ((string.IsNullOrEmpty(provider) || string.Equals(provider, "Log", StringComparison.OrdinalIgnoreCase)) &&
+                environment.IsDevelopment())
+                return SmsMode.DevelopmentLog;
+
+            return SmsMode.NotConfigured;
+        }
+
+        public async Task<string?> SendAsync(string phoneNumber, string text)
+        {
+            switch (Mode)
+            {
+                case SmsMode.Twilio:
+                    return await SendTwilioAsync(phoneNumber, text);
+
+                case SmsMode.Israel019:
+                    return await Send019Async(phoneNumber, text);
+
+                case SmsMode.DevelopmentLog:
+                    // סביבת פיתוח בלבד: ההודעה (כולל קוד אימות) נכתבת ביומן כדי שאפשר יהיה לבדוק את התהליך בלי ספק SMS
+                    _logger.LogWarning("Development: SMS provider is not configured (Sms:Provider), the SMS was NOT sent. To {Phone}: {Text}",
+                        Mask(phoneNumber), text);
+                    return "dev-log-only";
+
+                default:
+                    throw new InvalidOperationException(
+                        "SMS is not configured. Set Sms:Provider to \"019\" (Sms:Username, Sms:ApiToken, Sms:Source) or \"Twilio\" (Sms:AccountSid, Sms:AuthToken, Sms:From).");
+            }
+        }
+
+        private async Task<string?> SendTwilioAsync(string phoneNumber, string text)
+        {
+            var sid = _configuration["Sms:AccountSid"]!;
+            var token = _configuration["Sms:AuthToken"]!;
+            var from = _configuration["Sms:From"]!;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"https://api.twilio.com/2010-04-01/Accounts/{Uri.EscapeDataString(sid)}/Messages.json");
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Basic", Convert.ToBase64String(Encoding.ASCII.GetBytes($"{sid}:{token}")));
+            request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["To"] = ToE164(phoneNumber),
+                ["From"] = from,
+                ["Body"] = text
+            });
+
+            using var response = await _httpClient.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"SMS provider returned HTTP {(int)response.StatusCode}.");
+
+            using var json = JsonDocument.Parse(body);
+            return json.RootElement.TryGetProperty("sid", out var sidProp) ? sidProp.GetString() : null;
+        }
+
+        // 019 SMS: POST https://019sms.co.il/api עם Authorization: Bearer <token> וגוף JSON (docs.019sms.co.il).
+        // status 0 = ההודעה תישלח; כל ערך אחר = שגיאה (למשל 3 טוקן שגוי, 4 אין יתרה, 515 שם שולח לא מאושר).
+        private async Task<string?> Send019Async(string phoneNumber, string text)
+        {
+            var url = _configuration["Sms:Url"];
+            var payload = new
+            {
+                sms = new
                 {
-                    ["To"] = ToE164(phoneNumber),
-                    ["From"] = from,
-                    ["Body"] = text
-                });
+                    user = new { username = _configuration["Sms:Username"] },
+                    source = _configuration["Sms:Source"],
+                    destinations = new { phone = new[] { new Dictionary<string, string> { ["_"] = ToIsraeliLocal(phoneNumber) } } },
+                    message = text
+                }
+            };
 
-                using var response = await _httpClient.SendAsync(request);
-                var body = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode)
-                    throw new InvalidOperationException($"SMS provider returned HTTP {(int)response.StatusCode}.");
+            using var request = new HttpRequestMessage(HttpMethod.Post, string.IsNullOrWhiteSpace(url) ? Default019Url : url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _configuration["Sms:ApiToken"]);
+            request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
-                using var json = JsonDocument.Parse(body);
-                return json.RootElement.TryGetProperty("sid", out var sidProp) ? sidProp.GetString() : null;
-            }
+            using var response = await _httpClient.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"019 SMS returned HTTP {(int)response.StatusCode}.");
 
-            if (string.Equals(provider, "Log", StringComparison.OrdinalIgnoreCase) || _environment.IsDevelopment())
+            using var json = JsonDocument.Parse(body);
+            var root = json.RootElement;
+            int status = -1;
+            if (root.TryGetProperty("status", out var statusProp))
             {
-                _logger.LogWarning("SMS provider is not configured (Sms:Provider). SMS to {Phone} was not sent.", Mask(phoneNumber));
-                return "dev-not-sent";
+                if (statusProp.ValueKind == JsonValueKind.Number) status = statusProp.GetInt32();
+                else if (statusProp.ValueKind == JsonValueKind.String && int.TryParse(statusProp.GetString(), out var parsed)) status = parsed;
             }
 
-            throw new InvalidOperationException("Sms:Provider is not configured.");
+            if (status != 0)
+            {
+                var message = root.TryGetProperty("message", out var m) ? m.ToString() : "";
+                throw new InvalidOperationException($"019 SMS returned status {status}: {message}");
+            }
+
+            return root.TryGetProperty("shipment_id", out var shipment) ? shipment.ToString() : null;
+        }
+
+        private static bool HasAll(IConfiguration configuration, params string[] keys)
+        {
+            foreach (var key in keys)
+                if (string.IsNullOrWhiteSpace(configuration[key])) return false;
+            return true;
+        }
+
+        // מספר ישראלי בפורמט ש-019 מקבל: 05XXXXXXXX (גם +972 / 972 מומרים)
+        public static string ToIsraeliLocal(string phone)
+        {
+            var digits = new StringBuilder();
+            foreach (var c in phone ?? string.Empty)
+                if (char.IsAsciiDigit(c)) digits.Append(c);
+
+            var s = digits.ToString();
+            if (s.StartsWith("972")) return "0" + s.Substring(3);
+            return s.StartsWith("0") ? s : "0" + s;
         }
 
         // מספר ישראלי 05X... -> +9725X...

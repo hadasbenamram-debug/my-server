@@ -27,7 +27,11 @@ namespace BLL.Interfaces
         Cooldown,
         SendFailed,
         InvalidCode,
-        TooManyAttempts
+        TooManyAttempts,
+        // SMS: אין ספק SMS מוגדר בשרת - הקוד לא נשלח (בעבר הוחזר "נשלח" למרות שלא נשלח כלום)
+        SmsNotConfigured,
+        // SMS בסביבת פיתוח בלי ספק: לא נשלח בפועל, הקוד נכתב ביומן השרת
+        SentToLogOnly
     }
 
     public enum ChangePasswordResult
