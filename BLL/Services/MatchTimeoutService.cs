@@ -1,4 +1,5 @@
 using BLL.Configuration;
+using BLL.Interfaces;
 using BLL.Services;
 using DAL.Classes;
 using DAL.Interfaces;
@@ -61,8 +62,8 @@ namespace BLL.Algorithms
             {
                 try
                 {
-                    await _workflow.DeclineAsync(match, match.VolunteerId, MatchStatus.TimedOut);
-                    processed++;
+                    if (await _workflow.DeclineAsync(match, match.VolunteerId, MatchStatus.TimedOut) == RouteResponseResult.Done)
+                        processed++;
                 }
                 catch (Exception ex)
                 {

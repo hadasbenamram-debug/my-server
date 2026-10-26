@@ -1,5 +1,6 @@
 using BLL.Algorithms;
 using BLL.Exceptions;
+using BLL.Interfaces;
 using BLL.Notifications;
 using BLL.Security;
 using DAL.Classes;
@@ -73,18 +74,20 @@ namespace BLL.Services
         // אישור / דחייה / אי-מענה - תמיד לכל המסלול יחד
         // =========================================================
 
-        public async Task<List<Match>> AcceptAsync(Match match, int volunteerId)
+        // תיקון 12: המקרים הצפויים (הבקשה כבר לא ממתינה, זמן התגובה עבר, רישיון שפג, מסלול פעיל אחר)
+        // חוזרים כתוצאה ולא כחריגה - בעבר מתנדב שנכנס אחרי 5 הדקות "הפיל" את השרת בהרצה מ-Visual Studio.
+        public async Task<RouteResponseResult> AcceptAsync(Match match, int volunteerId)
         {
             var group = (await GetGroupAsync(match))
                 .Where(m => m.VolunteerId == volunteerId && m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation)
                 .ToList();
 
             if (group.Count == 0)
-                throw new ArgumentException("לא ניתן לאשר: הבקשה אינה ממתינה לאישור או שפג תוקפה.");
+                return RouteResponseResult.NotAwaiting;
 
             var now = DateTime.UtcNow;
             if (group.Any(m => m.ResponseDeadline.HasValue && m.ResponseDeadline.Value < now))
-                throw new ArgumentException("פג זמן התגובה לבקשה זו.");
+                return RouteResponseResult.Expired;
 
             // בדיקה חוזרת של רישיון הנהיגה ברגע האישור (המנוע בדק אותו כשבחר את המתנדב, אבל הרישיון
             // יכול לפוג בין ההצעה לאישור - למשל בחצות). רישיון לא בתוקף: הבקשה עוברת מיד למתנדב הבא.
@@ -92,12 +95,11 @@ namespace BLL.Services
             if (volunteerProfile != null && !DriverLicensePolicy.IsValid(volunteerProfile.DriverLicenseExpiry, now))
             {
                 await DeclineAsync(match, volunteerId, MatchStatus.Declined);
-                throw new ConflictException("לא ניתן לאשר: " + DriverLicensePolicy.NotValidMessage +
-                                            " הבקשה הועברה למתנדב אחר. לעדכון תוקף הרישיון יש לפנות למנהל המערכת.");
+                return RouteResponseResult.LicenseInvalid;
             }
 
             if (await _matchRepository.HasActiveConfirmedMatchAsync(volunteerId, match.Id, match.VolunteerRouteId))
-                throw new ConflictException("למתנדב כבר יש שיבוץ פעיל אחר.");
+                return RouteResponseResult.VolunteerBusy;
 
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
@@ -118,10 +120,11 @@ namespace BLL.Services
 
             await NotifyParticipantsAsync(group, "המתנדב אישר את המסלול", $"המתנדב יגיע לאיסוף בסביבות {EtaText(group)}.");
             await PublishStatusAsync(group);
-            return group;
+            return RouteResponseResult.Done;
         }
 
-        public async Task DeclineAsync(Match match, int volunteerId, MatchStatus outcome = MatchStatus.Declined)
+        // דחייה של המתנדב (Declined) או אי-מענה בזמן (TimedOut). NotAwaiting = הבקשה כבר לא ממתינה (בלי חריגה).
+        public async Task<RouteResponseResult> DeclineAsync(Match match, int volunteerId, MatchStatus outcome = MatchStatus.Declined)
         {
             if (outcome != MatchStatus.Declined && outcome != MatchStatus.TimedOut)
                 throw new ArgumentOutOfRangeException(nameof(outcome));
@@ -132,11 +135,7 @@ namespace BLL.Services
                 .ToList();
 
             if (group.Count == 0)
-            {
-                if (outcome == MatchStatus.Declined)
-                    throw new ArgumentException("לא ניתן לדחות: הבקשה אינה ממתינה לתגובה.");
-                return;
-            }
+                return RouteResponseResult.NotAwaiting;
 
             var now = DateTime.UtcNow;
 
@@ -170,6 +169,8 @@ namespace BLL.Services
             // מסמך התיאור, שלב 8: הבקשה עוברת אוטומטית למתנדב הבא - בלי לחכות לריצה השעתית
             foreach (var donationId in group.Select(m => m.DonationId).Distinct())
                 ScheduleReassign(donationId);
+
+            return RouteResponseResult.Done;
         }
 
         // =========================================================

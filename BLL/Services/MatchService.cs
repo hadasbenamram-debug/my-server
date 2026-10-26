@@ -184,17 +184,17 @@ namespace BLL.Services
         // תגובת המתנדב - ברמת המסלול
         // =========================================================
 
-        public async Task<RouteDto> AcceptAsync(int id, CurrentUserDto currentUser)
+        public async Task<RouteResponseOutcome> AcceptAsync(int id, CurrentUserDto currentUser)
         {
             var (match, volunteerId) = await LoadOwnMatchAsync(id, currentUser);
-            await _workflow.AcceptAsync(match, volunteerId);
-            return await BuildRouteDtoAsync(match);
+            var result = await _workflow.AcceptAsync(match, volunteerId);
+            return new RouteResponseOutcome(result, result == RouteResponseResult.Done ? await BuildRouteDtoAsync(match) : null);
         }
 
-        public async Task DeclineAsync(int id, CurrentUserDto currentUser)
+        public async Task<RouteResponseResult> DeclineAsync(int id, CurrentUserDto currentUser)
         {
             var (match, volunteerId) = await LoadOwnMatchAsync(id, currentUser);
-            await _workflow.DeclineAsync(match, volunteerId, MatchStatus.Declined);
+            return await _workflow.DeclineAsync(match, volunteerId, MatchStatus.Declined);
         }
 
         public async Task<RouteDto> StartRouteAsync(int routeId, CurrentUserDto currentUser)
@@ -269,22 +269,24 @@ namespace BLL.Services
             return route == null ? null : ToRouteDto(route);
         }
 
+        // תיקון 12: קישור שפג / נוצל, או בקשה שכבר לא ממתינה - תוצאה ולא חריגה
         public async Task<RespondByLinkOutcome> RespondByLinkAsync(RespondByLinkDto dto)
         {
-            var route = await LoadRouteForLinkAsync(dto.Token)
-                        ?? throw new NotFoundException("הקישור אינו בתוקף (פג, כבר נוצל או שגוי).");
+            var route = await LoadRouteForLinkAsync(dto.Token);
+            if (route == null)
+                return new RespondByLinkOutcome(RouteResponseResult.LinkInvalid, null, 0);
 
-            var match = route.Matches.FirstOrDefault(m => m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation)
-                        ?? throw new ArgumentException("הבקשה כבר אינה ממתינה לתגובה.");
+            var match = route.Matches.FirstOrDefault(m => m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation);
 
             // הטוקן נשלל (Revoke) בתוך האישור/הדחייה - כך שאי אפשר להשתמש בו שוב
-            if (dto.Accept)
-                await _workflow.AcceptAsync(match, route.VolunteerId);
-            else
-                await _workflow.DeclineAsync(match, route.VolunteerId, MatchStatus.Declined);
+            var result = match == null
+                ? RouteResponseResult.NotAwaiting
+                : dto.Accept
+                    ? await _workflow.AcceptAsync(match, route.VolunteerId)
+                    : await _workflow.DeclineAsync(match, route.VolunteerId, MatchStatus.Declined);
 
             var fresh = await _routeRepository.GetWithDetailsAsync(route.Id) ?? route;
-            return new RespondByLinkOutcome(ToRouteDto(fresh), route.Volunteer.UserId);
+            return new RespondByLinkOutcome(result, ToRouteDto(fresh), route.Volunteer.UserId);
         }
 
         // =========================================================

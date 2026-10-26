@@ -21,9 +21,10 @@ namespace BLL.Interfaces
         // שיבוץ ידני של תרומה (דרך אותו מנוע). null אם התרומה לא קיימת.
         Task<AssignDonationResultDto?> AssignDonationAsync(int donationId);
 
-        // אישור / דחייה - לכל המסלול שהשידוך שייך אליו
-        Task<RouteDto> AcceptAsync(int id, CurrentUserDto currentUser);
-        Task DeclineAsync(int id, CurrentUserDto currentUser);
+        // אישור / דחייה - לכל המסלול שהשידוך שייך אליו.
+        // תיקון 12: מקרים צפויים (זמן התגובה עבר, כבר נענה...) חוזרים כתוצאה ולא כחריגה
+        Task<RouteResponseOutcome> AcceptAsync(int id, CurrentUserDto currentUser);
+        Task<RouteResponseResult> DeclineAsync(int id, CurrentUserDto currentUser);
 
         // ביצוע המסלול
         Task<RouteDto> StartRouteAsync(int routeId, CurrentUserDto currentUser);
@@ -41,6 +42,21 @@ namespace BLL.Interfaces
         Task<RespondByLinkOutcome> RespondByLinkAsync(RespondByLinkDto dto);
     }
 
-    // תשובה לבקשת התנדבות מהקישור. VolunteerUserId - כדי שאחרי אישור המתנדב ייכנס ישר למסלול (תיקון 11)
-    public sealed record RespondByLinkOutcome(RouteDto Route, int VolunteerUserId);
+    // תשובה לבקשת התנדבות מהקישור. VolunteerUserId - כדי שאחרי אישור המתנדב ייכנס ישר למסלול (תיקון 11).
+    // Route = null כשהקישור כבר לא בתוקף (Result = LinkInvalid).
+    public sealed record RespondByLinkOutcome(RouteResponseResult Result, RouteDto? Route, int VolunteerUserId);
+
+    // תיקון 12: תוצאת אישור / דחייה של בקשת התנדבות. בעבר המקרים האלה זרקו חריגות (ArgumentException /
+    // ConflictException / NotFoundException), ומתנדב שנכנס אחרי 5 הדקות "הפיל" את השרת בהרצה מ-Visual Studio.
+    public enum RouteResponseResult
+    {
+        Done,             // אושר / נדחה
+        NotAwaiting,      // הבקשה כבר לא ממתינה לתגובה (אושרה / נדחתה / הועברה למתנדב אחר)
+        Expired,          // זמן התגובה הסתיים
+        LicenseInvalid,   // רישיון הנהיגה פג בין ההצעה לאישור - הבקשה הועברה למתנדב אחר
+        VolunteerBusy,    // למתנדב כבר יש מסלול פעיל אחר
+        LinkInvalid       // הקישור מהמייל / SMS כבר לא בתוקף
+    }
+
+    public sealed record RouteResponseOutcome(RouteResponseResult Result, RouteDto? Route);
 }

@@ -1,5 +1,6 @@
 using BLL.Algorithms;
 using BLL.Exceptions;
+using BLL.Interfaces;
 using DAL;
 using DAL.Classes;
 using FoodRescue.DTOs;
@@ -111,13 +112,15 @@ namespace FoodRescue.Tests
             Assert.NotNull(route);
 
             var answered = await h.MatchService.RespondByLinkAsync(new RespondByLinkDto { Token = rawToken, Accept = true });
-            Assert.Equal(nameof(MatchStatus.Confirmed), answered.Route.Stops.Single().Status);
+            Assert.Equal(RouteResponseResult.Done, answered.Result);
+            Assert.Equal(nameof(MatchStatus.Confirmed), answered.Route!.Stops.Single().Status);
             Assert.Equal(v.UserId, answered.VolunteerUserId);
 
             // הטוקן נוצל - אי אפשר להשתמש בו שוב
             Assert.Null(await h.MatchService.GetRouteByLinkAsync(rawToken));
-            await Assert.ThrowsAsync<NotFoundException>(() =>
-                h.MatchService.RespondByLinkAsync(new RespondByLinkDto { Token = rawToken, Accept = false }));
+            // תיקון 12: קישור שנוצל - תוצאה ברורה, בלי חריגה
+            Assert.Equal(RouteResponseResult.LinkInvalid,
+                (await h.MatchService.RespondByLinkAsync(new RespondByLinkDto { Token = rawToken, Accept = false })).Result);
         }
 
         // תיקון 11: אחרי אישור מהקישור (בלי התחברות) המתנדב נכנס ישר למסלול הפעיל - לא למסך ההתחברות
@@ -266,7 +269,7 @@ namespace FoodRescue.Tests
             await h.Db.SaveChangesAsync();
             var volunteerUser = await h.Db.Users.SingleAsync(u => u.Id == v.UserId);
 
-            await Assert.ThrowsAsync<ConflictException>(() => h.MatchService.AcceptAsync(match.Id, As(volunteerUser)));
+            Assert.Equal(RouteResponseResult.LicenseInvalid, (await h.MatchService.AcceptAsync(match.Id, As(volunteerUser))).Result);
 
             h.Fresh();
             Assert.Equal(MatchStatus.Declined, (await h.Db.Matches.SingleAsync()).Status);
@@ -383,7 +386,7 @@ namespace FoodRescue.Tests
             var volunteerUser = await h.Db.Users.SingleAsync(u => u.Id == v.UserId);
 
             // אישור אחד לכל המסלול
-            var route = await h.MatchService.AcceptAsync(matchId, As(volunteerUser));
+            var route = (await h.MatchService.AcceptAsync(matchId, As(volunteerUser))).Route!;
             h.Fresh();
             Assert.Equal(MatchStatus.Confirmed, (await h.Db.Matches.SingleAsync()).Status);
             Assert.False((await h.Db.Volunteers.SingleAsync(x => x.Id == v.Id)).IsAvailable);

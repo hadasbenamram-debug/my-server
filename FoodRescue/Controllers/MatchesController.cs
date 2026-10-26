@@ -73,14 +73,40 @@ namespace FoodRescue.Controllers
 
         // אישור אחד לכל המסלול (בעבר אישור נפרד לכל תחנה)
         [HttpPost("{id:int}/accept")]
-        public async Task<ActionResult<RouteDto>> AcceptMatch(int id) =>
-            Ok(await _matchService.AcceptAsync(id, CurrentUser));
+        public async Task<ActionResult<RouteDto>> AcceptMatch(int id)
+        {
+            var outcome = await _matchService.AcceptAsync(id, CurrentUser);
+            return outcome.Result == RouteResponseResult.Done ? Ok(outcome.Route) : ResponseProblem(outcome.Result);
+        }
 
         [HttpPost("{id:int}/decline")]
         public async Task<IActionResult> DeclineMatch(int id)
         {
-            await _matchService.DeclineAsync(id, CurrentUser);
-            return Message("הבקשה נדחתה. התרומות יועברו למתנדב אחר.");
+            var result = await _matchService.DeclineAsync(id, CurrentUser);
+            return result == RouteResponseResult.Done
+                ? Message("הבקשה נדחתה. התרומות יועברו למתנדב אחר.")
+                : ResponseProblem(result);
+        }
+
+        // תיקון 12: אישור / דחייה שכבר לא אפשריים (למשל אחרי שזמן התגובה עבר) - תשובה ברורה, בלי חריגה.
+        // בעבר נזרקו כאן חריגות, ומתנדב שנכנס אחרי 5 הדקות "הפיל" את השרת בהרצה מ-Visual Studio.
+        private ObjectResult ResponseProblem(RouteResponseResult result)
+        {
+            var (code, message) = result switch
+            {
+                RouteResponseResult.Expired =>
+                    ("Expired", "זמן התגובה לבקשה הזו הסתיים, והיא הועברה למתנדב אחר. תודה על הנכונות!"),
+                RouteResponseResult.NotAwaiting =>
+                    ("NotAwaiting", "הבקשה כבר לא ממתינה לתגובה: היא כבר נענתה, או שזמן התגובה הסתיים והיא הועברה למתנדב אחר."),
+                RouteResponseResult.LicenseInvalid =>
+                    ("LicenseInvalid", "לא ניתן לאשר: " + BLL.Algorithms.DriverLicensePolicy.NotValidMessage +
+                                       " הבקשה הועברה למתנדב אחר. לעדכון תוקף הרישיון יש לפנות למנהל המערכת."),
+                RouteResponseResult.VolunteerBusy =>
+                    ("VolunteerBusy", "יש לך כבר מסלול פעיל אחר. אפשר לאשר מסלול חדש אחרי שמסיימים את הנוכחי."),
+                _ => ("LinkInvalid", "הקישור כבר לא בתוקף: זמן התגובה הסתיים או שכבר השתמשו בו.")
+            };
+
+            return StatusCode(409, new Infrastructure.ApiError { Status = 409, Code = code, Message = message });
         }
 
         // ---------------- ביצוע המסלול ----------------
@@ -136,9 +162,11 @@ namespace FoodRescue.Controllers
         [HttpPost("by-link")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]
-        public async Task<ActionResult<RouteDto>> GetRouteByLink([FromBody] RespondByLinkDto dto) =>
-            Ok(await _matchService.GetRouteByLinkAsync(dto.Token)
-               ?? throw new NotFoundException("הקישור אינו בתוקף (פג, כבר נוצל או שגוי)."));
+        public async Task<ActionResult<RouteDto>> GetRouteByLink([FromBody] RespondByLinkDto dto)
+        {
+            var route = await _matchService.GetRouteByLinkAsync(dto.Token);
+            return route != null ? Ok(route) : ResponseProblem(RouteResponseResult.LinkInvalid);
+        }
 
         [HttpPost("respond-by-link")]
         [AllowAnonymous]
@@ -146,6 +174,8 @@ namespace FoodRescue.Controllers
         public async Task<ActionResult<RespondByLinkResultDto>> RespondByLink([FromBody] RespondByLinkDto dto)
         {
             var outcome = await _matchService.RespondByLinkAsync(dto);
+            if (outcome.Result != RouteResponseResult.Done || outcome.Route == null)
+                return ResponseProblem(outcome.Result);
 
             // תיקון 11: בעבר אחרי אישור מהקישור הופיע "התחבר/י למערכת" - עכשיו המתנדב נכנס ישר למסלול הפעיל
             var session = dto.Accept
