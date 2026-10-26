@@ -254,9 +254,10 @@ namespace BLL.Services
                 await QueueDecisionEmailAsync(user, role, approve, reason, loginToken);
             });
 
+            // תיקון 10: לחשבון יכולים להיות כמה תפקידים - בהודעה כתוב על איזה תפקיד מדובר
             await _notifications.NotifyUserAsync(
                 user.Id,
-                approve ? "בקשת ההצטרפות שלך אושרה" : "בקשת ההצטרפות שלך נדחתה",
+                approve ? $"בקשת ההצטרפות שלך {RoleTitles.For(role)} אושרה" : $"בקשת ההצטרפות שלך {RoleTitles.For(role)} נדחתה",
                 approve ? "אפשר להתחיל לפעול במערכת." : $"סיבה: {reason}",
                 link: approve ? FrontendLinks.RoleHomePath(role) : null,
                 type: approve ? "success" : "warning");
@@ -315,7 +316,7 @@ namespace BLL.Services
                 };
 
                 subject = "בקשת ההצטרפות שלך אושרה - לתת באהבה";
-                body = $"שלום {name},<br/><br/>שמחים לעדכן כי בקשת ההצטרפות שלך <b>אושרה על ידי המנהל!</b><br/>{nextStep}<br/><br/>" +
+                body = $"שלום {name},<br/><br/>שמחים לעדכן כי בקשת ההצטרפות שלך {RoleTitles.For(role)} <b>אושרה על ידי המנהל!</b><br/>{nextStep}<br/><br/>" +
                        (string.IsNullOrEmpty(enterUrl) ? "" : $"<a href='{enterUrl}' target='_blank'>כניסה למערכת</a><br/>") +
                        (loginToken == null ? "" : "<small>הקישור אישי, לשימוש אחד ותקף ל-3 ימים. אחר כך נכנסים כרגיל עם המייל והסיסמה.</small><br/>") +
                        "<br/>תודה רבה!";
@@ -323,7 +324,7 @@ namespace BLL.Services
             else
             {
                 subject = "עדכון לגבי בקשת ההצטרפות שלך - לתת באהבה";
-                body = $"שלום {name},<br/>לצערנו בקשת ההצטרפות שלך נדחתה.<br/><b>סיבה:</b> {WebUtility.HtmlEncode(reason)}";
+                body = $"שלום {name},<br/>לצערנו בקשת ההצטרפות שלך {RoleTitles.For(role)} נדחתה.<br/><b>סיבה:</b> {WebUtility.HtmlEncode(reason)}";
             }
 
             await _notifications.QueueEmailAsync(user.Id, user.Email, subject, body,

@@ -138,11 +138,14 @@ namespace FoodRescue.Tests
 
     /// <summary>
     /// כל שכבות המנוע והמסלול על מסד בזיכרון: Repositories אמיתיים, שירותים אמיתיים,
-    /// בלי Google, בלי SMTP ובלי Hangfire. שעון קבוע: יום שני 19/10/2026 10:00 שעון ישראל.
+    /// בלי Google, בלי SMTP ובלי Hangfire. שעון קבוע: יום שני 19/10/2026 10:00 שעון ישראל (או שעה אחרת שנבחרה בבנאי).
     /// </summary>
     public sealed class EngineHarness : IDisposable
     {
-        public static readonly DateTime LocalNow = new(2026, 10, 19, 10, 0, 0);   // יום שני
+        public static readonly DateTime DefaultLocalNow = new(2026, 10, 19, 10, 0, 0);   // יום שני
+
+        /// <summary>שעת ההתחלה של השעון הקבוע (שעון ישראל). ברירת מחדל: DefaultLocalNow.</summary>
+        public DateTime LocalNow { get; }
 
         public FoodRescueDbContext Db { get; }
         public TestClock Clock { get; }
@@ -173,9 +176,10 @@ namespace FoodRescue.Tests
         public MatchService MatchService { get; }
         public MatchTimeoutService Timeouts { get; }
 
-        public EngineHarness(MatchingPolicyOptions? policy = null)
+        public EngineHarness(MatchingPolicyOptions? policy = null, DateTime? localNow = null)
         {
             LocalClock.Configure("Asia/Jerusalem");
+            LocalNow = localNow ?? DefaultLocalNow;
 
             Db = TestDb.New();
             Clock = new TestClock(LocalClock.ToUtc(LocalNow));

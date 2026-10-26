@@ -17,7 +17,8 @@ namespace BLL.Services
     // דוחות ונתוני דשבורד למנהל.
     public class AdminReportService : IAdminReportService
     {
-        private static readonly string[] DayNames = { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
+        // תיקון 9: ביום שבת יש רק זמינות של מוצאי שבת
+        private static readonly string[] DayNames = { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "מוצאי שבת" };
 
         private readonly IVolunteerRepository _volunteerRepository;
         private readonly IApprovalRequestService _approvals;

@@ -543,6 +543,9 @@ namespace DAL.Migrations
                     b.Property<bool>("ReceivesOnFriday")
                         .HasColumnType("bit");
 
+                    b.Property<bool>("ReceivesOnSaturdayNight")
+                        .HasColumnType("bit");
+
                     b.Property<int>("RegionId")
                         .HasColumnType("int");
 
@@ -550,6 +553,12 @@ namespace DAL.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<TimeSpan?>("SaturdayNightCloseTime")
+                        .HasColumnType("time");
+
+                    b.Property<TimeSpan?>("SaturdayNightOpenTime")
+                        .HasColumnType("time");
 
                     b.Property<TimeSpan>("SunToThuCloseTime")
                         .HasColumnType("time");

@@ -112,12 +112,7 @@ namespace BLL.Services
         {
             string email = EmailNormalizer.Normalize(dto.Email);
 
-            if (!await _regionRepository.ExistsAsync(dto.RegionId))
-                throw new ArgumentException("האזור שנבחר אינו קיים.");
-
-            var open = dto.SunToThuOpenTime ?? DefaultOpen;
-            var close = dto.SunToThuCloseTime ?? DefaultClose;
-            ValidateHours(open, close, dto.ReceivesOnFriday, dto.FridayOpenTime, dto.FridayCloseTime);
+            await ValidateProfileAsync(dto);
 
             // המיקום המדויק לפי הכתובת (Google Maps) - לפני הטרנזקציה, כדי לא להחזיק אותה פתוחה בזמן הפנייה ל-Google.
             // נבדק לפני בדיקת המייל, כך שגם כתובת שגויה לא מגלה אם המייל רשום.
@@ -156,27 +151,7 @@ namespace BLL.Services
                     return;
                 }
 
-                var ngoEntity = new Ngo
-                {
-                    UserId = user.Id,
-                    NgoName = dto.NgoName.Trim(),
-                    DailyCapacity = dto.DailyCapacity,
-                    Address = dto.Address.Trim(),
-                    // המיקום נקבע בשרת לפי הכתובת, לא מהלקוח
-                    Latitude = location.Latitude,
-                    Longitude = location.Longitude,
-                    RegistrationNumber = dto.RegistrationNumber.Trim(),
-                    RegionId = dto.RegionId,
-                    SunToThuOpenTime = open,
-                    SunToThuCloseTime = close,
-                    ReceivesOnFriday = dto.ReceivesOnFriday,
-                    FridayOpenTime = dto.ReceivesOnFriday ? dto.FridayOpenTime : null,
-                    FridayCloseTime = dto.ReceivesOnFriday ? dto.FridayCloseTime : null,
-                    GooglePlaceId = location.PlaceId,
-                    ApprovalStatus = ApprovalStatus.Pending
-                };
-
-                await _ngoRepository.AddAsync(ngoEntity);
+                await _ngoRepository.AddAsync(NewNgo(user.Id, dto, location));
                 await _approvals.AddPendingAsync(user.Id, FoodRescue.DTOs.RequestedRole.Ngo, true, "הוגשה בקשת הצטרפות של עמותה.");
 
                 await _notifications.QueueEmailAsync(
@@ -200,7 +175,68 @@ namespace BLL.Services
             return RegistrationResult.Created;
         }
 
-        private const string RoleTitle = "כעמותה";
+        private const string RoleTitle = RoleTitles.Ngo;
+
+        // תיקון 10: משתמש מחובר מוסיף לחשבון שלו גם תפקיד עמותה - אותו מייל ואותה סיסמה.
+        // הבקשה ממתינה לאישור מנהל, ועד האישור החשבון ממשיך לעבוד בתפקידים שכבר אושרו.
+        public async Task<AddRoleResult> AddRoleAsync(int userId, CreateNgoDto dto)
+        {
+            var user = await _userRepository.GetByIdAsync(userId);
+            if (user == null)
+                return AddRoleResult.UserNotFound;
+
+            if (user.Role == UserRole.Admin)
+                return AddRoleResult.NotAvailableForAdmin;
+
+            if (await _ngoRepository.GetByUserIdAsync(userId) != null)
+                return AddRoleResult.AlreadyHasRole;
+
+            await ValidateProfileAsync(dto);
+            var location = await _geocoding.GeocodeAsync(dto.Address);
+
+            await _unitOfWork.ExecuteInTransactionAsync(async () =>
+            {
+                await _ngoRepository.AddAsync(NewNgo(userId, dto, location));
+                await _approvals.AddPendingAsync(userId, FoodRescue.DTOs.RequestedRole.Ngo, true, "הוגשה בקשת הצטרפות של עמותה (תפקיד נוסף לחשבון קיים).");
+                await _registrationNotices.NotifyRoleRequestReceivedAsync(user, RoleTitle);
+            });
+
+            return AddRoleResult.Added;
+        }
+
+        // בדיקות פרופיל העמותה - משותפות להרשמה חדשה ולהוספת תפקיד
+        private async Task ValidateProfileAsync(INgoProfileFields dto)
+        {
+            if (!await _regionRepository.ExistsAsync(dto.RegionId))
+                throw new ArgumentException("האזור שנבחר אינו קיים.");
+
+            ValidateHours(dto.SunToThuOpenTime ?? DefaultOpen, dto.SunToThuCloseTime ?? DefaultClose,
+                dto.ReceivesOnFriday, dto.FridayOpenTime, dto.FridayCloseTime);
+            ValidateSaturdayNightHours(dto.ReceivesOnSaturdayNight, dto.SaturdayNightOpenTime, dto.SaturdayNightCloseTime);
+        }
+
+        private static Ngo NewNgo(int userId, INgoProfileFields dto, GeocodeResult location) => new()
+        {
+            UserId = userId,
+            NgoName = dto.NgoName.Trim(),
+            DailyCapacity = dto.DailyCapacity,
+            Address = dto.Address.Trim(),
+            // המיקום נקבע בשרת לפי הכתובת, לא מהלקוח
+            Latitude = location.Latitude,
+            Longitude = location.Longitude,
+            RegistrationNumber = dto.RegistrationNumber.Trim(),
+            RegionId = dto.RegionId,
+            SunToThuOpenTime = dto.SunToThuOpenTime ?? DefaultOpen,
+            SunToThuCloseTime = dto.SunToThuCloseTime ?? DefaultClose,
+            ReceivesOnFriday = dto.ReceivesOnFriday,
+            FridayOpenTime = dto.ReceivesOnFriday ? dto.FridayOpenTime : null,
+            FridayCloseTime = dto.ReceivesOnFriday ? dto.FridayCloseTime : null,
+            ReceivesOnSaturdayNight = dto.ReceivesOnSaturdayNight,
+            SaturdayNightOpenTime = dto.ReceivesOnSaturdayNight ? dto.SaturdayNightOpenTime : null,
+            SaturdayNightCloseTime = dto.ReceivesOnSaturdayNight ? dto.SaturdayNightCloseTime : null,
+            GooglePlaceId = location.PlaceId,
+            ApprovalStatus = ApprovalStatus.Pending
+        };
 
         public async Task UpdateMyHoursAsync(int userId, UpdateNgoHoursDto dto)
         {
@@ -210,6 +246,7 @@ namespace BLL.Services
             var open = dto.SunToThuOpenTime ?? ngo.SunToThuOpenTime;
             var close = dto.SunToThuCloseTime ?? ngo.SunToThuCloseTime;
             ValidateHours(open, close, dto.ReceivesOnFriday, dto.FridayOpenTime, dto.FridayCloseTime);
+            ValidateSaturdayNightHours(dto.ReceivesOnSaturdayNight, dto.SaturdayNightOpenTime, dto.SaturdayNightCloseTime);
 
             // בכל שמירה המיקום מחושב מחדש לפי הכתובת (Google Maps), כך שגם מיקום ישן ושגוי מתתקן
             var location = await _geocoding.GeocodeAsync(dto.Address);
@@ -223,6 +260,9 @@ namespace BLL.Services
             ngo.ReceivesOnFriday = dto.ReceivesOnFriday;
             ngo.FridayOpenTime = dto.ReceivesOnFriday ? dto.FridayOpenTime : null;
             ngo.FridayCloseTime = dto.ReceivesOnFriday ? dto.FridayCloseTime : null;
+            ngo.ReceivesOnSaturdayNight = dto.ReceivesOnSaturdayNight;
+            ngo.SaturdayNightOpenTime = dto.ReceivesOnSaturdayNight ? dto.SaturdayNightOpenTime : null;
+            ngo.SaturdayNightCloseTime = dto.ReceivesOnSaturdayNight ? dto.SaturdayNightCloseTime : null;
 
             await _ngoRepository.UpdateAsync(ngo);
         }
@@ -240,6 +280,23 @@ namespace BLL.Services
 
             if (fridayOpen.Value >= fridayClose.Value)
                 throw new ArgumentException("שעת הפתיחה ביום שישי חייבת להיות לפני שעת הסגירה.");
+        }
+
+        // תיקון 9: בשבת עצמה אין קבלת תרומות - רק במוצאי שבת, משעה 17:00 ועד חצות
+        // (המנוע משבץ בפועל רק אחרי צאת השבת, לפי ShabbatClock)
+        private static void ValidateSaturdayNightHours(bool receives, TimeSpan? open, TimeSpan? close)
+        {
+            if (!receives)
+                return;
+
+            if (open == null || close == null)
+                throw new ArgumentException("יש להזין שעות קבלה למוצאי שבת.");
+
+            if (open.Value < ShabbatClock.EarliestSaturdayNightTime)
+                throw new ArgumentException($"במוצאי שבת אפשר לקבל תרומות רק משעה {ShabbatClock.EarliestSaturdayNightTime:hh\\:mm} ואילך.");
+
+            if (open.Value >= close.Value || close.Value >= TimeSpan.FromDays(1))
+                throw new ArgumentException("שעת הפתיחה במוצאי שבת חייבת להיות לפני שעת הסגירה (עד חצות).");
         }
     }
 }

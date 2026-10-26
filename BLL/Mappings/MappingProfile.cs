@@ -2,6 +2,7 @@
 using DAL;
 using DAL.Classes;
 using FoodRescue.DTOs;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace BLL.Mappings
@@ -61,7 +62,9 @@ namespace BLL.Mappings
             // ===================== משתמשים =====================
             // תוקן: UserDto.Username היה תמיד null כי בישות השדה נקרא Name. עכשיו ה-DTO משתמש ב-Name.
             CreateMap<User, UserDto>()
-                .ForMember(d => d.Role, o => o.MapFrom(s => s.Role.ToString()));
+                .ForMember(d => d.Role, o => o.MapFrom(s => s.Role.ToString()))
+                // תיקון 10: כל התפקידים של החשבון - לפי הפרופילים שלו (כשהם נטענו)
+                .ForMember(d => d.Roles, o => o.MapFrom(s => AccountRoles(s)));
             CreateMap<User, UserSummaryDto>();
 
             // ===================== משבצות זמינות =====================
@@ -179,6 +182,17 @@ namespace BLL.Mappings
                 .ForMember(d => d.Longitude, o => o.MapFrom(s => s.LocationUpdatedAt != null ? s.CurrentLongitude : 0.0))
                 .ForMember(d => d.Address, o => o.MapFrom(_ => ""))
                 .ForMember(d => d.Type, o => o.MapFrom(_ => "volunteer"));
+        }
+
+        private static List<string> AccountRoles(User user)
+        {
+            var roles = new List<string>();
+            if (user.Role == UserRole.Admin) roles.Add(nameof(UserRole.Admin));
+            if (user.VolunteerProfile != null) roles.Add(nameof(UserRole.Volunteer));
+            if (user.SupplierProfile != null) roles.Add(nameof(UserRole.Supplier));
+            if (user.NgoProfile != null) roles.Add(nameof(UserRole.Ngo));
+            if (roles.Count == 0) roles.Add(user.Role.ToString());
+            return roles;
         }
     }
 }

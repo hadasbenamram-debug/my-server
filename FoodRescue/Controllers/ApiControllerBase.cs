@@ -1,4 +1,5 @@
 using BLL.Exceptions;
+using BLL.Interfaces;
 using FoodRescue.DTOs;
 using FoodRescue.Extensions;
 using Microsoft.AspNetCore.Mvc;
@@ -32,6 +33,24 @@ namespace FoodRescue.Controllers
         }
 
         protected OkObjectResult Message(string message) => Ok(new MessageResponse { Message = message });
+
+        // תיקון 10: תשובה להוספת תפקיד (מתנדב / ספק / עמותה) לחשבון של המשתמש המחובר - בלי חריגות במקרים הצפויים
+        protected IActionResult AddRoleResponse(AddRoleResult result, string roleTitle) => result switch
+        {
+            AddRoleResult.Added => Message(
+                $"הבקשה להצטרף גם {roleTitle} נשלחה לאישור מנהל. אחרי האישור יישלח אליך מייל, ואפשר יהיה לעבור בין התפקידים מהתפריט."),
+            AddRoleResult.AlreadyHasRole => Conflict(new Infrastructure.ApiError
+            {
+                Status = 409, Code = "AlreadyHasRole",
+                Message = $"החשבון שלך כבר רשום {roleTitle} (או שהבקשה עדיין ממתינה לאישור)."
+            }),
+            AddRoleResult.NotAvailableForAdmin => StatusCode(403, new Infrastructure.ApiError
+            {
+                Status = 403, Code = "NotAvailableForAdmin",
+                Message = "לחשבון מנהל לא מוסיפים תפקידים. כדי להתנדב או לתרום - נרשמים עם כתובת מייל אחרת."
+            }),
+            _ => Unauthorized()
+        };
     }
 
     public class MessageResponse

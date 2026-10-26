@@ -91,13 +91,20 @@ namespace BLL.Services
             return supplier == null ? null : _mapper.Map<SupplierResponseDto>(supplier);
         }
 
-        public async Task<SupplierResponseDto> CreateAsync(int userId, CreateSupplierDto dto)
+        // תיקון 10: משתמש מחובר מוסיף לחשבון שלו גם תפקיד ספק (למשל מתנדב שיש לו עסק) - אותו מייל ואותה סיסמה.
+        // הבקשה ממתינה לאישור מנהל, ועד האישור החשבון ממשיך לעבוד בתפקידים שכבר אושרו.
+        // בעבר: ConflictException כשכבר היה פרופיל - עכשיו תוצאה (בלי חריגה).
+        public async Task<AddRoleResult> AddRoleAsync(int userId, CreateSupplierDto dto)
         {
-            var user = await _userRepository.GetByIdAsync(userId)
-                       ?? throw new UnauthorizedException("המשתמש המחובר לא נמצא.");
+            var user = await _userRepository.GetByIdAsync(userId);
+            if (user == null)
+                return AddRoleResult.UserNotFound;
+
+            if (user.Role == UserRole.Admin)
+                return AddRoleResult.NotAvailableForAdmin;
 
             if (await _supplierRepository.GetByUserIdAsync(userId) != null)
-                throw new ConflictException("למשתמש זה כבר קיים פרופיל ספק.");
+                return AddRoleResult.AlreadyHasRole;
 
             if (dto.LicenseFile == null || dto.LicenseFile.Length == 0)
                 throw new ArgumentException("חובה לצרף קובץ רישיון עסק.");
@@ -122,6 +129,7 @@ namespace BLL.Services
                 {
                     await _supplierRepository.AddAsync(supplierEntity);
                     await _approvals.AddPendingAsync(userId, FoodRescue.DTOs.RequestedRole.Supplier, true, "הוגש פרופיל ספק עם רישיון עסק.");
+                    await _registrationNotices.NotifyRoleRequestReceivedAsync(user, RoleTitle);
                 });
             }
             catch
@@ -130,7 +138,7 @@ namespace BLL.Services
                 throw;
             }
 
-            return _mapper.Map<SupplierResponseDto>(supplierEntity);
+            return AddRoleResult.Added;
         }
 
         public async Task<RegistrationResult> RegisterWithUserAsync(RegisterSupplierDto dto)
@@ -232,7 +240,7 @@ namespace BLL.Services
             return RegistrationResult.Created;
         }
 
-        private const string RoleTitle = "כספק / תורם";
+        private const string RoleTitle = RoleTitles.Supplier;
 
         public async Task<LicenseFileInfo?> GetLicenseFileAsync(int supplierId)
         {

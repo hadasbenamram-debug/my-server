@@ -45,7 +45,7 @@ namespace FoodRescue.DTOs
     }
 
     // נתוני הרשמה של עמותה + יצירת משתמש (POST api/Ngos/register).
-    public class RegisterNgoDto : RegisterUserFieldsDto
+    public class RegisterNgoDto : RegisterUserFieldsDto, INgoProfileFields
     {
         [Required(ErrorMessage = "יש להזין את שם העמותה.")]
         [StringLength(100, ErrorMessage = "שם העמותה יכול להכיל עד 100 תווים.")]
@@ -73,6 +73,11 @@ namespace FoodRescue.DTOs
         public bool ReceivesOnFriday { get; set; }
         public TimeSpan? FridayOpenTime { get; set; }
         public TimeSpan? FridayCloseTime { get; set; }
+
+        // מוצאי שבת (לא חובה)
+        public bool ReceivesOnSaturdayNight { get; set; }
+        public TimeSpan? SaturdayNightOpenTime { get; set; }
+        public TimeSpan? SaturdayNightCloseTime { get; set; }
     }
 
     // נתוני הרשמה של מתנדב + יצירת משתמש (POST api/Volunteers/register).

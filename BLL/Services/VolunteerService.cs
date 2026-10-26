@@ -142,13 +142,20 @@ namespace BLL.Services
             await _volunteerRepository.UpdateAsync(volunteer);
         }
 
-        public async Task<VolunteerResponseDto> CreateAsync(int userId, CreateVolunteerDto dto)
+        // תיקון 10: משתמש מחובר מוסיף לחשבון שלו גם תפקיד מתנדב (למשל ספק שרוצה גם להתנדב) - אותו מייל ואותה סיסמה.
+        // הבקשה ממתינה לאישור מנהל כמו הרשמה רגילה, ועד האישור החשבון ממשיך לעבוד בתפקידים שכבר אושרו.
+        // בעבר: ConflictException כשכבר היה פרופיל - עכשיו תוצאה (בלי חריגה).
+        public async Task<AddRoleResult> AddRoleAsync(int userId, CreateVolunteerDto dto)
         {
-            var user = await _userRepository.GetByIdAsync(userId)
-                       ?? throw new UnauthorizedException("המשתמש המחובר לא נמצא.");
+            var user = await _userRepository.GetByIdAsync(userId);
+            if (user == null)
+                return AddRoleResult.UserNotFound;
+
+            if (user.Role == UserRole.Admin)
+                return AddRoleResult.NotAvailableForAdmin;
 
             if (await _volunteerRepository.GetByUserIdAsync(userId) != null)
-                throw new ConflictException("למשתמש זה כבר קיים פרופיל מתנדב.");
+                return AddRoleResult.AlreadyHasRole;
 
             var volunteerEntity = _mapper.Map<Volunteer>(dto);
             volunteerEntity.UserId = userId;
@@ -164,18 +171,10 @@ namespace BLL.Services
                 await _volunteerRepository.AddAsync(volunteerEntity);
                 await _approvals.AddPendingAsync(userId, FoodRescue.DTOs.RequestedRole.Volunteer, passed, details);
 
-                if (!string.IsNullOrEmpty(user.Email))
-                {
-                    await _notifications.QueueEmailAsync(
-                        user.Id,
-                        user.Email,
-                        "רישום למערכת הצלת מזון",
-                        "שלום רב, בקשת ההצטרפות שלך כמתנדב התקבלה בהצלחה וממתינה לאישור מנהל.",
-                        summary: "בקשת ההצטרפות התקבלה");
-                }
+                await _registrationNotices.NotifyRoleRequestReceivedAsync(user, RoleTitle);
             });
 
-            return _mapper.Map<VolunteerResponseDto>(volunteerEntity);
+            return AddRoleResult.Added;
         }
 
         public async Task<List<AvailabilitySlotResponseDto>> GetAvailabilityAsync(int id, CurrentUserDto currentUser)
@@ -276,7 +275,7 @@ namespace BLL.Services
             return RegistrationResult.Created;
         }
 
-        private const string RoleTitle = "כמתנדב/ת";
+        private const string RoleTitle = RoleTitles.Volunteer;
 
         // =========================================================
         // מיקום חי
@@ -357,13 +356,18 @@ namespace BLL.Services
                 string label = $"משבצת {i + 1}";
 
                 if (dto.Day < 0 || dto.Day > 6)
-                    throw new ArgumentException($"{label}: יום בשבוע חייב להיות בין 0 (ראשון) ל-6 (שבת).");
+                    throw new ArgumentException($"{label}: יום בשבוע חייב להיות בין 0 (ראשון) ל-6 (מוצאי שבת).");
 
                 var startTime = ParseTime(dto.StartTime, $"{label}: פורמט שעת התחלה אינו תקין.");
                 var endTime = ParseTime(dto.EndTime, $"{label}: פורמט שעת סיום אינו תקין.");
 
                 if (startTime >= endTime)
                     throw new ArgumentException($"{label}: שעת ההתחלה חייבת להיות לפני שעת הסיום.");
+
+                // תיקון 9: אין זמינות בשבת עצמה - רק במוצאי שבת (ההצעות נשלחות רק אחרי צאת השבת, ראו ShabbatClock)
+                if (dto.Day == (int)DayOfWeek.Saturday && startTime < ShabbatClock.EarliestSaturdayNightTime)
+                    throw new ArgumentException(
+                        $"{label}: בשבת אפשר להגדיר זמינות רק במוצאי שבת, משעה {ShabbatClock.EarliestSaturdayNightTime:hh\\:mm} ואילך. הצעות נשלחות רק אחרי צאת השבת.");
 
                 int? toRegionId = dto.ToRegionId is > 0 ? dto.ToRegionId : null;
                 if (toRegionId == dto.RegionId)

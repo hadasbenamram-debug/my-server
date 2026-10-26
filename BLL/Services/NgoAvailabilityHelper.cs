@@ -15,8 +15,19 @@ namespace BLL.Algorithms
         /// </summary>
         private static void GetOpenSegments(Ngo ngo, DayOfWeek day, List<(TimeSpan Start, TimeSpan End)> into)
         {
-           if (day == DayOfWeek.Saturday) return;
-        
+            // תיקון 9: בשבת עצמה סגור. אם העמותה הגדירה שעות במוצאי שבת - רק הן (עד חצות, בלי "זנב" לליל שבת).
+            // המנוע עצמו לא משבץ לפני צאת השבת (ShabbatClock), גם אם שעת הפתיחה מוקדמת ממנה.
+            if (day == DayOfWeek.Saturday)
+            {
+                if (ngo.ReceivesOnSaturdayNight && ngo.SaturdayNightOpenTime.HasValue && ngo.SaturdayNightCloseTime.HasValue)
+                {
+                    var nightOpen = ngo.SaturdayNightOpenTime.Value;
+                    var nightClose = ngo.SaturdayNightCloseTime.Value;
+                    into.Add((nightOpen, nightOpen <= nightClose ? nightClose : TimeSpan.FromHours(24)));
+                }
+                return;
+            }
+
             TimeSpan open, close;
             if (day == DayOfWeek.Friday)
             {

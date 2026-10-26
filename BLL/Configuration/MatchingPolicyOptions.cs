@@ -56,6 +56,19 @@ namespace BLL.Configuration
         /// <summary>כמה זמן (דקות) נשמר במטמון מרחק/זמן נסיעה שהתקבל מ-Google. הערכה (Haversine) נשמרת 5 דקות בלבד.</summary>
         public int DistanceCacheMinutes { get; set; } = 180;
 
+        // ===== שבת (ShabbatClock): מכניסת השבת ועד צאתה המנוע לא שולח הצעות ולא משבץ מסלולים =====
+        public bool ObserveShabbat { get; set; } = true;
+
+        /// <summary>המיקום שלפיו מחושבת השקיעה (ברירת מחדל: ירושלים).</summary>
+        public double ShabbatLatitude { get; set; } = 31.778;
+        public double ShabbatLongitude { get; set; } = 35.235;
+
+        /// <summary>כניסת השבת: כמה דקות לפני השקיעה ביום שישי (כמו בלוח של ירושלים).</summary>
+        public int CandleLightingMinutesBeforeSunset { get; set; } = 40;
+
+        /// <summary>צאת השבת: כמה דקות אחרי השקיעה במוצאי שבת.</summary>
+        public int ShabbatEndMinutesAfterSunset { get; set; } = 40;
+
         // ===== משקלות ציון המתנדב (VolunteerMatchScorer). המנהל יכול לשנות דרך api/settings. =====
         public double DistanceWeight { get; set; } = 0.35;
         public double UrgencyWeight { get; set; } = 0.30;

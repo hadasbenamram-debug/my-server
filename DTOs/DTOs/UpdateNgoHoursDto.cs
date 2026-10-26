@@ -15,5 +15,10 @@ namespace FoodRescue.DTOs
         public bool ReceivesOnFriday { get; set; }
         public TimeSpan? FridayOpenTime { get; set; }
         public TimeSpan? FridayCloseTime { get; set; }
+
+        // מוצאי שבת (לא חובה)
+        public bool ReceivesOnSaturdayNight { get; set; }
+        public TimeSpan? SaturdayNightOpenTime { get; set; }
+        public TimeSpan? SaturdayNightCloseTime { get; set; }
     }
 }

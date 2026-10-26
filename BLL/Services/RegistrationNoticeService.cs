@@ -53,11 +53,29 @@ namespace BLL.Services
                 $"קיבלנו בקשת הרשמה ל\"לתת באהבה\"{what} עם כתובת המייל הזו - אבל כבר יש לך חשבון אצלנו, ולכן לא נוצר חשבון חדש.<br/><br/>" +
                 (loginUrl == null ? "" : $"אפשר להתחבר עם המייל והסיסמה שלך: <a href='{loginUrl}'>כניסה למערכת</a><br/>") +
                 (forgotUrl == null ? "" : $"שכחת את הסיסמה? <a href='{forgotUrl}'>איפוס סיסמה</a><br/>") +
+                // תיקון 10: אותו חשבון יכול להחזיק כמה תפקידים - מסבירים איך מוסיפים תפקיד במקום להירשם מחדש
+                "<br/>רוצה להצטרף בתפקיד נוסף (למשל גם כמתנדב/ת וגם כספק) עם אותו חשבון? אחרי הכניסה למערכת, " +
+                "בעמוד <b>פרופיל אישי</b> יש כרטיס <b>התפקידים שלי</b> - שם בוחרים את התפקיד הנוסף וממלאים רק את הפרטים שלו.<br/>" +
                 "<br/>אם לא ביקשת להירשם - אפשר פשוט להתעלם מההודעה הזו.<br/><br/>" +
                 "תודה,<br/>צוות לתת באהבה";
 
             await _notifications.QueueEmailAsync(existingUser.Id, existingUser.Email, Subject, body,
                 summary: "ניסיון הרשמה עם מייל קיים");
+        }
+
+        public async Task NotifyRoleRequestReceivedAsync(User user, string roleTitle)
+        {
+            if (user == null || string.IsNullOrWhiteSpace(user.Email))
+                return;
+
+            var body =
+                $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>" +
+                $"הבקשה שלך להצטרף גם {roleTitle} התקבלה וממתינה לאישור מנהל.<br/>" +
+                "עד האישור אפשר להמשיך להשתמש בחשבון כרגיל. אחרי האישור יישלח אליך מייל, ותוכל/י לעבור בין התפקידים מהתפריט.<br/><br/>" +
+                "תודה,<br/>צוות לתת באהבה";
+
+            await _notifications.QueueEmailAsync(user.Id, user.Email, "קיבלנו את הבקשה שלך להצטרף בתפקיד נוסף - לתת באהבה", body,
+                summary: "בקשה לתפקיד נוסף התקבלה");
         }
     }
 }

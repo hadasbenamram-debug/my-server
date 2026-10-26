@@ -12,7 +12,7 @@ namespace FoodRescue.DTOs
         // אם מולא - חייב להיות שונה מאזור המוצא.
         public int? ToRegionId { get; set; }
 
-        [Range(0, 6, ErrorMessage = "יום בשבוע חייב להיות בין 0 (ראשון) ל-6 (שבת).")]
+        [Range(0, 6, ErrorMessage = "יום בשבוע חייב להיות בין 0 (ראשון) ל-6 (מוצאי שבת).")]
         public int Day { get; set; }
 
         [Required(ErrorMessage = "יש לציין שעת התחלה.")]

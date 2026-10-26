@@ -19,6 +19,9 @@ namespace BLL.Interfaces
         Task<List<AdminNgoListItemDto>> GetAdminListAsync();
         // מייל שכבר רשום לא יוצר כלום ולא זורק חריגה - בעל החשבון מקבל מייל (הקונטרולר עונה זהה בשני המקרים)
         Task<RegistrationResult> RegisterWithUserAsync(RegisterNgoDto dto);
+
+        // תיקון 10: הוספת תפקיד עמותה לחשבון של המשתמש המחובר (ממתין לאישור מנהל)
+        Task<AddRoleResult> AddRoleAsync(int userId, CreateNgoDto dto);
         Task UpdateMyHoursAsync(int userId, UpdateNgoHoursDto dto);
     }
 }

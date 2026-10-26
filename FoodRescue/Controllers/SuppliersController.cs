@@ -38,11 +38,12 @@ namespace FoodRescue.Controllers
         public async Task<ActionResult<SupplierResponseDto>> GetSupplier(int id) =>
             Ok(await _supplierService.GetByIdAsync(id, CurrentUser) ?? throw new NotFoundException("הספק לא נמצא."));
 
+        // תיקון 10: משתמש מחובר מוסיף לחשבון שלו גם תפקיד ספק (למשל מתנדב שיש לו עסק) - ממתין לאישור מנהל
         [HttpPost]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(6 * 1024 * 1024)]
-        public async Task<ActionResult<SupplierResponseDto>> CreateSupplier([FromForm] CreateSupplierDto supplierDto) =>
-            Ok(await _supplierService.CreateAsync(RequireUserId(), supplierDto));
+        public async Task<IActionResult> CreateSupplier([FromForm] CreateSupplierDto supplierDto) =>
+            AddRoleResponse(await _supplierService.AddRoleAsync(RequireUserId(), supplierDto), BLL.Services.RoleTitles.Supplier);
 
         [HttpPost("register")]
         [AllowAnonymous]

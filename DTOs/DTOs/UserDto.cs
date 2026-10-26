@@ -11,6 +11,9 @@ namespace FoodRescue.DTOs
         public string Email { get; set; } = string.Empty;
         public string Phone { get; set; } = string.Empty;
         public string Role { get; set; } = string.Empty;
+
+        // תיקון 10: כל התפקידים של החשבון (למשל Supplier + Volunteer)
+        public System.Collections.Generic.List<string> Roles { get; set; } = new();
         public bool IsEmailVerified { get; set; }
         public bool IsPhoneVerified { get; set; }
         public DateTime CreatedAt { get; set; }

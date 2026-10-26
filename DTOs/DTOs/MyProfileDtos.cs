@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 
 namespace FoodRescue.DTOs
@@ -12,6 +13,18 @@ namespace FoodRescue.DTOs
         public bool IsEmailVerified { get; set; }
         public bool IsPhoneVerified { get; set; }
         public bool MustChangePassword { get; set; }
+
+        // תיקון 10: כל התפקידים של החשבון עם הסטטוס של כל אחד (Approved / Pending / Rejected)
+        public List<AccountRoleDto> Roles { get; set; } = new();
+
+        // אפשר להוסיף לחשבון תפקיד נוסף (מתנדב / ספק / עמותה). מנהל - לא.
+        public bool CanAddRoles { get; set; }
+    }
+
+    public class AccountRoleDto
+    {
+        public string Role { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
     }
 
     // עדכון פרופיל (PUT api/users/me). האימייל לא מתעדכן כאן - הוא מזהה ההתחברות.

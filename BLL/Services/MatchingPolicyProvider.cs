@@ -78,7 +78,9 @@ namespace BLL.Configuration
                         ? int.Parse(raw, CultureInfo.InvariantCulture)
                         : prop.PropertyType == typeof(double)
                             ? double.Parse(raw, CultureInfo.InvariantCulture)
-                            : raw;
+                            : prop.PropertyType == typeof(bool)
+                                ? bool.Parse(raw)
+                                : raw;
                     prop.SetValue(target, value);
                 }
                 catch (FormatException)

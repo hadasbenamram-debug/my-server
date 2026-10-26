@@ -36,6 +36,11 @@ namespace DAL.Classes
         public TimeSpan? FridayOpenTime { get; set; }
         public TimeSpan? FridayCloseTime { get; set; }
 
+        // תיקון 9: בשבת העמותה סגורה; אפשר להגדיר שעות קבלה במוצאי שבת (מ-17:00 ואילך, ובפועל רק אחרי צאת השבת)
+        public bool ReceivesOnSaturdayNight { get; set; }
+        public TimeSpan? SaturdayNightOpenTime { get; set; }
+        public TimeSpan? SaturdayNightCloseTime { get; set; }
+
         [Required]
         public int RegionId { get; set; }
 

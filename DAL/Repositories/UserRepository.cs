@@ -25,7 +25,13 @@ namespace DAL.Repositories
 
         public Task<PagedResult<User>> GetPageAsync(int skip, int take)
         {
-            var query = _context.Users.OrderBy(u => u.Id).AsNoTracking();
+            // תיקון 10: עם הפרופילים, כדי שהמנהל יראה את כל התפקידים של כל חשבון (למשל ספק שהוא גם מתנדב)
+            var query = _context.Users
+                .Include(u => u.VolunteerProfile)
+                .Include(u => u.SupplierProfile)
+                .Include(u => u.NgoProfile)
+                .OrderBy(u => u.Id)
+                .AsNoTracking();
             return PageAsync(query, skip, take);
         }
 

@@ -96,10 +96,10 @@ namespace FoodRescue.Controllers
 
         // ---------------- יצירה / הרשמה ----------------
 
-        // משתמש מחובר יוצר לעצמו פרופיל מתנדב
+        // תיקון 10: משתמש מחובר מוסיף לחשבון שלו גם תפקיד מתנדב (למשל ספק שרוצה גם להתנדב) - ממתין לאישור מנהל
         [HttpPost]
-        public async Task<ActionResult<VolunteerResponseDto>> CreateVolunteer([FromBody] CreateVolunteerDto volunteerDto) =>
-            Ok(await _volunteerService.CreateAsync(RequireUserId(), volunteerDto));
+        public async Task<IActionResult> CreateVolunteer([FromBody] CreateVolunteerDto volunteerDto) =>
+            AddRoleResponse(await _volunteerService.AddRoleAsync(RequireUserId(), volunteerDto), BLL.Services.RoleTitles.Volunteer);
 
         // הרשמה מלאה (משתמש + פרופיל) - סיסמה זמנית נשלחת במייל וחייבים להחליף אותה בכניסה הראשונה.
         // התשובה זהה גם כשהמייל כבר רשום (לא חושפים אילו מיילים קיימים) - הפרטים נשלחים למייל.

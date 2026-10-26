@@ -189,6 +189,10 @@ namespace BLL.Algorithms
             if (routeDonations.Any(d => ngoArrival > d.ExpirationTime))
                 return null;
 
+            // תיקון 9: כל המסלול - מההצעה, דרך זמן המענה של המתנדב ועד המסירה בעמותה - לפני כניסת השבת או אחרי צאתה
+            if (ShabbatClock.Overlaps(startTimeValue, ngoArrival.AddMinutes(Math.Max(0, policy.ResponseTimeoutMinutes)), policy))
+                return null;
+
             // המתנדב זמין לכל משך המסלול, באזורי היציאה והיעד שהגדיר
             if (!VolunteerAvailabilityCoversRoute(volunteer, startTimeValue, ngoArrival, routeDonations, targetNgo))
                 return null;

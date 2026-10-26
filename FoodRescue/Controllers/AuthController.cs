@@ -115,6 +115,7 @@ namespace FoodRescue.Controllers
                     message = "הסיסמה שונתה בהצלחה.",
                     token = outcome.NewToken?.Token,
                     role = outcome.NewToken?.Role,
+                    roles = outcome.NewToken?.Roles,
                     expiresAt = outcome.NewToken?.ExpiresAt,
                     mustChangePassword = false
                 }),

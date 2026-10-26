@@ -15,7 +15,8 @@ namespace BLL.Interfaces
         Task<VolunteerResponseDto?> GetByIdAsync(int id, CurrentUserDto currentUser);
 
         Task UpdateAsync(int id, UpdateVolunteerDto dto, CurrentUserDto currentUser);
-        Task<VolunteerResponseDto> CreateAsync(int userId, CreateVolunteerDto dto);
+        // תיקון 10: הוספת תפקיד מתנדב לחשבון של המשתמש המחובר (ממתין לאישור מנהל)
+        Task<AddRoleResult> AddRoleAsync(int userId, CreateVolunteerDto dto);
 
         Task<List<AvailabilitySlotResponseDto>> GetAvailabilityAsync(int id, CurrentUserDto currentUser);
         Task SaveAvailabilityAsync(int id, List<CreateAvailabilitySlotDto> slots, CurrentUserDto currentUser);

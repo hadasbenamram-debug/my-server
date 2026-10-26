@@ -84,6 +84,7 @@ namespace FoodRescue.Tests
             new object[] { typeof(CreateSupplierDto), new[] { typeof(Supplier) } },
             new object[] { typeof(RegisterNgoDto), new[] { typeof(Ngo), typeof(User) } },
             new object[] { typeof(UpdateNgoHoursDto), new[] { typeof(Ngo) } },
+            new object[] { typeof(CreateNgoDto), new[] { typeof(Ngo) } },
             new object[] { typeof(RegisterVolunteerDto), new[] { typeof(Volunteer), typeof(User) } },
             new object[] { typeof(CreateVolunteerDto), new[] { typeof(Volunteer) } },
             new object[] { typeof(UpdateVolunteerDto), new[] { typeof(Volunteer) } },
@@ -226,6 +227,28 @@ namespace FoodRescue.Tests
             using var _ = db;
             await Assert.ThrowsAsync<ArgumentException>(() =>
                 service.SaveMyAvailabilityAsync(user.Id, new List<CreateAvailabilitySlotDto> { Slot(999, "08:00", "10:00") }));
+        }
+
+        // תיקון 9: אין זמינות בשבת עצמה - ביום 6 אפשר רק מוצאי שבת (משעה 17:00)
+        [Fact]
+        public async Task Availability_OnSaturday_OnlyMotzeiShabbat()
+        {
+            var (service, user, db) = await VolunteerServiceAsync();
+            using var _ = db;
+
+            var daytime = Slot(1, "10:00", "14:00");
+            daytime.Day = 6;
+            var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+                service.SaveMyAvailabilityAsync(user.Id, new List<CreateAvailabilitySlotDto> { daytime }));
+            Assert.Contains("מוצאי שבת", ex.Message);
+
+            var night = Slot(1, "20:00", "23:30");
+            night.Day = 6;
+            await service.SaveMyAvailabilityAsync(user.Id, new List<CreateAvailabilitySlotDto> { night });
+
+            var saved = Assert.Single(await service.GetMyAvailabilityAsync(user.Id));
+            Assert.Equal(6, saved.Day);
+            Assert.Equal("20:00", saved.StartTime);
         }
 
         [Fact]

@@ -38,6 +38,11 @@ namespace FoodRescue.Controllers
         public async Task<IActionResult> GetNgo(int id) =>
             Ok(await _ngoService.GetNgoForCallerAsync(id, CurrentUser) ?? throw new NotFoundException("העמותה לא נמצאה."));
 
+        // תיקון 10: משתמש מחובר מוסיף לחשבון שלו גם תפקיד עמותה - ממתין לאישור מנהל
+        [HttpPost]
+        public async Task<IActionResult> CreateNgo([FromBody] CreateNgoDto dto) =>
+            AddRoleResponse(await _ngoService.AddRoleAsync(RequireUserId(), dto), BLL.Services.RoleTitles.Ngo);
+
         [HttpPost("register")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]

@@ -141,6 +141,15 @@ namespace BLL.Algorithms
             try
             {
                 var ctx = await BuildContextAsync();
+
+                // תיקון 9: בשבת לא שולחים הצעות ולא משבצים (וגם לא מסלימים למנהל) - הריצה שאחרי צאת השבת תמשיך
+                if (ShabbatClock.IsShabbat(ctx.Now, ctx.Policy))
+                {
+                    _logger.LogInformation("Matching engine ({Trigger}): Shabbat - no offers are sent until Shabbat ends.", trigger);
+                    result.FailedConstraints.Add(ShabbatClock.EngineMessage);
+                    return result;
+                }
+
                 var heap = new PriorityHeapService<Donation, int>(d => d.Id, (a, b) => a.CreatedAt.CompareTo(b.CreatedAt));
 
                 foreach (var d in ctx.Donations)
@@ -267,6 +276,10 @@ namespace BLL.Algorithms
             if (donation.Status != DonationStatus.Pending)
                 return NotMatched(donation, "התרומה אינה ממתינה לשיבוץ.");
 
+            // תיקון 9: גם שיבוץ ידני / שיבוץ מחדש (אחרי דחייה או אי-מענה) לא שולח הצעה בשבת, ובלי הסלמה למנהל
+            if (ShabbatClock.IsShabbat(ctx.Now, policy))
+                return Fail(donation, failures, ShabbatClock.EngineMessage, escalate: false);
+
             if (NgoAvailabilityHelper.GetPickupDateTime(donation) <= ctx.Now)
                 return Fail(donation, failures, "שעת האיסוף האחרונה כבר עברה.", escalate: false);
 
@@ -333,7 +346,7 @@ namespace BLL.Algorithms
 
             if (routes.Count == 0)
                 return await EscalateAsync(donation, failures,
-                    "לא נמצא מסלול שעומד בכל האילוצים (זמני איסוף, שעות קבלה בעמותה, זמינות המתנדב וקיבולת הרכב).");
+                    "לא נמצא מסלול שעומד בכל האילוצים (זמני איסוף, שעות קבלה בעמותה, זמינות המתנדב, קיבולת הרכב וכניסת השבת).");
 
             // --- Matching Score למסלול ובחירת המסלול הטוב ביותר ---
             ScoreRoutes(routes);

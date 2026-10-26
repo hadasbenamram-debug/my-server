@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace FoodRescue.DTOs
 {
@@ -6,7 +7,11 @@ namespace FoodRescue.DTOs
     {
         public string Token { get; set; } = string.Empty;
 
+        // התפקיד שבו נכנסים (המסכים שהלקוח מציג)
         public string Role { get; set; } = string.Empty;
+
+        // תיקון 10: כל התפקידים המאושרים של החשבון (למשל ספק שהוא גם מתנדב). הלקוח מאפשר לעבור ביניהם.
+        public List<string> Roles { get; set; } = new();
 
         // absolute UTC expiry of Token.
         public DateTime ExpiresAt { get; set; }

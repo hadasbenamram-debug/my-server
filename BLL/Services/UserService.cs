@@ -10,6 +10,7 @@ using FoodRescue.DTOs;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -167,53 +168,80 @@ namespace BLL.Services
 
             // --- approval status for NGOs, suppliers and volunteers ---
             // (נבדק רק אחרי שהסיסמה נכונה, כך שמי שלא יודע את הסיסמה לא לומד מה מצב החשבון)
-            var blocked = await CheckApprovalAsync(user);
+            var roles = await GetHeldRolesAsync(user);
+            var blocked = CheckApproval(roles);
             if (blocked != null)
                 return blocked;
 
             await _lockout.RecordAsync(email, ipAddress, user.Id, success: true);
 
-            return AuthResult.Success(BuildResponse(user));
+            return AuthResult.Success(BuildResponse(user, roles));
         }
 
-        // האם החשבון רשאי להיכנס: עמותה / ספק / מתנדב שממתינים לאישור או שנדחו - לא נכנסים.
-        // null = מותר להיכנס. משותף להתחברות רגילה ולכניסה מהקישור שבמייל האישור.
-        private async Task<AuthResult?> CheckApprovalAsync(User user)
+        // =====================================================
+        // תפקידים - תיקון 10: לחשבון אחד (מייל אחד) יכולים להיות כמה פרופילים: מתנדב, ספק, עמותה
+        // =====================================================
+
+        private sealed record HeldRole(UserRole Role, ApprovalStatus Status);
+
+        // כל התפקידים של החשבון, התפקיד הראשי (User.Role) ראשון. מנהל הוא תפקיד בלי פרופיל.
+        private async Task<List<HeldRole>> GetHeldRolesAsync(User user)
         {
+            var roles = new List<HeldRole>();
+            if (user.Role == UserRole.Admin)
+                roles.Add(new HeldRole(UserRole.Admin, ApprovalStatus.Approved));
+
             var ngo = await _ngoRepository.GetByUserIdAsync(user.Id);
             if (ngo != null)
-            {
-                if (ngo.ApprovalStatus == ApprovalStatus.Pending)
-                    return AuthResult.Fail(AuthError.NgoPendingApproval, "חשבון העמותה שלך ממתין לאישור מנהל מערכת.");
-
-                if (ngo.ApprovalStatus == ApprovalStatus.Rejected)
-                    return AuthResult.Fail(AuthError.NgoRejected, "בקשת הצטרפות העמותה שלך נדחתה.");
-            }
+                roles.Add(new HeldRole(UserRole.Ngo, ngo.ApprovalStatus));
 
             var supplier = await _supplierRepository.GetByUserIdAsync(user.Id);
             if (supplier != null)
-            {
-                if (supplier.ApprovalStatus == ApprovalStatus.Pending)
-                    return AuthResult.Fail(AuthError.SupplierPendingApproval, "חשבון הספק שלך ממתין לאישור מנהל מערכת.");
+                roles.Add(new HeldRole(UserRole.Supplier, supplier.ApprovalStatus));
 
-                if (supplier.ApprovalStatus == ApprovalStatus.Rejected)
-                    return AuthResult.Fail(AuthError.SupplierRejected, "בקשת הצטרפות הספק שלך נדחתה.");
-            }
-
-            // תוקן: מתנדב יכול היה להתחבר מיד אחרי ההרשמה, עוד לפני שהמנהל אישר אותו.
-            // עכשיו - כמו ספק ועמותה - ההתחברות נפתחת רק אחרי אישור המנהל.
             var volunteer = await _volunteerRepository.GetByUserIdAsync(user.Id);
             if (volunteer != null)
+                roles.Add(new HeldRole(UserRole.Volunteer, volunteer.ApprovalStatus));
+
+            return roles.OrderBy(r => r.Role == user.Role ? 0 : 1).ToList();
+        }
+
+        // האם החשבון רשאי להיכנס. null = מותר. משותף להתחברות רגילה ולכניסה מהקישור שבמייל האישור.
+        // תיקון 10: נכנסים אם לפחות תפקיד אחד מאושר - בקשה לתפקיד נוסף שממתינה לאישור (או נדחתה)
+        // לא חוסמת את התפקיד שכבר מאושר. חוסמים רק כשאין אף תפקיד מאושר: עמותה / ספק / מתנדב
+        // שממתינים לאישור או שנדחו לא נכנסים (תוקן בעבר: מתנדב יכול היה להתחבר עוד לפני האישור).
+        private static AuthResult? CheckApproval(IReadOnlyList<HeldRole> roles)
+        {
+            if (roles.Count == 0 || roles.Any(r => r.Status == ApprovalStatus.Approved))
+                return null;
+
+            var blocking = roles.FirstOrDefault(r => r.Status == ApprovalStatus.Pending) ?? roles[0];
+            bool pending = blocking.Status == ApprovalStatus.Pending;
+
+            return blocking.Role switch
             {
-                if (volunteer.ApprovalStatus == ApprovalStatus.Pending)
-                    return AuthResult.Fail(AuthError.VolunteerPendingApproval,
-                        "בקשת ההצטרפות שלך כמתנדב/ת ממתינה לאישור מנהל מערכת. אחרי האישור יישלח אליך מייל ותוכל/י להתחבר.");
+                UserRole.Ngo => pending
+                    ? AuthResult.Fail(AuthError.NgoPendingApproval, "חשבון העמותה שלך ממתין לאישור מנהל מערכת.")
+                    : AuthResult.Fail(AuthError.NgoRejected, "בקשת הצטרפות העמותה שלך נדחתה."),
+                UserRole.Supplier => pending
+                    ? AuthResult.Fail(AuthError.SupplierPendingApproval, "חשבון הספק שלך ממתין לאישור מנהל מערכת.")
+                    : AuthResult.Fail(AuthError.SupplierRejected, "בקשת הצטרפות הספק שלך נדחתה."),
+                _ => pending
+                    ? AuthResult.Fail(AuthError.VolunteerPendingApproval,
+                        "בקשת ההצטרפות שלך כמתנדב/ת ממתינה לאישור מנהל מערכת. אחרי האישור יישלח אליך מייל ותוכל/י להתחבר.")
+                    : AuthResult.Fail(AuthError.VolunteerRejected, "בקשת ההצטרפות שלך כמתנדב/ת נדחתה.")
+            };
+        }
 
-                if (volunteer.ApprovalStatus == ApprovalStatus.Rejected)
-                    return AuthResult.Fail(AuthError.VolunteerRejected, "בקשת ההצטרפות שלך כמתנדב/ת נדחתה.");
-            }
-
-            return null;
+        // התפקיד שבו נכנסים: המבוקש (למשל מהקישור במייל האישור) אם הוא מאושר, אחרת הראשי, אחרת הראשון שמאושר
+        private static UserRole ActiveRole(User user, IReadOnlyList<HeldRole> roles, UserRole? requested = null)
+        {
+            var approved = roles.Where(r => r.Status == ApprovalStatus.Approved).Select(r => r.Role).ToList();
+            if (requested.HasValue && approved.Contains(requested.Value))
+                return requested.Value;
+            if (approved.Count == 0 || approved.Contains(user.Role))
+                return user.Role;
+            return approved[0];
         }
 
         // =====================================================
@@ -232,7 +260,8 @@ namespace BLL.Services
             if (user == null)
                 return new LinkLoginOutcome(LinkLoginStatus.InvalidLink, Message: InvalidLoginLinkMessage);
 
-            var blocked = await CheckApprovalAsync(user);
+            var roles = await GetHeldRolesAsync(user);
+            var blocked = CheckApproval(roles);
             if (blocked != null)
                 return new LinkLoginOutcome(LinkLoginStatus.Blocked, Error: blocked.Error, Message: blocked.Message);
 
@@ -253,15 +282,18 @@ namespace BLL.Services
             await _actionTokens.ConsumeAsync(token);
             await _lockout.RecordAsync(user.Email, ipAddress, user.Id, success: true);
 
-            var auth = BuildResponse(user);
             var role = token.TargetId is int roleValue && Enum.IsDefined(typeof(RequestedRole), roleValue)
                 ? (RequestedRole?)roleValue
                 : null;
+
+            // נכנסים ישר לתפקיד שאושר עכשיו (גם כשלחשבון יש עוד תפקידים)
+            var auth = BuildResponse(user, roles, role.HasValue ? ToUserRole(role.Value) : null);
 
             return new LinkLoginOutcome(LinkLoginStatus.Success, new LinkLoginResponseDto
             {
                 Token = auth.Token,
                 Role = auth.Role,
+                Roles = auth.Roles,
                 ExpiresAt = auth.ExpiresAt,
                 MustChangePassword = auth.MustChangePassword,
                 NextPath = role.HasValue ? FrontendLinks.RoleHomePath(role.Value) : null,
@@ -474,13 +506,13 @@ namespace BLL.Services
             await _actionTokens.RevokeAsync(user.Id, ActionTokenPurpose.PasswordReset);
 
             // המשתמש שהחליף את הסיסמה מקבל טוקן חדש ונשאר מחובר
-            return new ChangePasswordOutcome(ChangePasswordResult.Success, BuildResponse(user));
+            return new ChangePasswordOutcome(ChangePasswordResult.Success, BuildResponse(user, await GetHeldRolesAsync(user)));
         }
 
         public async Task<MyProfileDto?> GetMyProfileAsync(int userId)
         {
             var user = await _userRepository.GetByIdAsync(userId);
-            return user == null ? null : ToMyProfile(user);
+            return user == null ? null : ToMyProfile(user, await GetHeldRolesAsync(user));
         }
 
         public async Task<MyProfileDto?> UpdateMyProfileAsync(int userId, UpdateMyProfileDto dto)
@@ -497,10 +529,10 @@ namespace BLL.Services
             user.Phone = newPhone;
             await _userRepository.UpdateAsync(user);
 
-            return ToMyProfile(user);
+            return ToMyProfile(user, await GetHeldRolesAsync(user));
         }
 
-        private static MyProfileDto ToMyProfile(User user) => new MyProfileDto
+        private static MyProfileDto ToMyProfile(User user, IReadOnlyList<HeldRole> roles) => new MyProfileDto
         {
             Name = user.Name,
             Email = user.Email,
@@ -508,7 +540,10 @@ namespace BLL.Services
             Role = user.Role.ToString(),
             IsEmailVerified = user.IsEmailVerified,
             IsPhoneVerified = user.IsPhoneVerified,
-            MustChangePassword = user.MustChangePassword
+            MustChangePassword = user.MustChangePassword,
+            // תיקון 10: כל התפקידים של החשבון והסטטוס של כל אחד (לעמוד הפרופיל). מנהל לא מוסיף תפקידים.
+            Roles = roles.Select(r => new AccountRoleDto { Role = r.Role.ToString(), Status = r.Status.ToString() }).ToList(),
+            CanAddRoles = user.Role != UserRole.Admin
         };
 
         // =====================================================
@@ -517,17 +552,31 @@ namespace BLL.Services
 
         public static string NewStamp() => Guid.NewGuid().ToString("N");
 
-        private AuthResponseDto BuildResponse(User user)
+        // Role = התפקיד שבו נכנסים; Roles = כל התפקידים המאושרים (הלקוח מציג מעבר ביניהם).
+        // ההרשאות בשרת לא תלויות בתפקיד שנבחר: פעולות מתנדב / ספק / עמותה נבדקות לפי הפרופיל של המשתמש.
+        private AuthResponseDto BuildResponse(User user, IReadOnlyList<HeldRole> roles, UserRole? requestedRole = null)
         {
             var token = _tokenService.CreateToken(user);
+            var approved = roles.Where(r => r.Status == ApprovalStatus.Approved).Select(r => r.Role.ToString()).ToList();
+            var active = ActiveRole(user, roles, requestedRole).ToString();
+            if (!approved.Contains(active))
+                approved.Insert(0, active);
 
             return new AuthResponseDto
             {
                 Token = token.Token,
-                Role = user.Role.ToString(),
+                Role = active,
+                Roles = approved,
                 ExpiresAt = token.ExpiresAt,
                 MustChangePassword = user.MustChangePassword
             };
         }
+
+        private static UserRole ToUserRole(RequestedRole role) => role switch
+        {
+            RequestedRole.Volunteer => UserRole.Volunteer,
+            RequestedRole.Supplier => UserRole.Supplier,
+            _ => UserRole.Ngo
+        };
     }
 }

@@ -15,7 +15,8 @@ namespace BLL.Interfaces
         // מחזיר null אם למשתמש המחובר אין פרופיל ספק
         Task<SupplierResponseDto?> GetCurrentAsync(int userId);
 
-        Task<SupplierResponseDto> CreateAsync(int userId, CreateSupplierDto dto);
+        // תיקון 10: הוספת תפקיד ספק לחשבון של המשתמש המחובר (ממתין לאישור מנהל)
+        Task<AddRoleResult> AddRoleAsync(int userId, CreateSupplierDto dto);
         // מייל שכבר רשום לא יוצר כלום ולא זורק חריגה - בעל החשבון מקבל מייל (הקונטרולר עונה זהה בשני המקרים)
         Task<RegistrationResult> RegisterWithUserAsync(RegisterSupplierDto dto);
 
