@@ -1,6 +1,6 @@
 using System;
 
-namespace BLL.Algoritems
+namespace BLL.Algorithms
 {
     public static class GeoUtils
     {

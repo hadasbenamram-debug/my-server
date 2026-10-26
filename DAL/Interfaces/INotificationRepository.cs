@@ -19,8 +19,11 @@ namespace DAL.Interfaces
         // הודעות מייל/SMS שהגיע זמן לשלוח
         Task<List<int>> GetDueIdsAsync(DateTime nowUtc, int take);
 
-        // הודעות שנתקעו במצב Sending (למשל השרת נפל באמצע) חוזרות לתור
-        Task<int> ResetStuckSendingAsync(DateTime olderThanUtc);
+        // הודעות שנתקעו במצב Sending (למשל השרת נפל באמצע). ההחזרה לתור (שינוי הסטטוס) נעשית ב-Service
+        Task<List<Notification>> GetStuckSendingAsync(DateTime olderThanUtc);
+
+        // שמירת כמה הודעות שהשתנו, ב-SaveChanges אחד
+        Task UpdateRangeAsync(IReadOnlyCollection<Notification> notifications);
 
         // מרכז ההתראות של המשתמש (InApp)
         Task<PagedResult<Notification>> GetInAppForUserAsync(int userId, int skip, int take);

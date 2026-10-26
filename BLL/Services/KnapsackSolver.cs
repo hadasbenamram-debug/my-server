@@ -1,5 +1,5 @@
 using BLL.Services;
-using BLL.Algoritems;
+using BLL.Algorithms;
 using DAL.Classes;
 using System;
 using System.Collections.Generic;

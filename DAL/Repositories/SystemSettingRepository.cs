@@ -21,9 +21,8 @@ namespace DAL.Repositories
             return await _context.SystemSettings.AsNoTracking().ToListAsync();
         }
 
-        public async Task UpsertManyAsync(IReadOnlyDictionary<string, string> values, int? updatedByUserId)
+        public async Task UpsertManyAsync(IReadOnlyDictionary<string, string> values, int? updatedByUserId, DateTime nowUtc)
         {
-            var now = DateTime.UtcNow;
             foreach (var (key, value) in values)
             {
                 var existing = await _context.SystemSettings.FindAsync(key);
@@ -33,14 +32,14 @@ namespace DAL.Repositories
                     {
                         Key = key,
                         Value = value,
-                        UpdatedAt = now,
+                        UpdatedAt = nowUtc,
                         UpdatedByUserId = updatedByUserId
                     });
                 }
                 else
                 {
                     existing.Value = value;
-                    existing.UpdatedAt = now;
+                    existing.UpdatedAt = nowUtc;
                     existing.UpdatedByUserId = updatedByUserId;
                 }
             }

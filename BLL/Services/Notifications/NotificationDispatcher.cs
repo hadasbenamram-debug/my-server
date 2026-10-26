@@ -99,7 +99,12 @@ namespace BLL.Notifications
         public async Task SweepAsync()
         {
             var now = DateTime.UtcNow;
-            await _repository.ResetStuckSendingAsync(now.AddMinutes(-10));
+
+            // הודעות שנתקעו במצב Sending יותר מ-10 דקות (למשל השרת נפל באמצע) חוזרות לתור
+            var stuck = await _repository.GetStuckSendingAsync(now.AddMinutes(-10));
+            foreach (var notification in stuck)
+                notification.Status = NotificationStatus.Pending;
+            await _repository.UpdateRangeAsync(stuck);
 
             var due = await _repository.GetDueIdsAsync(now, take: 50);
             foreach (var id in due)

@@ -77,7 +77,7 @@ namespace BLL.Services
 
             if (values.Count > 0)
             {
-                await _repository.UpsertManyAsync(values, updatedByUserId);
+                await _repository.UpsertManyAsync(values, updatedByUserId, DateTime.UtcNow);
                 await _policy.ReloadAsync();
             }
 

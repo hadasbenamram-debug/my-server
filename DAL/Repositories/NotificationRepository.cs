@@ -68,19 +68,28 @@ namespace DAL.Repositories
                 .ToListAsync();
         }
 
-        public async Task<int> ResetStuckSendingAsync(DateTime olderThanUtc)
+        public async Task<List<Notification>> GetStuckSendingAsync(DateTime olderThanUtc)
         {
-            var stuck = await _context.Notifications
+            return await _context.Notifications
                 .Where(n => n.Status == NotificationStatus.Sending && n.LastAttemptAt < olderThanUtc)
                 .ToListAsync();
+        }
 
-            foreach (var n in stuck)
-                n.Status = NotificationStatus.Pending;
+        public async Task UpdateRangeAsync(IReadOnlyCollection<Notification> notifications)
+        {
+            if (notifications.Count == 0) return;
 
-            if (stuck.Count > 0)
-                await _context.SaveChangesAsync();
+            foreach (var notification in notifications)
+            {
+                var entry = _context.Entry(notification);
+                if (entry.State == EntityState.Detached)
+                {
+                    _context.Notifications.Attach(notification);
+                    entry.State = EntityState.Modified;
+                }
+            }
 
-            return stuck.Count;
+            await _context.SaveChangesAsync();
         }
 
         public Task<PagedResult<Notification>> GetInAppForUserAsync(int userId, int skip, int take)

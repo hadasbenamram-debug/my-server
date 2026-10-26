@@ -1,4 +1,4 @@
-﻿using BLL.Algoritems;
+﻿using BLL.Algorithms;
 using BLL.Configuration;
 using DAL.Classes;
 using System;

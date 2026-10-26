@@ -1,5 +1,4 @@
 ﻿using AutoMapper;
-using BLL.Algoritems;
 using BLL.Algorithms;
 using BLL.Configuration;
 using BLL.Integrations.GoogleMaps;

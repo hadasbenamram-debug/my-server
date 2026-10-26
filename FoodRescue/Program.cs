@@ -1,5 +1,4 @@
 ﻿using BLL.Algorithms;
-using BLL.Algoritems;
 using BLL.Configuration;
 using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
