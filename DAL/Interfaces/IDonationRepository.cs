@@ -31,6 +31,9 @@ namespace DAL.Interfaces
         // נתיבי התמונות ששמורים בתרומות (לניקוי תמונות "יתומות")
         Task<List<string>> GetImageFileNamesAsync();
 
+        // התרומה האחרונה של הספק עם קובץ התמונה הזה (לזיהוי לחיצה כפולה על "פרסם"), כולל קטגוריות, אזור וספק
+        Task<Donation?> GetLatestBySupplierAndImageAsync(int supplierId, string image);
+
         Task<bool> ExistsAsync(int id);
         Task<bool> ExistsForSupplierAsync(int donationId, int supplierId);
         Task<bool> AnyInRegionAsync(int regionId);

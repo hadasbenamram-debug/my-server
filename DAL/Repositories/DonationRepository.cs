@@ -105,6 +105,19 @@ namespace DAL.Repositories
                 .ToListAsync();
         }
 
+        public async Task<Donation?> GetLatestBySupplierAndImageAsync(int supplierId, string image)
+        {
+            return await _context.Donations
+                .Include(d => d.DonationFoodCategories)
+                    .ThenInclude(dfc => dfc.Category)
+                .Include(d => d.Region)
+                .Include(d => d.Supplier)
+                .AsNoTracking()
+                .Where(d => d.SupplierId == supplierId && d.Image == image)
+                .OrderByDescending(d => d.CreatedAt)
+                .FirstOrDefaultAsync();
+        }
+
         public async Task<bool> ExistsAsync(int id)
         {
             return await _context.Donations.AnyAsync(d => d.Id == id);

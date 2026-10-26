@@ -242,7 +242,16 @@ namespace BLL.Services
             {
                 imageFileName = ValidateImageFileName(dto.Image);
                 if (!await _actionTokens.TryUseOwnedValueAsync(userId, ActionTokenPurpose.ImageUpload, imageFileName, consume: true))
+                {
+                    // תוקן: לחיצה נוספת על "פרסם" שלחה שוב את אותה תרומה, עם תמונה שכבר שויכה לתרומה הראשונה,
+                    // והבקשה נכשלה (חריגה). אם התמונה כבר שייכת לתרומה של אותו ספק - זו אותה פעולה, ומחזירים
+                    // את התרומה שכבר נוצרה במקום ליצור כפילות או להיכשל.
+                    var alreadyPublished = await _donationRepository.GetLatestBySupplierAndImageAsync(supplier.Id, imageFileName);
+                    if (alreadyPublished != null)
+                        return _mapper.Map<DonationResponseDto>(alreadyPublished);
+
                     throw new ArgumentException("התמונה אינה תקפה או שלא הועלתה על ידי המשתמש הנוכחי. יש להעלות אותה מחדש.");
+                }
             }
 
             // השלמת נתונים שהשרת קובע (לא הלקוח)

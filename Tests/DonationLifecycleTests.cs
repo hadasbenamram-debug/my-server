@@ -164,6 +164,28 @@ namespace FoodRescue.Tests
             Assert.Equal(fileName, (await _h.Db.Donations.SingleAsync(d => d.Id == created.Id)).Image);
         }
 
+        // תוקן: לחיצה נוספת על "פרסם" (אותה תרומה, אותה תמונה שכבר נוצלה) נכשלה בחריגה.
+        // עכשיו מוחזרת התרומה שכבר נוצרה - בלי שגיאה ובלי כפילות.
+        [Fact]
+        public async Task Create_PublishedTwiceWithTheSameImage_ReturnsTheSameDonation()
+        {
+            await _h.SeedBasicsAsync();
+            var pickup = PickupLaterToday();
+            if (pickup == null) return;
+
+            var fileName = Guid.NewGuid().ToString("N") + ".jpg";
+            await _h.ActionTokens.RegisterOwnedValueAsync(_h.Supplier.UserId, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
+            var dto = NewDonationDto(pickup.Value);
+            dto.Image = fileName;
+
+            var first = await Donations().CreateAsync(dto, _h.Supplier.UserId);
+            var second = await Donations().CreateAsync(dto, _h.Supplier.UserId);
+
+            Assert.Equal(first.Id, second.Id);
+            _h.Fresh();
+            Assert.Single(await _h.Db.Donations.ToListAsync());
+        }
+
         [Fact]
         public async Task Create_WithImagePathInsteadOfFileName_IsRejected()
         {
