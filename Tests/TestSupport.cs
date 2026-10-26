@@ -37,6 +37,13 @@ namespace FoodRescue.Tests
         public void Advance(TimeSpan by) => Now = Now.Add(by);
     }
 
+    // בלי ספק SMS (כמו בסביבת פיתוח)
+    public sealed class NullSmsSender : ISmsSender
+    {
+        public SmsMode Mode => SmsMode.NotConfigured;
+        public Task<string?> SendAsync(string phoneNumber, string text) => Task.FromResult<string?>(null);
+    }
+
     // במקום Hangfire אמיתי: שומר את הג'ובים שהשירותים מבקשים להריץ
     public sealed class RecordingJobClient : IBackgroundJobClient
     {
@@ -233,6 +240,13 @@ namespace FoodRescue.Tests
                 Policy, TestDb.Mapper, TestDb.Log<MatchService>());
             Timeouts = new MatchTimeoutService(Matches, Workflow, Policy, TestDb.Log<MatchTimeoutService>());
         }
+
+        // UserService אמיתי על אותו מסד (התחברות, טוקנים, תפקידים)
+        public UserService CreateUserService(ISmsSender? sms = null) => new(
+            Users, Ngos, Suppliers, Volunteers, new LoginLockoutService(new LoginAttemptRepository(Db)),
+            ActionTokens, NotificationService, new TokenService(TestDb.Config()), TestDb.Config(),
+            TestDb.Log<UserService>(), TestDb.Mapper, new PasswordHasherWithLegacySupport(),
+            new RegistrationNoticeService(NotificationService, Notifications, TestDb.Config()), sms ?? new NullSmsSender());
 
         // ---------------- נתוני בסיס ----------------
 

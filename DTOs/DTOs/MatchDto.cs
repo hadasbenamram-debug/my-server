@@ -92,6 +92,17 @@ namespace FoodRescue.DTOs
         public bool Accept { get; set; }
     }
 
+    // תשובה לאישור / דחייה מהקישור (POST api/matches/respond-by-link)
+    public class RespondByLinkResultDto
+    {
+        public RouteDto Route { get; set; } = new();
+
+        // תיקון 11: אחרי אישור - כניסה למערכת בלי מסך התחברות, וישר למסלול הפעיל (NextPath).
+        // null = לא נכנסים אוטומטית (למשל סיסמה זמנית) - הלקוח שולח להתחברות ומשם למסלול.
+        public AuthResponseDto? Session { get; set; }
+        public string? NextPath { get; set; }
+    }
+
     // הפעלת No-Show ע"י מנהל
     public class NoShowDto
     {

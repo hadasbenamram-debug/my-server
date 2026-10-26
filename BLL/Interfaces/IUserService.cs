@@ -106,6 +106,10 @@ namespace BLL.Interfaces
 
         Task<MyProfileDto?> GetMyProfileAsync(int userId);
 
+        // תיקון 11: כניסה למערכת בלי מסך התחברות אחרי פעולה מקישור אישי וחד-פעמי (למשל אישור מסלול מה-SMS).
+        // null = לא נכנסים כך (סיסמה זמנית / אין תפקיד מאושר) - מתחברים כרגיל.
+        Task<AuthResponseDto?> CreateLinkSessionAsync(int userId, RequestedRole role);
+
         /// <summary>Updates name and phone only. Email is the login identifier and is not changed here.</summary>
         Task<MyProfileDto?> UpdateMyProfileAsync(int userId, UpdateMyProfileDto dto);
 

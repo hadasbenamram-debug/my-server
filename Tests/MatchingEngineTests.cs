@@ -111,12 +111,72 @@ namespace FoodRescue.Tests
             Assert.NotNull(route);
 
             var answered = await h.MatchService.RespondByLinkAsync(new RespondByLinkDto { Token = rawToken, Accept = true });
-            Assert.Equal(nameof(MatchStatus.Confirmed), answered.Stops.Single().Status);
+            Assert.Equal(nameof(MatchStatus.Confirmed), answered.Route.Stops.Single().Status);
+            Assert.Equal(v.UserId, answered.VolunteerUserId);
 
             // הטוקן נוצל - אי אפשר להשתמש בו שוב
             Assert.Null(await h.MatchService.GetRouteByLinkAsync(rawToken));
             await Assert.ThrowsAsync<NotFoundException>(() =>
                 h.MatchService.RespondByLinkAsync(new RespondByLinkDto { Token = rawToken, Accept = false }));
+        }
+
+        // תיקון 11: אחרי אישור מהקישור (בלי התחברות) המתנדב נכנס ישר למסלול הפעיל - לא למסך ההתחברות
+        [Fact]
+        public async Task RespondByLink_Accept_LogsTheVolunteerIn_AndOpensTheActiveRoute()
+        {
+            var (h, v, _) = await SetupAsync();
+            using var _ = h;
+            await h.MatchService.RunEngineAsync();
+            h.Fresh();
+
+            var route = await h.Db.VolunteerRoutes.SingleAsync();
+            var token = await h.ActionTokens.CreateLinkTokenAsync(v.UserId, ActionTokenPurpose.MatchResponse, TimeSpan.FromMinutes(6), route.Id);
+            var controller = new FoodRescue.Controllers.MatchesController(h.MatchService, h.CreateUserService());
+
+            var response = await controller.RespondByLink(new RespondByLinkDto { Token = token, Accept = true });
+
+            var result = Assert.IsType<RespondByLinkResultDto>(Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(response.Result).Value);
+            Assert.Equal(nameof(MatchStatus.Confirmed), result.Route.Stops.Single().Status);
+            Assert.NotNull(result.Session);
+            Assert.False(string.IsNullOrEmpty(result.Session!.Token));
+            Assert.Equal("Volunteer", result.Session.Role);
+            Assert.Equal("/app/volunteer/active-route", result.NextPath);
+        }
+
+        [Fact]
+        public async Task RespondByLink_Decline_DoesNotLogIn()
+        {
+            var (h, v, _) = await SetupAsync();
+            using var _ = h;
+            await h.MatchService.RunEngineAsync();
+            h.Fresh();
+
+            var route = await h.Db.VolunteerRoutes.SingleAsync();
+            var token = await h.ActionTokens.CreateLinkTokenAsync(v.UserId, ActionTokenPurpose.MatchResponse, TimeSpan.FromMinutes(6), route.Id);
+            var controller = new FoodRescue.Controllers.MatchesController(h.MatchService, h.CreateUserService());
+
+            var response = await controller.RespondByLink(new RespondByLinkDto { Token = token, Accept = false });
+
+            var result = Assert.IsType<RespondByLinkResultDto>(Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(response.Result).Value);
+            Assert.Null(result.Session);
+            Assert.Null(result.NextPath);
+        }
+
+        // מי שעדיין עם הסיסמה הזמנית לא נכנס מהקישור - מתחבר כרגיל ובוחר סיסמה
+        [Fact]
+        public async Task LinkSession_NotForATemporaryPassword()
+        {
+            var (h, v, _) = await SetupAsync();
+            using var _ = h;
+            var users = h.CreateUserService();
+
+            var session = await users.CreateLinkSessionAsync(v.UserId, FoodRescue.DTOs.RequestedRole.Volunteer);
+            Assert.Equal("Volunteer", session!.Role);
+
+            var user = await h.Db.Users.SingleAsync(u => u.Id == v.UserId);
+            user.MustChangePassword = true;
+            await h.Db.SaveChangesAsync();
+            Assert.Null(await users.CreateLinkSessionAsync(v.UserId, FoodRescue.DTOs.RequestedRole.Volunteer));
         }
 
         // ---------------- ApprovalStatus ----------------

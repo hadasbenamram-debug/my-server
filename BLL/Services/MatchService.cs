@@ -269,7 +269,7 @@ namespace BLL.Services
             return route == null ? null : ToRouteDto(route);
         }
 
-        public async Task<RouteDto> RespondByLinkAsync(RespondByLinkDto dto)
+        public async Task<RespondByLinkOutcome> RespondByLinkAsync(RespondByLinkDto dto)
         {
             var route = await LoadRouteForLinkAsync(dto.Token)
                         ?? throw new NotFoundException("הקישור אינו בתוקף (פג, כבר נוצל או שגוי).");
@@ -284,7 +284,7 @@ namespace BLL.Services
                 await _workflow.DeclineAsync(match, route.VolunteerId, MatchStatus.Declined);
 
             var fresh = await _routeRepository.GetWithDetailsAsync(route.Id) ?? route;
-            return ToRouteDto(fresh);
+            return new RespondByLinkOutcome(ToRouteDto(fresh), route.Volunteer.UserId);
         }
 
         // =========================================================

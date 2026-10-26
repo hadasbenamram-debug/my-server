@@ -509,6 +509,28 @@ namespace BLL.Services
             return new ChangePasswordOutcome(ChangePasswordResult.Success, BuildResponse(user, await GetHeldRolesAsync(user)));
         }
 
+        // תיקון 11: המתנדב אישר מסלול מהקישור במייל / ב-SMS - נכנס ישר לאזור המתנדב, בלי מסך התחברות.
+        // הקישור אישי, חד-פעמי (נוצל באישור עצמו) ותקף רק עד סוף זמן המענה. מי שעדיין עם הסיסמה הזמנית,
+        // או בלי אף תפקיד מאושר, לא נכנס כך - הוא מתחבר כרגיל (וכך גם בוחר סיסמה אישית).
+        public async Task<AuthResponseDto?> CreateLinkSessionAsync(int userId, FoodRescue.DTOs.RequestedRole role)
+        {
+            var user = await _userRepository.GetByIdAsync(userId);
+            if (user == null || user.MustChangePassword)
+                return null;
+
+            var roles = await GetHeldRolesAsync(user);
+            if (CheckApproval(roles) != null)
+                return null;
+
+            var requested = role switch
+            {
+                FoodRescue.DTOs.RequestedRole.Volunteer => UserRole.Volunteer,
+                FoodRescue.DTOs.RequestedRole.Supplier => UserRole.Supplier,
+                _ => UserRole.Ngo
+            };
+            return BuildResponse(user, roles, requested);
+        }
+
         public async Task<MyProfileDto?> GetMyProfileAsync(int userId)
         {
             var user = await _userRepository.GetByIdAsync(userId);

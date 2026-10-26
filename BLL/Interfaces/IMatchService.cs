@@ -38,6 +38,9 @@ namespace BLL.Interfaces
 
         // קישור מהמייל (בלי התחברות): טוקן חד-פעמי שמוגבל למסלול אחד
         Task<RouteDto?> GetRouteByLinkAsync(string token);
-        Task<RouteDto> RespondByLinkAsync(RespondByLinkDto dto);
+        Task<RespondByLinkOutcome> RespondByLinkAsync(RespondByLinkDto dto);
     }
+
+    // תשובה לבקשת התנדבות מהקישור. VolunteerUserId - כדי שאחרי אישור המתנדב ייכנס ישר למסלול (תיקון 11)
+    public sealed record RespondByLinkOutcome(RouteDto Route, int VolunteerUserId);
 }

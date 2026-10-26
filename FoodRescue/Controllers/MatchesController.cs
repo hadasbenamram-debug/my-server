@@ -19,11 +19,15 @@ namespace FoodRescue.Controllers
         private const string MatchNotFound = "השידוך לא נמצא.";
         private const string RouteNotFound = "המסלול לא נמצא.";
 
-        private readonly IMatchService _matchService;
+        private const string ActiveRoutePath = "/app/volunteer/active-route";
 
-        public MatchesController(IMatchService matchService)
+        private readonly IMatchService _matchService;
+        private readonly IUserService _userService;
+
+        public MatchesController(IMatchService matchService, IUserService userService)
         {
             _matchService = matchService;
+            _userService = userService;
         }
 
         // ---------------- קריאה ----------------
@@ -139,7 +143,21 @@ namespace FoodRescue.Controllers
         [HttpPost("respond-by-link")]
         [AllowAnonymous]
         [EnableRateLimiting("auth")]
-        public async Task<ActionResult<RouteDto>> RespondByLink([FromBody] RespondByLinkDto dto) =>
-            Ok(await _matchService.RespondByLinkAsync(dto));
+        public async Task<ActionResult<RespondByLinkResultDto>> RespondByLink([FromBody] RespondByLinkDto dto)
+        {
+            var outcome = await _matchService.RespondByLinkAsync(dto);
+
+            // תיקון 11: בעבר אחרי אישור מהקישור הופיע "התחבר/י למערכת" - עכשיו המתנדב נכנס ישר למסלול הפעיל
+            var session = dto.Accept
+                ? await _userService.CreateLinkSessionAsync(outcome.VolunteerUserId, RequestedRole.Volunteer)
+                : null;
+
+            return Ok(new RespondByLinkResultDto
+            {
+                Route = outcome.Route,
+                Session = session,
+                NextPath = dto.Accept ? ActiveRoutePath : null
+            });
+        }
     }
 }
