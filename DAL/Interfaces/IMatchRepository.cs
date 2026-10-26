@@ -56,7 +56,8 @@ namespace DAL.Interfaces
         Task<HashSet<int>> GetVolunteerIdsWithActiveMatchesAsync();
 
         // מתנדבים שכבר דחו / לא הגיבו / לא הגיעו לתרומה הזו (לא מציעים להם אותה שוב)
-        Task<HashSet<int>> GetVolunteerIdsWhoFailedDonationAsync(int donationId);
+        // תיקון 13: לכל אחת מהתרומות - המתנדבים שכבר דחו אותה / לא ענו בזמן / לא הגיעו (זוגות מתנדב-תרומה)
+        Task<HashSet<(int VolunteerId, int DonationId)>> GetFailedVolunteerDonationPairsAsync(IReadOnlyCollection<int> donationIds);
 
         // כמה מסלולים שונים של המתנדב הסתיימו ב-No-Show
         Task<int> CountNoShowRoutesForVolunteerAsync(int volunteerId);

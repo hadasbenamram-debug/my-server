@@ -346,7 +346,9 @@ builder.Services.AddHangfire(config =>
           .UseRecommendedSerializerSettings()
           .UseSqlServerStorage(connectionString));
 
-builder.Services.AddHangfireServer();
+// תיקון 13: ג'ובים מתוזמנים (למשל "המתנדב לא ענה תוך 5 דקות") נבדקים כל 2 שניות - ברירת המחדל היא 15 שניות,
+// כך שהבקשה הייתה עוברת למתנדב הבא עד רבע דקה אחרי שהזמן נגמר
+builder.Services.AddHangfireServer(options => options.SchedulePollingInterval = TimeSpan.FromSeconds(2));
 
 // =========================================================
 // JWT Authentication

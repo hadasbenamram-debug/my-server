@@ -116,6 +116,88 @@ namespace FoodRescue.Tests
             Assert.Equal("LinkInvalid", Code(answer.Result));
         }
 
+        // ---------------- תיקון 13: אחרי 5 דקות - באמת למתנדב הבא, בלי "שעון חדש" ובלי אישור מאוחר ----------------
+
+        [Fact]
+        public async Task AfterTheDeadline_TheRouteIsNoLongerAwaiting_EvenBeforeTheTimeoutJob()
+        {
+            var (h, _, user, match) = await OfferAsync();
+            using var _ = h;
+            Assert.True((await h.MatchService.GetRouteAsync(match.VolunteerRouteId!.Value, As(user)))!.AwaitingResponse);
+
+            await ExpireAsync(h);
+
+            var route = await h.MatchService.GetRouteAsync(match.VolunteerRouteId!.Value, As(user));
+            Assert.False(route!.AwaitingResponse);   // אין יותר כפתור "אישור" אצל המתנדב
+        }
+
+        [Fact]
+        public async Task LateAccept_TimesOutRightAway_AndTheNextVolunteerGetsAFreshWindow()
+        {
+            var h = new EngineHarness();
+            using var _ = h;
+            await h.SeedBasicsAsync();
+            await h.AddVolunteerAsync("a@test");
+            await h.AddVolunteerAsync("b@test");
+            var d = await h.AddDonationAsync();
+            await h.Engine.RunBatchAsync("Manual");
+            h.Fresh();
+            var first = await h.Db.Matches.SingleAsync();
+            var firstVolunteer = await h.Db.Volunteers.SingleAsync(v => v.Id == first.VolunteerId);
+            var firstUser = await h.Db.Users.SingleAsync(u => u.Id == firstVolunteer.UserId);
+            await ExpireAsync(h);
+
+            // המתנדב הראשון מנסה לאשר אחרי הזמן: לא מאושר, והבקשה משתחררת מיד (בלי לחכות לג'וב)
+            Assert.Equal(RouteResponseResult.Expired, (await h.MatchService.AcceptAsync(first.Id, As(firstUser))).Result);
+            h.Fresh();
+            Assert.Equal(MatchStatus.TimedOut, (await h.Db.Matches.SingleAsync(m => m.Id == first.Id)).Status);
+            Assert.Equal(DonationStatus.Pending, (await h.Db.Donations.SingleAsync()).Status);
+            Assert.True(h.Jobs.Has<BLL.Algorithms.DonationMatchingBatchService>(nameof(BLL.Algorithms.DonationMatchingBatchService.ReassignDonationAsync)));
+
+            // השיבוץ מחדש: למתנדב השני, עם חלון תגובה חדש משלו. הראשון לא מקבל אותה שוב
+            var again = await h.Engine.MatchDonationAsync(d.Id, "Reassign");
+            Assert.True(again!.Matched);
+            h.Fresh();
+            var second = await h.Db.Matches.SingleAsync(m => m.IsActive);
+            Assert.NotEqual(first.VolunteerId, second.VolunteerId);
+            Assert.True(second.ResponseDeadline > DateTime.UtcNow.AddMinutes(4));
+        }
+
+        [Fact]
+        public async Task TheTimeoutCheck_RunsOneSecondAfterTheDeadline()
+        {
+            var (h, _, _, match) = await OfferAsync();
+            using var _ = h;
+
+            var scheduled = h.Jobs.Jobs
+                .Where(j => j.Job.Type == typeof(BLL.Algorithms.MatchTimeoutService))
+                .Select(j => j.State).OfType<Hangfire.States.ScheduledState>().Single();
+
+            var late = scheduled.EnqueueAt - match.ResponseDeadline!.Value;
+            Assert.InRange(late.TotalSeconds, 0.5, 2.5);
+        }
+
+        [Fact]
+        public async Task AVolunteerWhoLetADonationTimeOut_IsNotOfferedItAgain_EvenAsAnExtraStop()
+        {
+            var (h, v, _, first) = await OfferAsync();
+            using var _ = h;
+            int d1 = first.DonationId;
+
+            // לא ענה בזמן -> שיבוץ מחדש: אין מתנדב אחר, והוא עצמו לא מקבל אותה שוב
+            await h.Timeouts.ProcessTimeoutsAtAsync(first.ResponseDeadline!.Value.AddSeconds(2));
+            Assert.False((await h.Engine.MatchDonationAsync(d1, "Reassign"))!.Matched);
+
+            // תרומה חדשה ליד: הוא מקבל אותה - אבל בלי התרומה הקודמת כתחנה נוספת באותו מסלול
+            var d2 = await h.AddDonationAsync(latitude: 32.0806, longitude: 34.7806);
+            await h.Engine.RunBatchAsync("Manual");
+
+            h.Fresh();
+            var offered = await h.Db.Matches.Where(m => m.IsActive && m.VolunteerId == v.Id).Select(m => m.DonationId).ToListAsync();
+            Assert.Contains(d2.Id, offered);
+            Assert.DoesNotContain(d1, offered);
+        }
+
         [Fact]
         public async Task LinkAnsweredAfterTheDeadline_IsExpired()
         {

@@ -87,7 +87,12 @@ namespace BLL.Services
 
             var now = DateTime.UtcNow;
             if (group.Any(m => m.ResponseDeadline.HasValue && m.ResponseDeadline.Value < now))
+            {
+                // תיקון 13: הזמן עבר - אין אישור מאוחר. אם הג'וב שמסמן "לא ענה בזמן" עוד לא הספיק לרוץ,
+                // מסמנים כאן TimedOut והבקשה עוברת מיד למתנדב הבא (לא מחכים לג'וב)
+                await DeclineAsync(match, volunteerId, MatchStatus.TimedOut);
                 return RouteResponseResult.Expired;
+            }
 
             // בדיקה חוזרת של רישיון הנהיגה ברגע האישור (המנוע בדק אותו כשבחר את המתנדב, אבל הרישיון
             // יכול לפוג בין ההצעה לאישור - למשל בחצות). רישיון לא בתוקף: הבקשה עוברת מיד למתנדב הבא.

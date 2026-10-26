@@ -184,17 +184,22 @@ namespace DAL.Repositories
             return ids.ToHashSet();
         }
 
-        public async Task<HashSet<int>> GetVolunteerIdsWhoFailedDonationAsync(int donationId)
+        // תיקון 13: שאילתה אחת לכל הריצה (במקום שאילתה לכל תרומה), וגם כדי שמתנדב לא יקבל שוב תרומה
+        // שכבר דחה / לא ענה עליה - גם לא כתחנה נוספת במסלול של תרומה אחרת
+        public async Task<HashSet<(int VolunteerId, int DonationId)>> GetFailedVolunteerDonationPairsAsync(IReadOnlyCollection<int> donationIds)
         {
-            var ids = await _context.Matches
-                .Where(m => m.DonationId == donationId &&
+            if (donationIds.Count == 0)
+                return new HashSet<(int VolunteerId, int DonationId)>();
+
+            var pairs = await _context.Matches
+                .Where(m => donationIds.Contains(m.DonationId) &&
                             (m.Status == MatchStatus.Declined ||
                              m.Status == MatchStatus.TimedOut ||
                              m.Status == MatchStatus.NoShow))
-                .Select(m => m.VolunteerId)
+                .Select(m => new { m.VolunteerId, m.DonationId })
                 .Distinct()
                 .ToListAsync();
-            return ids.ToHashSet();
+            return pairs.Select(p => (p.VolunteerId, p.DonationId)).ToHashSet();
         }
 
         public async Task<int> CountNoShowRoutesForVolunteerAsync(int volunteerId)

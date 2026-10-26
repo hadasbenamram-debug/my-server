@@ -357,6 +357,7 @@ namespace BLL.Services
 
             var ngo = shown.Select(m => m.Ngo).FirstOrDefault(n => n != null);
             var awaiting = shown.Where(m => m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation).ToList();
+            var deadline = awaiting.Select(m => m.ResponseDeadline).Where(d => d.HasValue).Min();
 
             return new RouteDto
             {
@@ -365,8 +366,10 @@ namespace BLL.Services
                 VolunteerId = route.VolunteerId,
                 VolunteerName = route.Volunteer?.User?.Name,
                 ScheduledAt = route.ScheduledAt,
-                ResponseDeadline = awaiting.Select(m => m.ResponseDeadline).Where(d => d.HasValue).Min(),
-                AwaitingResponse = awaiting.Count > 0,
+                ResponseDeadline = deadline,
+                // תיקון 13: אחרי שהזמן עבר כבר לא ממתינים לתגובה - גם אם הג'וב שמסמן "לא ענה בזמן" עוד לא רץ
+                // (כך המתנדב לא רואה כפתור "אישור" אחרי 5 הדקות)
+                AwaitingResponse = awaiting.Count > 0 && (deadline == null || deadline.Value > DateTime.UtcNow),
                 TotalWeightKg = route.TotalWeightKg,
                 EstimatedTotalDurationMinutes = route.EstimatedTotalDurationMinutes,
                 EstimatedTotalDistanceKm = route.EstimatedTotalDistanceKm,

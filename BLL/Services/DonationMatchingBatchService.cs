@@ -99,6 +99,8 @@ namespace BLL.Algorithms
             public List<Volunteer> Volunteers { get; init; } = new();
             public HashSet<int> BusyVolunteerIds { get; init; } = new();
             public HashSet<int> AssignedDonationIds { get; } = new();
+            // מתנדב + תרומה שהוא כבר דחה / לא ענה עליה בזמן / לא הגיע אליה - לא מציעים לו אותה שוב (תיקון 13)
+            public HashSet<(int VolunteerId, int DonationId)> FailedPairs { get; init; } = new();
             public Dictionary<int, Region> Regions { get; init; } = new();
         }
 
@@ -252,12 +254,15 @@ namespace BLL.Algorithms
 
             var regions = (await _regionRepository.GetAllAsync()).ToDictionary(r => r.Id);
 
+            // "כל תרומה מיועדת לאותו יום בלבד" - לפי היום המקומי, לא לפי תאריך ה-UTC
+            var donations = await _donationRepository.GetAvailableDonationsAsync(now, dayStartUtc);
+
             return new RunContext
             {
                 Now = now,
                 Policy = _policyProvider.Current,
-                // "כל תרומה מיועדת לאותו יום בלבד" - לפי היום המקומי, לא לפי תאריך ה-UTC
-                Donations = await _donationRepository.GetAvailableDonationsAsync(now, dayStartUtc),
+                Donations = donations,
+                FailedPairs = await _matchRepository.GetFailedVolunteerDonationPairsAsync(donations.Select(d => d.Id).ToList()),
                 // תוקן: עמותה שעדיין לא אושרה יכלה לקבל שידוך
                 Ngos = await _ngoRepository.GetApprovedAsync(),
                 // תוקן: מתנדב שעדיין לא אושר יכול היה לקבל שידוך.
@@ -291,9 +296,9 @@ namespace BLL.Algorithms
             var ngo = ngoSelection.Value.Ngo;
 
             // --- מתנדבים: Hard Constraints ---
-            var alreadyFailed = await _matchRepository.GetVolunteerIdsWhoFailedDonationAsync(donation.Id);
+            // מתנדב שכבר דחה את התרומה / לא ענה בזמן / לא הגיע - לא מקבל אותה שוב (ולא "מתחיל מחדש" 5 דקות)
             var pool = ctx.Volunteers
-                .Where(v => !ctx.BusyVolunteerIds.Contains(v.Id) && !alreadyFailed.Contains(v.Id))
+                .Where(v => !ctx.BusyVolunteerIds.Contains(v.Id) && !ctx.FailedPairs.Contains((v.Id, donation.Id)))
                 .Where(v => v.MaxCapacityKg >= donation.TotalWeightKg())
                 .ToList();
 
@@ -338,7 +343,9 @@ namespace BLL.Algorithms
                 policy.MaxRoutesEvaluatedPerDonation,
                 c => _orchestrator.BuildRouteAsync(
                     c.Volunteer,
-                    ctx.Donations.Where(d => !ctx.AssignedDonationIds.Contains(d.Id)).ToList(),
+                    // תיקון 13: גם התחנות הנוספות במסלול - בלי תרומות שהמתנדב הזה כבר דחה / לא ענה עליהן
+                    ctx.Donations.Where(d => !ctx.AssignedDonationIds.Contains(d.Id) &&
+                                             !ctx.FailedPairs.Contains((c.Volunteer.Id, d.Id))).ToList(),
                     c.StartLocation,
                     ngo,
                     ctx.Now,

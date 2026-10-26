@@ -179,7 +179,9 @@ namespace BLL.Services
             // הזמן הנוכחי נקבע בתוך הג'וב כשהוא רץ, לא ברגע התזמון.
             try
             {
-                _jobs.Schedule<MatchTimeoutService>(s => s.ProcessTimeoutsAsync(), deadline - now + TimeSpan.FromSeconds(5));
+                // תיקון 13: שנייה אחרי סוף הזמן (בעבר 5 שניות) - ויחד עם SchedulePollingInterval קצר (Program.cs)
+                // הבקשה עוברת למתנדב הבא כמה שניות אחרי 5 הדקות, ולא עד רבע דקה אחר כך
+                _jobs.Schedule<MatchTimeoutService>(s => s.ProcessTimeoutsAsync(), deadline - now + TimeSpan.FromSeconds(1));
             }
             catch (Exception ex)
             {
