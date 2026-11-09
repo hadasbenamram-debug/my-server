@@ -40,6 +40,9 @@ namespace BLL.Interfaces
         Task<RouteDto?> GetRouteAsync(int routeId, CurrentUserDto currentUser);
         Task<RouteDto?> GetMyActiveRouteAsync(CurrentUserDto currentUser);
 
+        // כל המסלולים שבדרך עכשיו (InProgress) - מנהל בלבד, למפה החיה של כל המסלולים
+        Task<List<RouteDto>> GetLiveRoutesAsync(CurrentUserDto currentUser);
+
         // קישור מהמייל (בלי התחברות): טוקן חד-פעמי שמוגבל למסלול אחד
         Task<RouteDto?> GetRouteByLinkAsync(string token);
         Task<RespondByLinkOutcome> RespondByLinkAsync(RespondByLinkDto dto);

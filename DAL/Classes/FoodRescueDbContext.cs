@@ -154,6 +154,19 @@ namespace DAL
 
             modelBuilder.Entity<Match>()
                 .HasIndex(m => new { m.VolunteerId, m.IsActive });
+
+            // ===== יומן המשלוח (מעקב חי) =====
+            // היומן של מסלול נשלף תמיד לפי הסדר (מסלול הנסיעה בפועל + האירועים)
+            modelBuilder.Entity<DeliveryLog>()
+                .HasIndex(l => new { l.VolunteerRouteId, l.Timestamp });
+
+            // רישום של תחנה מסוימת (איסוף / מסירה). Restrict: שידוכים לא נמחקים, והיומן כבר נמחק יחד עם המסלול -
+            // כך אין שני מסלולי Cascade לאותה טבלה (SQL Server לא מרשה).
+            modelBuilder.Entity<DeliveryLog>()
+                .HasOne(l => l.Match)
+                .WithMany()
+                .HasForeignKey(l => l.MatchId)
+                .OnDelete(DeleteBehavior.Restrict);
         }
     }
 }

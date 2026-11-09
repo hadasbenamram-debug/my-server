@@ -72,45 +72,50 @@ namespace BLL.Algorithms
     /// <summary>
     /// מימוש עצמאי (לא שימוש ב-List.Sort המובנה) של Merge Sort ו-Quick Sort,
     /// גנרי - כדי שיהיה ניתן להשתמש בו לכל T, לא רק למתנדבים.
-    /// אומת ידנית: שני האלגוריתמים נכונים כפי שהם (Median-of-three ל-QuickSort,
-    /// Merge יציב), לא נמצא באג לוגי - רק הרחבה קלה בהמשך הקובץ.
+    ///
+    /// Merge Sort: יציב, O(n log n) תמיד. שופר: מערך עזר אחד לכל המיון (O(n) זיכרון) - בעבר כל רמה ברקורסיה
+    /// יצרה רשימות חדשות (GetRange) - O(n log n) הקצאות.
+    /// Quick Sort: Median-of-three + חלוקה לשלושה (קטן / שווה / גדול, "הדגל ההולנדי"). שופר: בחלוקה הקודמת
+    /// (Lomuto עם &lt;=) רשימה עם הרבה ערכים שווים - למשל ציונים זהים - התדרדרה ל-O(n²). עכשיו O(n log n) בממוצע,
+    /// ועומק רקורסיה O(log n) (רקורסיה רק על החלק הקטן).
     /// </summary>
     public static class CustomSortAlgorithms<T>
     {
         public static List<T> MergeSort(List<T> items, Comparison<T> comparer)
         {
             if (items == null) throw new ArgumentNullException(nameof(items));
-            if (items.Count <= 1) return new List<T>(items);
+            if (comparer == null) throw new ArgumentNullException(nameof(comparer));
 
-            int mid = items.Count / 2;
-            var left = MergeSort(items.GetRange(0, mid), comparer);
-            var right = MergeSort(items.GetRange(mid, items.Count - mid), comparer);
-
-            return Merge(left, right, comparer);
+            var array = items.ToArray();
+            if (array.Length > 1)
+                MergeSortRange(array, new T[array.Length], 0, array.Length, comparer);
+            return new List<T>(array);
         }
 
-        private static List<T> Merge(List<T> left, List<T> right, Comparison<T> comparer)
+        // ממיין את [from, to) במקום, בעזרת מערך העזר buffer
+        private static void MergeSortRange(T[] items, T[] buffer, int from, int to, Comparison<T> comparer)
         {
-            var result = new List<T>(left.Count + right.Count);
-            int i = 0, j = 0;
+            if (to - from <= 1) return;
 
-            while (i < left.Count && j < right.Count)
-            {
-                if (comparer(left[i], right[j]) <= 0)
-                    result.Add(left[i++]);
-                else
-                    result.Add(right[j++]);
-            }
+            int mid = from + (to - from) / 2;
+            MergeSortRange(items, buffer, from, mid, comparer);
+            MergeSortRange(items, buffer, mid, to, comparer);
 
-            while (i < left.Count) result.Add(left[i++]);
-            while (j < right.Count) result.Add(right[j++]);
+            // החצאים כבר בסדר הנכון - אין מה למזג
+            if (comparer(items[mid - 1], items[mid]) <= 0) return;
 
-            return result;
+            Array.Copy(items, from, buffer, from, to - from);
+            int i = from, j = mid, k = from;
+            while (i < mid && j < to)
+                items[k++] = comparer(buffer[i], buffer[j]) <= 0 ? buffer[i++] : buffer[j++];   // <= שומר על יציבות
+            while (i < mid) items[k++] = buffer[i++];
+            while (j < to) items[k++] = buffer[j++];
         }
 
         public static void QuickSort(List<T> items, Comparison<T> comparer)
         {
             if (items == null) throw new ArgumentNullException(nameof(items));
+            if (comparer == null) throw new ArgumentNullException(nameof(comparer));
             QuickSortRange(items, 0, items.Count - 1, comparer);
         }
 
@@ -118,41 +123,33 @@ namespace BLL.Algorithms
         {
             while (low < high)
             {
-                int pivotIndex = Partition(items, low, high, comparer);
+                // הציר: החציון מבין ראשון / אמצעי / אחרון
+                int mid = low + (high - low) / 2;
+                MedianOfThree(items, low, mid, high, comparer);
+                T pivot = items[mid];
 
-                if (pivotIndex - low < high - pivotIndex)
+                // חלוקה לשלושה: [low, lt) קטנים, [lt, gt] שווים לציר, (gt, high] גדולים
+                int lt = low, i = low, gt = high;
+                while (i <= gt)
                 {
-                    QuickSortRange(items, low, pivotIndex - 1, comparer);
-                    low = pivotIndex + 1;
+                    int c = comparer(items[i], pivot);
+                    if (c < 0) Swap(items, lt++, i++);
+                    else if (c > 0) Swap(items, i, gt--);
+                    else i++;
+                }
+
+                // רקורסיה על החלק הקטן, לולאה על הגדול - עומק מחסנית O(log n)
+                if (lt - low < high - gt)
+                {
+                    QuickSortRange(items, low, lt - 1, comparer);
+                    low = gt + 1;
                 }
                 else
                 {
-                    QuickSortRange(items, pivotIndex + 1, high, comparer);
-                    high = pivotIndex - 1;
+                    QuickSortRange(items, gt + 1, high, comparer);
+                    high = lt - 1;
                 }
             }
-        }
-
-        private static int Partition(List<T> items, int low, int high, Comparison<T> comparer)
-        {
-            int mid = low + (high - low) / 2;
-            MedianOfThree(items, low, mid, high, comparer);
-
-            Swap(items, mid, high - 1);
-            T pivot = items[high - 1];
-
-            int i = low;
-            for (int j = low; j < high - 1; j++)
-            {
-                if (comparer(items[j], pivot) <= 0)
-                {
-                    Swap(items, i, j);
-                    i++;
-                }
-            }
-
-            Swap(items, i, high - 1);
-            return i;
         }
 
         private static void MedianOfThree(List<T> items, int low, int mid, int high, Comparison<T> comparer)

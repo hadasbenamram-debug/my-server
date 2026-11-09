@@ -14,6 +14,8 @@ namespace BLL.Algorithms
     {
         public List<PickupStop> Stops { get; init; } = new();
         public GeoCoordinate StartLocation { get; init; } = new();
+
+        /// <summary>שעת היציאה המתוכננת (אחרי חלון התגובה של המתנדב; יכולה להיות מאוחרת יותר - תיקונים 24, 26).</summary>
         public DateTime StartTime { get; init; }
         public DateTime NgoArrival { get; init; }
         public double NgoLegDistanceKm { get; init; }
@@ -22,16 +24,45 @@ namespace BLL.Algorithms
         public double TotalDurationMinutes { get; init; }
         public double TotalWeightKg { get; init; }
         public double KnapsackValue { get; init; }
+
+        /// <summary>true = קבוצת התרומות היא האופטימום של ה-Knapsack עצמו (חסם עליון) - ולכן אין מסלול בעל ערך גבוה יותר.</summary>
+        public bool ProvenOptimal { get; init; }
+    }
+
+    /// <summary>בקשה לתכנון מסלול אחד: מתנדב + חלון זמינות + תרומת עוגן + עמותה.</summary>
+    public sealed class RouteRequest
+    {
+        public Volunteer Volunteer { get; init; } = null!;
+        public Donation Anchor { get; init; } = null!;
+
+        /// <summary>תרומות נוספות אפשריות (בדרך כלל - בטווח האשכול של העוגן).</summary>
+        public IReadOnlyList<Donation> Pool { get; init; } = Array.Empty<Donation>();
+
+        public Ngo Ngo { get; init; } = null!;
+        public AvailabilityWindow Window { get; init; }
+        public GeoCoordinate Start { get; init; } = new();
+
+        /// <summary>מתי נשלחת ההצעה (עכשיו). ממנו מחושבת הדחיפות, וממנו נבדקת השבת.</summary>
+        public DateTime OfferTimeUtc { get; init; }
+        public DateTime EarliestDepartureUtc { get; init; }
+        public DateTime LatestDepartureUtc { get; init; }
+
+        /// <summary>הקיבולת שנשארה היום לעמותה (ק"ג). אינסוף = ללא הגבלה.</summary>
+        public double NgoRemainingKg { get; init; } = double.PositiveInfinity;
     }
 
     /// <summary>
-    /// בונה מסלול אפשרי אחד למתנדב ולעמותה נתונים: Knapsack (קיבולת, תרומה במלואה) + VRP (סדר התחנות)
-    /// ובדיקת כל האילוצים הקשים: זמן האיסוף האחרון של כל תרומה, תפוגה, שעות הקבלה של העמותה בזמן
-    /// ההגעה בפועל, וזמינות המתנדב לכל משך המסלול.
+    /// בונה את המסלול הטוב ביותר למתנדב, לתרומת עוגן ולעמותה נתונים.
     ///
-    /// תוקן: (1) זמן ההגעה לעמותה חושב בעבר כזמן ההגעה לתחנת האיסוף האחרונה (בלי הנסיעה לעמותה).
-    /// (2) הוסרה הפונקציה RunMatchingCycleAsync - מסלול שידוך שלישי שהתחיל מנקודה (0,0), בחר תמיד את
-    /// העמותה הראשונה ולא שמר כלום. כל השידוכים עוברים עכשיו דרך DonationMatchingBatchService.
+    ///   1. Knapsack 0/1 (KnapsackSolver): אילו תרומות נוספות שוות לאסוף - בקיבולת הרכב (וגם בקיבולת שנשארה לעמותה,
+    ///      תיקון 21) ובמגבלת המגוון לקטגוריה.
+    ///   2. RoutePlanner (DP מדויק): מתוך התרומות שנבחרו - איזו תת-קבוצה ובאיזה סדר עומדת בכל אילוצי הזמן
+    ///      (מועדי איסוף, תפוגה, שעות העמותה, זמינות המתנדב, שבת), ומתי לצאת.
+    ///   3. אם ה-Knapsack "מילא" תרומות שלא נכנסות בזמן - סבב שני: ה-Knapsack ממלא את המקום שהתפנה בתרומות אחרות,
+    ///      ונבחר המסלול הטוב מבין השניים (תיקון 22: בעבר כל המסלול נפסל במקרה כזה).
+    ///
+    /// הוכחת אופטימליות (ProvenOptimal): ה-Knapsack פותר בעיה "קלה" יותר - בלי אילוצי זמן - ולכן הערך שלו הוא חסם
+    /// עליון לכל מסלול. אם כל מה שהוא בחר נכנס בזמן, אין מסלול טוב יותר מהתרומות האלה.
     /// </summary>
     public class DonationMatchingOrchestrator
     {
@@ -81,6 +112,10 @@ namespace BLL.Algorithms
             return plan?.Stops ?? new List<PickupStop>();
         }
 
+        /// <summary>
+        /// תאימות: מסלול שיוצא בדיוק ב-startTime (בלי דחייה) עם משבצת הזמינות של המתנדב שפתוחה באותו רגע.
+        /// בלי תרומת עוגן - נבדקות התרומות הדחופות ביותר בטווח החיפוש כעוגן, ונבחר המסלול הטוב.
+        /// </summary>
         public async Task<RoutePlan?> BuildRouteAsync(
             Volunteer volunteer,
             List<Donation> availableDonations,
@@ -94,127 +129,258 @@ namespace BLL.Algorithms
 
             var policy = _policy.Current;
             var start = volunteerStartLocation ?? new GeoCoordinate();
-            var startTimeValue = startTime ?? DateTime.UtcNow;
-
-            // אילוץ קשה: העמותה יכולה לקבל את התרומה בזמן (פתוחה בזמן ההגעה האפשרי ולפני התפוגה)
-            var compatibleDonations = availableDonations
-                .Where(d => d.Status == DonationStatus.Pending &&
-                            NgoAvailabilityHelper.CanNgoReceiveDonation(targetNgo, d, policy, startTimeValue))
+            var departure = startTime ?? DateTime.UtcNow;
+            var pending = (availableDonations ?? new List<Donation>())
+                .Where(d => d.Status == DonationStatus.Pending)
                 .ToList();
 
-            var anchorDonation = anchorDonationId.HasValue
-                ? compatibleDonations.FirstOrDefault(d => d.Id == anchorDonationId.Value)
-                : null;
+            var anchors = anchorDonationId.HasValue
+                ? pending.Where(d => d.Id == anchorDonationId.Value).ToList()
+                : pending
+                    .Where(d => GeoUtils.HaversineKm(start.Latitude, start.Longitude, d.Latitude, d.Longitude) <= policy.MaxSearchRadiusKm)
+                    .OrderByDescending(d => PriorityCalculator.Calculate(d, departure, policy.UrgencyTimeConstantMinutes))
+                    .ThenBy(d => d.Id)
+                    .Take(5)
+                    .ToList();
 
-            if (anchorDonationId.HasValue && anchorDonation == null)
+            RoutePlan? best = null;
+            foreach (var anchor in anchors)
             {
-                _logger.LogDebug("Orchestrator: anchor donation {DonationId} cannot reach NGO {NgoId} in time.", anchorDonationId, targetNgo.Id);
-                return null;
+                var window = AvailabilityHelper.GetWindows(volunteer, departure, departure)
+                    .Where(w => w.Contains(departure) && AvailabilityHelper.SlotServesRoute(w.Slot, new[] { anchor.RegionId }, targetNgo.RegionId))
+                    .OrderByDescending(w => w.EndUtc)
+                    .FirstOrDefault();
+                if (window.Slot == null)
+                    continue;
+
+                var pool = pending
+                    .Where(d => d.Id != anchor.Id &&
+                                GeoUtils.HaversineKm(anchor.Latitude, anchor.Longitude, d.Latitude, d.Longitude) <= policy.ClusterRadiusKm)
+                    .ToList();
+
+                var plan = await PlanAsync(new RouteRequest
+                {
+                    Volunteer = volunteer,
+                    Anchor = anchor,
+                    Pool = pool,
+                    Ngo = targetNgo,
+                    Window = window,
+                    Start = start,
+                    OfferTimeUtc = departure,
+                    EarliestDepartureUtc = departure,
+                    LatestDepartureUtc = departure
+                });
+
+                if (IsBetter(plan, best))
+                    best = plan;
             }
 
-            double centerLat = anchorDonation?.Latitude ?? start.Latitude;
-            double centerLon = anchorDonation?.Longitude ?? start.Longitude;
-            double clusterRadiusKm = anchorDonation != null ? policy.ClusterRadiusKm : policy.MaxSearchRadiusKm;
+            return best;
+        }
 
-            // Knapsack 0/1: כל תרומה נכנסת במלואה או לא נכנסת, במסגרת קיבולת הרכב
-            var knapsackItems = KnapsackItem.CreateItems(
-                compatibleDonations,
-                centerLat, centerLon,
-                clusterRadiusKm,
+        /// <summary>המסלול הטוב ביותר לבקשה (null = אין מסלול שעומד בכל האילוצים).</summary>
+        public async Task<RoutePlan?> PlanAsync(RouteRequest request)
+        {
+            if (request == null) throw new ArgumentNullException(nameof(request));
+            if (request.Volunteer == null || request.Anchor == null || request.Ngo == null || request.Window.Slot == null)
+                throw new ArgumentException("בקשת המסלול חסרה מתנדב, תרומה, עמותה או חלון זמינות.", nameof(request));
+
+            var policy = _policy.Current;
+            var anchor = request.Anchor;
+            var slot = request.Window.Slot;
+
+            var earliest = Max(request.EarliestDepartureUtc, request.Window.StartUtc);
+            var latest = Min(request.LatestDepartureUtc, request.Window.EndUtc);
+            if (earliest > latest)
+                return null;
+
+            if (anchor.Status != DonationStatus.Pending || anchor.TotalWeightKg() <= 0 ||
+                NgoAvailabilityHelper.GetPickupDateTime(anchor) < earliest || anchor.ExpirationTime <= earliest)
+                return null;
+
+            // קיבולת: הרכב, וגם מה שנשאר היום לעמותה (תיקון 21)
+            double capacityKg = Math.Min(request.Volunteer.MaxCapacityKg, request.NgoRemainingKg);
+            if (anchor.TotalWeightKg() > capacityKg + 1e-9)
+                return null;
+
+            // תרומות נוספות אפשריות: ממתינות, עם זמן לאיסוף, ובאזורים שהמשבצת של המתנדב משרתת לעמותה הזו
+            var extras = (request.Pool ?? Array.Empty<Donation>())
+                .Where(d => d.Id != anchor.Id &&
+                            d.Status == DonationStatus.Pending &&
+                            d.TotalWeightKg() > 0 &&
+                            NgoAvailabilityHelper.GetPickupDateTime(d) >= earliest &&
+                            d.ExpirationTime > earliest &&
+                            AvailabilityHelper.SlotServesRoute(slot, new[] { anchor.RegionId, d.RegionId }, request.Ngo.RegionId))
+                .GroupBy(d => d.Id)
+                .Select(g => g.First())
+                .ToList();
+
+            var items = KnapsackItem.CreateItems(
+                new[] { anchor }.Concat(extras),
+                anchor.Latitude, anchor.Longitude,
+                policy.ClusterRadiusKm,
                 policy.DistancePenaltyCoefficient,
-                startTimeValue,
+                request.OfferTimeUtc,
                 policy.UnitSizeGrams,
                 policy.UrgencyTimeConstantMinutes,
-                anchorDonationId);
+                anchor.Id);
 
-            int maxCapacityUnits = (int)((volunteer.MaxCapacityKg * 1000) / Math.Max(1, policy.UnitSizeGrams));
-            var knapsackResult = _knapsackSolver.Solve(knapsackItems, maxCapacityUnits, policy.MaxItemsPerCategory, anchorDonationId);
-            var selectedDonations = knapsackResult.SelectedDonations;
+            int unitGrams = Math.Max(1, policy.UnitSizeGrams);
+            int capacityUnits = (int)Math.Min(1_000_000_000d, Math.Floor(capacityKg * 1000.0 / unitGrams));
 
-            if (selectedDonations.Count == 0)
+            // סבב 1: ה-Knapsack בוחר, ה-DP בודק זמנים ומסדר
+            var first = _knapsackSolver.Solve(items, capacityUnits, policy.MaxItemsPerCategory, anchor.Id);
+            if (first.SelectedDonations.Count == 0)
                 return null;
 
-            var stops = selectedDonations.Select(d => new PickupStop
-            {
-                DonationId = d.Id,
-                Location = new GeoCoordinate { Latitude = d.Latitude, Longitude = d.Longitude }
-            }).ToList();
+            var plan = await PlanExactAsync(first.SelectedDonations, items, request, earliest, latest, capacityKg);
+            if (plan != null && plan.Stops.Count == first.SelectedDonations.Count)
+                return WithProvenOptimal(plan);
 
-            List<PickupStop> optimizedRoute;
-            try
+            // סבב 2: בלי התרומות שלא נכנסו בזמן - ה-Knapsack ממלא את הקיבולת שהתפנתה בתרומות אחרות
+            var dropped = first.SelectedDonations
+                .Where(d => d.Id != anchor.Id && (plan == null || plan.Stops.All(s => s.DonationId != d.Id)))
+                .Select(d => d.Id)
+                .ToHashSet();
+            if (dropped.Count == 0)
+                return plan;
+
+            var second = _knapsackSolver.Solve(items.Where(i => !dropped.Contains(i.Donation.Id)).ToList(),
+                capacityUnits, policy.MaxItemsPerCategory, anchor.Id);
+            var plan2 = second.SelectedDonations.Count == 0
+                ? null
+                : await PlanExactAsync(second.SelectedDonations, items, request, earliest, latest, capacityKg);
+
+            return IsBetter(plan2, plan) ? plan2 : plan;
+        }
+
+        // מסלול א' עדיף על ב': ערך גבוה יותר; בשוויון - מגיע לעמותה מוקדם יותר
+        public static bool IsBetter(RoutePlan? candidate, RoutePlan? current)
+        {
+            if (candidate == null) return false;
+            if (current == null) return true;
+            if (candidate.KnapsackValue > current.KnapsackValue + 1e-9) return true;
+            return Math.Abs(candidate.KnapsackValue - current.KnapsackValue) <= 1e-9 && candidate.NgoArrival < current.NgoArrival;
+        }
+
+        private async Task<RoutePlan?> PlanExactAsync(
+            IReadOnlyList<Donation> selected,
+            IReadOnlyList<KnapsackItem> items,
+            RouteRequest request,
+            DateTime earliestDeparture,
+            DateTime latestDeparture,
+            double capacityKg)
+        {
+            var policy = _policy.Current;
+            var valueById = items.GroupBy(i => i.Donation.Id).ToDictionary(g => g.Key, g => g.First().Value);
+
+            // העוגן ראשון, אחריו לפי ערך. ה-DP מדויק עד MaxExactStops תחנות - מעבר לזה נשארות התרומות בעלות הערך הגבוה.
+            var stops = selected
+                .Where(d => d.Id != request.Anchor.Id)
+                .OrderByDescending(d => valueById.TryGetValue(d.Id, out var v) ? v : 0)
+                .ThenBy(d => d.Id)
+                .Take(RoutePlanner.MaxExactStops - 1)
+                .Prepend(request.Anchor)
+                .ToList();
+
+            // נקודות: 0 = יציאה, 1..m = התחנות, m+1 = העמותה. זמני הנסיעה מ-Google (עם מטמון), ואם אין - הערכה.
+            var points = new List<GeoCoordinate> { request.Start };
+            points.AddRange(stops.Select(d => new GeoCoordinate { Latitude = d.Latitude, Longitude = d.Longitude }));
+            points.Add(new GeoCoordinate { Latitude = request.Ngo.Latitude, Longitude = request.Ngo.Longitude });
+
+            int size = points.Count;
+            var minutes = new double[size, size];
+            var km = new double[size, size];
+            for (int i = 0; i < size - 1; i++)                 // מהעמותה לא יוצאים
             {
-                optimizedRoute = await _routeOptimizationService.OptimizeRouteWithGoogleMapsAsync(
-                    start, stops, startTimeValue,
-                    (stop, eta) =>
-                    {
-                        var d = compatibleDonations.FirstOrDefault(x => x.Id == stop.DonationId);
-                        return d != null && eta <= NgoAvailabilityHelper.GetPickupDateTime(d);
-                    });
+                for (int j = 1; j < size; j++)                 // לנקודת היציאה לא חוזרים
+                {
+                    if (i == j || (i == 0 && j == size - 1)) continue;   // ישר מהיציאה לעמותה - לא קיים (יש לפחות תחנה אחת)
+                    var (legKm, legMinutes) = await _routeOptimizationService.EstimateLegAsync(points[i], points[j]);
+                    km[i, j] = Math.Max(0, legKm);
+                    minutes[i, j] = Math.Max(0, legMinutes);
+                }
             }
-            catch (Exception ex)
+
+            var ngo = request.Ngo;
+            var result = RoutePlanner.Plan(new PlannerInput
             {
-                _logger.LogWarning(ex, "Route optimization with Google failed for volunteer {VolunteerId}. Falling back.", volunteer.Id);
-                optimizedRoute = _routeOptimizationService.OptimizeRoute(start, stops, startTimeValue);
+                Stops = stops.Select(d => new PlannerStop
+                {
+                    DonationId = d.Id,
+                    PickupDeadlineUtc = NgoAvailabilityHelper.GetPickupDateTime(d),
+                    ExpirationUtc = d.ExpirationTime,
+                    Value = valueById.TryGetValue(d.Id, out var v) ? v : 0,
+                    WeightKg = d.TotalWeightKg()
+                }).ToList(),
+                AnchorIndex = 0,
+                Minutes = minutes,
+                Km = km,
+                EarliestDepartureUtc = earliestDeparture,
+                LatestDepartureUtc = latestDeparture,
+                AvailableUntilUtc = request.Window.EndUtc,
+                ServiceMinutes = policy.StopServiceMinutes,
+                CapacityKg = capacityKg,
+                EarliestNgoOpen = (from, to) => NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, from, to),
+                // תיקון 9: כל המסלול - מההצעה ועד המסירה בעמותה - לפני כניסת השבת או אחרי צאתה
+                IsArrivalBlocked = arrival => ShabbatClock.Overlaps(request.OfferTimeUtc, arrival, policy)
+            });
+
+            if (result == null)
+            {
+                _logger.LogDebug("Planner: no feasible route for volunteer {VolunteerId}, anchor {DonationId}, NGO {NgoId}.",
+                    request.Volunteer.Id, request.Anchor.Id, ngo.Id);
+                return null;
             }
 
-            if (optimizedRoute == null || optimizedRoute.Count == 0)
-                return null;
-
-            if (anchorDonationId.HasValue && !optimizedRoute.Any(s => s.DonationId == anchorDonationId.Value))
-                return null;
-
-            // כל תחנה במסלול: לפני זמן האיסוף האחרון של התרומה שלה
-            var routeDonations = new List<Donation>(optimizedRoute.Count);
-            foreach (var stop in optimizedRoute)
+            var routeStops = new List<PickupStop>(result.Order.Count);
+            int from = 0;
+            for (int k = 0; k < result.Order.Count; k++)
             {
-                var donation = compatibleDonations.FirstOrDefault(d => d.Id == stop.DonationId);
-                if (donation == null || !IsWithinPickupDeadline(stop, donation))
-                    return null;
-                routeDonations.Add(donation);
+                int index = result.Order[k];
+                var donation = stops[index];
+                routeStops.Add(new PickupStop
+                {
+                    DonationId = donation.Id,
+                    Location = points[index + 1],
+                    EstimatedArrival = result.ArrivalsUtc[k],
+                    LegDistanceKm = km[from, index + 1],
+                    LegDurationMinutes = minutes[from, index + 1]
+                });
+                from = index + 1;
             }
-
-            // הקטע האחרון: מהתחנה האחרונה לעמותה
-            var lastStop = optimizedRoute[^1];
-            var ngoLocation = new GeoCoordinate { Latitude = targetNgo.Latitude, Longitude = targetNgo.Longitude };
-            var (ngoLegKm, ngoLegMinutes) = await _routeOptimizationService.EstimateLegAsync(lastStop.Location, ngoLocation);
-            var ngoArrival = lastStop.EstimatedArrival!.Value
-                .AddMinutes(policy.StopServiceMinutes)
-                .AddMinutes(Math.Max(0, ngoLegMinutes));
-
-            // העמותה פתוחה בזמן ההגעה בפועל
-            if (!NgoAvailabilityHelper.IsNgoOpenAt(targetNgo, ngoArrival))
-                return null;
-
-            // המזון מגיע לעמותה לפני שפג תוקפו
-            if (routeDonations.Any(d => ngoArrival > d.ExpirationTime))
-                return null;
-
-            // תיקון 9: כל המסלול - מההצעה, דרך זמן המענה של המתנדב ועד המסירה בעמותה - לפני כניסת השבת או אחרי צאתה
-            if (ShabbatClock.Overlaps(startTimeValue, ngoArrival.AddMinutes(Math.Max(0, policy.ResponseTimeoutMinutes)), policy))
-                return null;
-
-            // המתנדב זמין לכל משך המסלול, באזורי היציאה והיעד שהגדיר
-            if (!VolunteerAvailabilityCoversRoute(volunteer, startTimeValue, ngoArrival, routeDonations, targetNgo))
-                return null;
-
-            double totalKm = optimizedRoute.Sum(s => s.LegDistanceKm ?? 0) + ngoLegKm;
-            double knapsackValue = knapsackItems
-                .Where(i => optimizedRoute.Any(s => s.DonationId == i.Donation.Id))
-                .Sum(i => i.Value);
 
             return new RoutePlan
             {
-                Stops = optimizedRoute,
-                StartLocation = start,
-                StartTime = startTimeValue,
-                NgoArrival = ngoArrival,
-                NgoLegDistanceKm = ngoLegKm,
-                NgoLegDurationMinutes = ngoLegMinutes,
-                TotalDistanceKm = totalKm,
-                TotalDurationMinutes = (ngoArrival - startTimeValue).TotalMinutes,
-                TotalWeightKg = routeDonations.Sum(d => d.TotalWeightKg()),
-                KnapsackValue = knapsackValue
+                Stops = routeStops,
+                StartLocation = request.Start,
+                StartTime = result.DepartureUtc,
+                NgoArrival = result.NgoArrivalUtc,
+                NgoLegDistanceKm = km[from, size - 1],
+                NgoLegDurationMinutes = minutes[from, size - 1],
+                TotalDistanceKm = result.DrivingKm,
+                TotalDurationMinutes = (result.NgoArrivalUtc - result.DepartureUtc).TotalMinutes,
+                TotalWeightKg = result.WeightKg,
+                KnapsackValue = result.Value
             };
         }
+
+        private static RoutePlan WithProvenOptimal(RoutePlan plan) => new()
+        {
+            Stops = plan.Stops,
+            StartLocation = plan.StartLocation,
+            StartTime = plan.StartTime,
+            NgoArrival = plan.NgoArrival,
+            NgoLegDistanceKm = plan.NgoLegDistanceKm,
+            NgoLegDurationMinutes = plan.NgoLegDurationMinutes,
+            TotalDistanceKm = plan.TotalDistanceKm,
+            TotalDurationMinutes = plan.TotalDurationMinutes,
+            TotalWeightKg = plan.TotalWeightKg,
+            KnapsackValue = plan.KnapsackValue,
+            ProvenOptimal = true
+        };
+
+        private static DateTime Max(DateTime a, DateTime b) => a > b ? a : b;
+        private static DateTime Min(DateTime a, DateTime b) => a < b ? a : b;
     }
 }

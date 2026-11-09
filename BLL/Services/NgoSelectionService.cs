@@ -1,5 +1,6 @@
 ﻿using BLL.Algorithms;
 using BLL.Configuration;
+using BLL.Services;
 using DAL.Classes;
 using DAL.Interfaces;
 using Microsoft.Extensions.Logging;
@@ -10,11 +11,22 @@ using System.Threading.Tasks;
 
 namespace BLL.Algorithms
 {
+    /// <summary>
+    /// בחירת העמותה.
+    ///
+    /// תיקון 20: בעבר נבחרה עמותה אחת לפני שנבחר מתנדב, לפי ציון קבוע (+50 לאותו אזור, +30 לפי עומס, פחות ק"מ),
+    /// וזמן ההגעה הוערך כנסיעה ישירה מהתרומה - בלי הדרך של המתנדב אל התרומה. כשהמסלול בפועל הגיע אליה אחרי
+    /// הסגירה, לא נוסתה עמותה אחרת והתרומה הוסלמה למנהל. עכשיו השירות מחזיר את כל העמותות האפשריות
+    /// (RankNgos), והמנוע בונה מסלול לכמה מהן לכל מתנדב ובוחר לפי המסלול האמיתי.
+    ///
+    /// תיקון 21: DailyCapacity הוא בק"ג (כך בטופס ההרשמה של העמותה - "קיבולת יומית (ק"ג)"), אבל הושווה למספר
+    /// השידוכים של היום - כולל הצעות שנדחו / לא נענו. עכשיו: ק"ג, רק שידוכים חיים / שהושלמו, וכמגבלה קשה.
+    /// DailyCapacity של 0 ומטה = ללא הגבלה (נתון חסר לא חוסם עמותה).
+    /// </summary>
     public class NgoSelectionService : INgoSelectionService
     {
         private readonly IMatchRepository _matchRepository;
         private readonly ILogger<NgoSelectionService> _logger;
-
         private readonly IMatchingPolicyProvider _policyProvider;
 
         public NgoSelectionService(IMatchRepository matchRepository, IMatchingPolicyProvider policy, ILogger<NgoSelectionService> logger)
@@ -24,8 +36,65 @@ namespace BLL.Algorithms
             _logger = logger;
         }
 
-        private MatchingPolicyOptions _policy => _policyProvider.Current;
+        public static bool HasCapacityLimit(Ngo ngo) => ngo.DailyCapacity > 0;
 
+        public async Task<Dictionary<int, double>> GetRemainingCapacityKgAsync(IEnumerable<Ngo> ngos, DateTime asOfUtc)
+        {
+            var list = ngos.ToList();
+            var localDay = LocalClock.ToLocal(asOfUtc).Date;
+            var usedKg = await _matchRepository.SumWeightKgByNgoOnDateAsync(
+                list.Select(n => n.Id), LocalClock.ToUtc(localDay), LocalClock.ToUtc(localDay.AddDays(1)));
+
+            var remaining = new Dictionary<int, double>();
+            foreach (var ngo in list.Where(HasCapacityLimit))
+                remaining[ngo.Id] = Math.Max(0, ngo.DailyCapacity - (usedKg.TryGetValue(ngo.Id, out var kg) ? kg : 0));
+
+            // עמותה בלי מגבלה לא מופיעה במילון = ללא הגבלה
+            return remaining;
+        }
+
+        public List<NgoOption> RankNgos(Donation donation, IEnumerable<Ngo> candidateNgos,
+            IReadOnlyDictionary<int, double> remainingKg, DateTime earliestPickupUtc)
+        {
+            if (donation == null) throw new ArgumentNullException(nameof(donation));
+
+            var policy = _policyProvider.Current;
+            double weightKg = donation.TotalWeightKg();
+            var options = new List<NgoOption>();
+
+            foreach (var ngo in candidateNgos ?? Enumerable.Empty<Ngo>())
+            {
+                double remaining = remainingKg != null && remainingKg.TryGetValue(ngo.Id, out var left) ? left : double.PositiveInfinity;
+                if (remaining + 1e-9 < weightKg)
+                {
+                    _logger.LogDebug("NGO {NgoId} has {Remaining:0.#} kg left today - not enough for donation {DonationId} ({Weight:0.#} kg).", ngo.Id, remaining, donation.Id, weightKg);
+                    continue;
+                }
+
+                // תנאי הכרחי בלבד (חסם תחתון לנסיעה): העמותה פתוחה מתישהו בין ההגעה המוקדמת האפשרית לבין התפוגה.
+                // הבדיקה המדויקת - במסלול עצמו (RoutePlanner).
+                double distanceKm = GeoUtils.HaversineKm(donation.Latitude, donation.Longitude, ngo.Latitude, ngo.Longitude);
+                var earliestArrival = earliestPickupUtc.AddMinutes(GeoUtils.LowerBoundDriveMinutes(distanceKm, policy.MaxRoadSpeedKmH));
+                var openArrival = NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, earliestArrival, donation.ExpirationTime);
+                if (!openArrival.HasValue)
+                {
+                    _logger.LogDebug("NGO {NgoId} is closed from the earliest possible arrival until donation {DonationId} expires.", ngo.Id, donation.Id);
+                    continue;
+                }
+
+                options.Add(new NgoOption(ngo, distanceKm, openArrival.Value, remaining));
+            }
+
+            // הכי מוקדם בשעות הקבלה, ואז הכי קרוב, ואז מי שנשאר לה יותר מקום (פיזור העומס בין העמותות)
+            return options
+                .OrderBy(o => o.EarliestArrivalUtc)
+                .ThenBy(o => o.DistanceKm)
+                .ThenByDescending(o => o.RemainingKg)
+                .ThenBy(o => o.Ngo.Id)
+                .ToList();
+        }
+
+        // תאימות: העמותה הראשונה בדירוג (המנוע עצמו בונה מסלולים לכמה עמותות ובוחר לפי המסלול)
         public async Task<(Ngo Ngo, double DistanceKm, DateTime EstimatedArrival)?> SelectBestNgoAsync(
             Donation donation, IEnumerable<Ngo> candidateNgos, DateTime pickupDateTime)
         {
@@ -36,93 +105,17 @@ namespace BLL.Algorithms
                 return null;
             }
 
-            var ids = ngos.Select(n => n.Id).ToList();
-            var localDay = LocalClock.ToLocal(pickupDateTime).Date;
-
-            // כמה שידוכים כבר יש לכל עמותה היום (היום המקומי) - לחישוב העומס שלה
-            var loadByNgoId = await _matchRepository.CountByNgoOnDateAsync(
-                ids, LocalClock.ToUtc(localDay), LocalClock.ToUtc(localDay.AddDays(1)));
-
-            Ngo? best = null;
-            double bestScore = double.MinValue, bestDistance = double.MaxValue;
-            DateTime bestArrival = pickupDateTime;
-
-            foreach (var ngo in ngos)
-            {
-                double distanceKm = GeoUtils.HaversineKm(
-                    donation.Latitude, donation.Longitude, ngo.Latitude, ngo.Longitude);
-                var travelMinutes = GeoUtils.EstimateDriveMinutes(
-                    distanceKm, _policy.AverageSpeedKmH, _policy.RoadDetourFactor);
-                var travel = TimeSpan.FromMinutes(travelMinutes);
-
-                // חישוב טווח ההגעות האפשרי בדומה ל-CanNgoReceiveDonation
-                var earliestPickup = pickupDateTime > donation.CreatedAt ? pickupDateTime : donation.CreatedAt;
-                var latestPickup = NgoAvailabilityHelper.GetPickupDateTime(donation);
-
-                if (earliestPickup > latestPickup)
-                {
-                    continue;
-                }
-
-                var earliestArrival = earliestPickup + travel;
-                var latestArrival = latestPickup + travel;
-
-                if (latestArrival > donation.ExpirationTime)
-                {
-                    latestArrival = donation.ExpirationTime;
-                }
-
-                // שימוש ב-Logger כדי שהפלט יופיע בדיוק כמו שאר הלוגים שלך
-                var localEarliestArrival = LocalClock.ToLocal(earliestArrival);
-                var localLatestArrival = LocalClock.ToLocal(latestArrival);
-                _logger.LogDebug("NgoSelectionService [Window]: Donation {DonationId} -> NGO {NgoId} | Local Earliest: {LocalEarliest} | Local Latest: {LocalLatest}",
-                    donation.Id, ngo.Id, localEarliestArrival, localLatestArrival);
-
-                if (earliestArrival > latestArrival)
-                {
-                    _logger.LogDebug("NgoSelectionService: NGO {NgoId} rejected for donation {DonationId} because arrival window is invalid.", ngo.Id, donation.Id);
-                    continue;
-                }
-
-                // מציאת הרגע המוקדם ביותר בטווח שבו העמותה פתוחה בפועל
-                var validArrival = NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, earliestArrival, latestArrival);
-                if (!validArrival.HasValue)
-                {
-                    _logger.LogDebug("NgoSelectionService: NGO {NgoId} rejected for donation {DonationId} because NGO is closed during the arrival window.", ngo.Id, donation.Id);
-                    continue;
-                }
-
-                DateTime arrival = validArrival.Value;
-
-                double score = 0;
-                if (ngo.RegionId == donation.RegionId) score += 50.0;
-
-                int load = loadByNgoId.TryGetValue(ngo.Id, out var c) ? c : 0;
-                double capacityRatio = ngo.DailyCapacity > 0
-                    ? Math.Clamp((double)(ngo.DailyCapacity - load) / ngo.DailyCapacity, 0, 1)
-                    : 0;
-                score += capacityRatio * 30.0;
-                score -= distanceKm;
-
-                _logger.LogDebug("NgoSelectionService: NGO {NgoId} evaluated for donation {DonationId}: score={Score}, distance={Distance}km, load={Load}/{Capacity}", ngo.Id, donation.Id, score, distanceKm, load, ngo.DailyCapacity);
-
-                if (score > bestScore)
-                {
-                    bestScore = score;
-                    best = ngo;
-                    bestDistance = distanceKm;
-                    bestArrival = arrival;
-                }
-            }
+            var earliestPickup = pickupDateTime > donation.CreatedAt ? pickupDateTime : donation.CreatedAt;
+            var remaining = await GetRemainingCapacityKgAsync(ngos, pickupDateTime);
+            var best = RankNgos(donation, ngos, remaining, earliestPickup).FirstOrDefault();
 
             if (best == null)
             {
-                _logger.LogInformation("NgoSelectionService: No suitable NGO found after checking all candidates for donation {DonationId}.", donation.Id);
+                _logger.LogInformation("NgoSelectionService: No suitable NGO found for donation {DonationId}.", donation.Id);
                 return null;
             }
 
-            _logger.LogInformation("NgoSelectionService: Best NGO selected for donation {DonationId} is NGO {NgoId} with score {Score}.", donation.Id, best.Id, bestScore);
-            return (best, bestDistance, bestArrival);
+            return (best.Ngo, best.DistanceKm, best.EarliestArrivalUtc);
         }
     }
 }

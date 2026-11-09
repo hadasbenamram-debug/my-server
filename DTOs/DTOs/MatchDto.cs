@@ -54,6 +54,10 @@ namespace FoodRescue.DTOs
         public TimeSpan LatestPickupTime { get; set; }
         public double WeightKg { get; set; }
         public List<DonationCategoryLineDto> Items { get; set; } = new();
+
+        // מתי נאסף מהספק ומתי נמסר לעמותה (למעקב החי)
+        public DateTime? PickedUpAt { get; set; }
+        public DateTime? DeliveredAt { get; set; }
     }
 
     // מסלול שלם של מתנדב: כמה תורמים -> עמותה אחת
@@ -77,8 +81,15 @@ namespace FoodRescue.DTOs
         public double NgoLatitude { get; set; }
         public double NgoLongitude { get; set; }
         public DateTime? EstimatedNgoArrival { get; set; }
+
+        // המיקום של המתנדב - רק בזמן שהמסלול בביצוע (InProgress). לפני היציאה לדרך ואחרי הסיום: null
         public double? VolunteerLatitude { get; set; }
         public double? VolunteerLongitude { get; set; }
+
+        // מתי המתנדב יצא לדרך ומתי המסלול הסתיים
+        public DateTime? StartedAt { get; set; }
+        public DateTime? CompletedAt { get; set; }
+
         public List<RouteStopDto> Stops { get; set; } = new();
     }
 

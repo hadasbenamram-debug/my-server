@@ -14,13 +14,20 @@ namespace BLL.Notifications
         public const string Admins = "admins";
         public static string User(int userId) => $"user:{userId}";
         public static string Route(int routeId) => $"route:{routeId}";
+
+        // מנהלים שצופים במפה החיה של כל המסלולים (WatchAllRoutes) - מקבלים את היומן של כל המסלולים.
+        // קבוצה נפרדת מ-Admins: עדכוני מיקום נשלחים רק למי שהמפה פתוחה אצלו, לא לכל מנהל מחובר.
+        public const string LiveMap = "live-map";
     }
 
     public static class RealtimeEvents
     {
         public const string Notification = "ReceiveNotification";
         public const string MatchStatusChanged = "MatchStatusChanged";
-        public const string VolunteerLocation = "VolunteerLocation";
+
+        // רישום חדש ביומן המשלוח (DeliveryLogResponseDto): עדכון מיקום של המתנדב או שלב במסלול.
+        // נשלח לקבוצת המסלול (route:{id}) - כך העמותה רואה את המתנדב זז על המפה בזמן אמת.
+        public const string DeliveryLogAdded = "DeliveryLogAdded";
     }
 
     // כשאין SignalR (בדיקות / ג'וב ברקע בלי Hub) - לא עושה כלום

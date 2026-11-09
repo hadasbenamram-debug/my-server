@@ -273,6 +273,17 @@ namespace BLL.Services
             return route == null ? null : ToRouteDto(route);
         }
 
+        // המפה החיה של המנהל: כל המסלולים שמתנדבים נמצאים בהם עכשיו בדרך
+        public async Task<List<RouteDto>> GetLiveRoutesAsync(CurrentUserDto currentUser)
+        {
+            var caller = await _caller.GetAsync(currentUser);
+            if (!caller.IsAdmin)
+                throw new ForbiddenException("רק מנהל יכול לצפות בכל המסלולים.");
+
+            var routes = await _routeRepository.GetInProgressWithDetailsAsync();
+            return routes.Select(r => ToRouteDto(r)).ToList();
+        }
+
         // =========================================================
         // קישור מהמייל
         // =========================================================
@@ -373,6 +384,9 @@ namespace BLL.Services
             var awaiting = shown.Where(m => m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation).ToList();
             var deadline = awaiting.Select(m => m.ResponseDeadline).Where(d => d.HasValue).Min();
 
+            // המיקום של המתנדב נחשף לעמותה ולספקים רק בזמן שהוא בדרך (InProgress) - לא לפני היציאה ולא אחרי הסיום
+            bool shareLocation = route.Status == RouteStatus.InProgress && route.Volunteer?.LocationUpdatedAt != null;
+
             return new RouteDto
             {
                 Id = route.Id,
@@ -395,8 +409,10 @@ namespace BLL.Services
                 NgoLatitude = ngo?.Latitude ?? 0,
                 NgoLongitude = ngo?.Longitude ?? 0,
                 EstimatedNgoArrival = route.ScheduledAt.AddMinutes(route.EstimatedTotalDurationMinutes ?? 0),
-                VolunteerLatitude = route.Volunteer?.LocationUpdatedAt != null ? route.Volunteer.CurrentLatitude : null,
-                VolunteerLongitude = route.Volunteer?.LocationUpdatedAt != null ? route.Volunteer.CurrentLongitude : null,
+                VolunteerLatitude = shareLocation ? route.Volunteer!.CurrentLatitude : null,
+                VolunteerLongitude = shareLocation ? route.Volunteer!.CurrentLongitude : null,
+                StartedAt = route.StartedAt,
+                CompletedAt = route.CompletedAt,
                 Stops = shown.Select((m, i) => ToStop(m, i + 1)).ToList()
             };
         }
@@ -414,6 +430,8 @@ namespace BLL.Services
             EstimatedArrival = m.EstimatedArrival,
             LatestPickupTime = m.Donation?.LatestPickupTime ?? TimeSpan.Zero,
             WeightKg = m.Donation?.TotalWeightKg() ?? 0,
+            PickedUpAt = m.PickedUpAt,
+            DeliveredAt = m.DeliveredAt,
             Items = (m.Donation?.DonationFoodCategories ?? new List<DonationFoodCategory>())
                 .Select(c => new DonationCategoryLineDto
                 {

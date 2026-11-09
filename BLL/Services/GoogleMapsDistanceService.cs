@@ -137,6 +137,7 @@ namespace BLL.Integrations.GoogleMaps
     {
         private static readonly TimeSpan EstimateTtl = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan BreakerDuration = TimeSpan.FromMinutes(2);
+        private const double SamePointKm = 0.02;   // 20 מטר
 
         private readonly IGoogleRoutesClient _client;
         private readonly RouteLegCache _cache;
@@ -152,6 +153,11 @@ namespace BLL.Integrations.GoogleMaps
         public async Task<(double DistanceKm, double DurationMinutes)> GetDrivingDistanceAsync(
             double originLat, double originLng, double destLat, double destLng)
         {
+            // תיקון 23: אותה נקודה (למשל שתי תרומות מאותו ספק, או מתנדב שעומד ליד הספק) - אין נסיעה.
+            // Google מחזיר לזה 0 מטר, מה שנחשב "תקלה" והשבית את Google לשתי דקות לכל המנוע.
+            if (GeoUtils.HaversineKm(originLat, originLng, destLat, destLng) < SamePointKm)
+                return (0, 0);
+
             var policy = _policy.Current;
             var key = RouteLegCache.Key(originLat, originLng, destLat, destLng);
 

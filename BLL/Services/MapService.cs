@@ -3,6 +3,8 @@ using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
 using DAL.Interfaces;
 using FoodRescue.DTOs;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,8 +14,15 @@ namespace BLL.Services
 {
     // כל הישויות (ספקים, עמותות ומתנדבים) לתמונת המצב המרחבית, ותמונות המפה עצמן.
     // התמונות מגיעות מ-Google דרך השרת (IStaticMapService), כך שהמפתח של Google לא מגיע ללקוח.
+    //
+    // שני מפתחות נפרדים:
+    //  - GoogleMaps:ApiKey        - מפתח השרת (Routes, Geocoding, Static Maps). לא יוצא מהשרת אף פעם.
+    //  - GoogleMaps:BrowserApiKey - מפתח הדפדפן למפה האינטראקטיבית (Maps JavaScript API בלבד),
+    //                                מוגבל ב-Google Cloud לכתובות האתר. נשלח רק למשתמש מחובר.
     public class MapService : IMapService
     {
+        private const string DefaultMapId = "DEMO_MAP_ID";
+
         // אותם צבעים כמו במקרא שבלקוח (MAP_COLORS ב-GoogleMapView.tsx)
         private const string SupplierColor = "e08a1e";
         private const string NgoColor = "159aa0";
@@ -26,6 +35,8 @@ namespace BLL.Services
         private readonly IMatchService _matchService;
         private readonly IStaticMapService _staticMap;
         private readonly IMapper _mapper;
+        private readonly IConfiguration _configuration;
+        private readonly ILogger<MapService> _logger;
 
         public MapService(
             ISupplierRepository supplierRepository,
@@ -33,7 +44,9 @@ namespace BLL.Services
             IVolunteerRepository volunteerRepository,
             IMatchService matchService,
             IStaticMapService staticMap,
-            IMapper mapper)
+            IMapper mapper,
+            IConfiguration configuration,
+            ILogger<MapService> logger)
         {
             _supplierRepository = supplierRepository;
             _ngoRepository = ngoRepository;
@@ -41,6 +54,35 @@ namespace BLL.Services
             _matchService = matchService;
             _staticMap = staticMap;
             _mapper = mapper;
+            _configuration = configuration;
+            _logger = logger;
+        }
+
+        public BrowserMapConfigDto GetBrowserConfig()
+        {
+            var browserKey = _configuration["GoogleMaps:BrowserApiKey"]?.Trim();
+            var serverKey = _configuration["GoogleMaps:ApiKey"]?.Trim();
+            var mapId = _configuration["GoogleMaps:MapId"]?.Trim();
+
+            var config = new BrowserMapConfigDto
+            {
+                MapId = string.IsNullOrEmpty(mapId) ? DefaultMapId : mapId
+            };
+
+            if (string.IsNullOrEmpty(browserKey))
+                return config;   // אין מפתח דפדפן - הלקוח מציג את תמונת המפה מהשרת
+
+            // מפתח השרת לא נשלח לדפדפן בשום מצב, גם אם הוגדר בטעות גם כמפתח הדפדפן
+            if (string.Equals(browserKey, serverKey, StringComparison.Ordinal))
+            {
+                _logger.LogError("GoogleMaps:BrowserApiKey is the same as GoogleMaps:ApiKey. The server key is never sent to the browser - " +
+                                 "create a separate key restricted to the Maps JavaScript API and to the site's addresses.");
+                return config;
+            }
+
+            config.Enabled = true;
+            config.ApiKey = browserKey;
+            return config;
         }
 
         public async Task<List<MapEntityDto>> GetAllEntitiesAsync()

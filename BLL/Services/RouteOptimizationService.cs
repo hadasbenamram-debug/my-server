@@ -26,9 +26,11 @@ namespace BLL.Algorithms
     }
 
     /// <summary>
-    /// אלגוריתם Nearest-Neighbor לבניית מסלול איסוף.
-    /// בחירת התחנה הבאה וחישוב הזמן מבוססים על אותה פונקציית מרחק, כולל זמן שירות בכל תחנה
-    /// (StopServiceMinutes) ומקדם עקיפת-כביש כשאין נתון מ-Google.
+    /// זמני נסיעה לקטעים (EstimateLegAsync - Google עם מטמון, ואם אין - הערכה), ומסלול Nearest-Neighbor.
+    ///
+    /// תיקון 23: מנוע השיבוץ כבר לא בונה מסלולים ב-Nearest-Neighbor (חמדני: הולך לתחנה הקרובה גם כשזה מאחר
+    /// לתחנה דחופה, ומתעלם מהקטע האחרון לעמותה). הסדר נקבע עכשיו ב-RoutePlanner (DP מדויק) מתוך זמני הקטעים
+    /// של EstimateLegAsync. OptimizeRoute / OptimizeRouteWithGoogleMapsAsync נשארו לתאימות בלבד.
     /// </summary>
     public class RouteOptimizationService : IRouteOptimizationService
     {

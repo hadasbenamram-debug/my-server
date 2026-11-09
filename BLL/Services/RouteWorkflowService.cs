@@ -22,6 +22,8 @@ namespace BLL.Services
     /// תוקנו כאן: אישור ודחייה ברמת המסלול (בעבר כל תחנה בנפרד), דחייה והשלמה שלא עדכנו את התרומה
     /// (match.Donation לא נטען) ולא כיבו את IsActive, והסטטוסים PickedUp/InPickup/InTransit/NoShow/Completed
     /// שלא נקבעו אף פעם.
+    ///
+    /// כל שלב שהצליח נרשם גם ביומן המשלוח (DeliveryLogs) ונשלח בזמן אמת למי שצופה במסלול (DeliveryTracker).
     /// </summary>
     public class RouteWorkflowService
     {
@@ -39,6 +41,7 @@ namespace BLL.Services
         private readonly IBackgroundJobClient _jobs;
         private readonly VolunteerReliabilityService _reliability;
         private readonly ILogger<RouteWorkflowService> _logger;
+        private readonly DeliveryTracker _tracker;
 
         public RouteWorkflowService(
             IMatchRepository matchRepository,
@@ -49,7 +52,8 @@ namespace BLL.Services
             IUnitOfWork unitOfWork,
             IBackgroundJobClient jobs,
             VolunteerReliabilityService reliability,
-            ILogger<RouteWorkflowService> logger)
+            ILogger<RouteWorkflowService> logger,
+            DeliveryTracker tracker)
         {
             _matchRepository = matchRepository;
             _routeRepository = routeRepository;
@@ -60,6 +64,7 @@ namespace BLL.Services
             _jobs = jobs;
             _reliability = reliability;
             _logger = logger;
+            _tracker = tracker;
         }
 
         public static bool IsActiveStatus(MatchStatus status) => ActiveStatuses.Contains(status);
@@ -133,6 +138,7 @@ namespace BLL.Services
             if (!saved)
                 return RouteResponseResult.NotAwaiting;
 
+            await _tracker.RecordEventAsync(match.VolunteerRouteId, DeliveryLogType.Accepted, "המתנדב אישר את המסלול");
             await NotifyParticipantsAsync(group, "המתנדב אישר את המסלול", $"המתנדב יגיע לאיסוף בסביבות {EtaText(group)}.");
             await PublishStatusAsync(group);
             return RouteResponseResult.Done;
@@ -228,6 +234,8 @@ namespace BLL.Services
             });
             EnsureSaved(saved);
 
+            // בלי מיקום: נקודת היציאה של המתנדב (למשל הבית שלו) לא נחשפת. המעקב מתחיל מעדכון המיקום הבא.
+            await _tracker.RecordEventAsync(routeId, DeliveryLogType.RouteStarted, "המתנדב יצא לדרך");
             await NotifyParticipantsAsync(matches, "המתנדב יצא לדרך", "אפשר לעקוב אחרי המיקום שלו בזמן אמת.");
             await PublishStatusAsync(matches);
             return matches;
@@ -264,6 +272,10 @@ namespace BLL.Services
             });
             EnsureSaved(saved);
 
+            var supplierName = match.Donation?.Supplier?.BusinessName;
+            await _tracker.RecordEventAsync(match.VolunteerRouteId, DeliveryLogType.PickedUp,
+                $"תרומה #{match.DonationId} נאספה" + (string.IsNullOrWhiteSpace(supplierName) ? "" : $" מ{supplierName}"),
+                match.Id, match.Volunteer);
             await NotifyParticipantsAsync(new[] { match }, $"תרומה #{match.DonationId} נאספה", "המתנדב בדרך לעמותה.");
             await PublishStatusAsync(new[] { match });
         }
@@ -292,6 +304,10 @@ namespace BLL.Services
                 await CloseRouteIfDoneAsync(match, group, releaseVolunteer: true);
             });
             EnsureSaved(saved);
+
+            await _tracker.RecordEventAsync(match.VolunteerRouteId, DeliveryLogType.Delivered,
+                $"תרומה #{match.DonationId} נמסרה" + (match.Ngo == null ? " לעמותה" : $" ל{match.Ngo.NgoName}"),
+                match.Id, match.Volunteer);
 
             if (match.Ngo != null)
             {
@@ -345,6 +361,9 @@ namespace BLL.Services
             });
             EnsureSaved(saved);
 
+            await _tracker.RecordEventAsync(match.VolunteerRouteId, DeliveryLogType.ReceiptConfirmed,
+                $"העמותה אישרה את קבלת תרומה #{donation.Id}", match.Id);
+
             if (donation.Supplier != null)
                 await _notifications.NotifyUserAsync(donation.Supplier.UserId, $"העמותה אישרה את קבלת תרומה #{donation.Id}", "תודה על התרומה!", type: "success");
 
@@ -386,6 +405,9 @@ namespace BLL.Services
                 await CloseRouteIfDoneAsync(group[0], all, releaseVolunteer: true);
             });
             EnsureSaved(saved);
+
+            await _tracker.RecordEventAsync(group[0].VolunteerRouteId, DeliveryLogType.Cancelled,
+                "המתנדב לא הגיע לאיסוף" + (automatic ? " (זוהה אוטומטית)" : "") + ". התרומות הועברו לשיבוץ מחדש.");
 
             // ציון האמינות יורד (MatchingPolicy:NoShowReliabilityPenalty)
             await _reliability.RecalculateAsync(volunteerId);
@@ -500,14 +522,18 @@ namespace BLL.Services
             }
         }
 
+        // ההתראה לספקים ולעמותה מקשרת למסך המעקב החי של המסלול
         private async Task NotifyParticipantsAsync(IEnumerable<Match> matches, string subject, string? content)
         {
             var list = matches.ToList();
             var supplierUsers = list.Where(m => m.Donation?.Supplier != null).Select(m => m.Donation.Supplier.UserId).Distinct();
             var ngoUsers = list.Where(m => m.Ngo != null).Select(m => m.Ngo.UserId).Distinct();
 
+            var routeIds = list.Select(m => m.VolunteerRouteId).Distinct().ToList();
+            var link = routeIds.Count == 1 && routeIds[0].HasValue ? FrontendLinks.TrackingPath(routeIds[0]!.Value) : null;
+
             foreach (var userId in supplierUsers.Concat(ngoUsers).Distinct())
-                await _notifications.NotifyUserAsync(userId, subject, content, type: "info");
+                await _notifications.NotifyUserAsync(userId, subject, content, link, type: "info");
         }
 
         private async Task PublishStatusAsync(IEnumerable<Match> matches)

@@ -10,7 +10,8 @@ namespace FoodRescue.Hubs
 {
     // ערוץ הזמן-אמת של המערכת (בעבר המחלקה הייתה ריקה ולא נשלח דרכה כלום).
     // קבוצות: user:{id} - התראות אישיות; admins - כל המנהלים; route:{id} - מי שצופה במסלול (מיקום מתנדב / סטטוס).
-    // אירועים שהשרת שולח: ReceiveNotification, MatchStatusChanged, VolunteerLocation.
+    // אירועים שהשרת שולח: ReceiveNotification, MatchStatusChanged,
+    // DeliveryLogAdded - רישום חדש ביומן המשלוח של המסלול (עדכון מיקום / איסוף / מסירה...) למעקב החי.
     [Authorize]
     public class NotificationHub : Hub
     {
@@ -40,7 +41,7 @@ namespace FoodRescue.Hubs
             await base.OnConnectedAsync();
         }
 
-        // מתנדב משתף מיקום חי (נשמר ונשלח לצופים במסלול הפעיל שלו)
+        // מתנדב משתף מיקום חי. בזמן ביצוע מסלול הוא נרשם ביומן המשלוח ונשלח לצופים במסלול.
         public async Task UpdateLocation(double latitude, double longitude)
         {
             var userId = Context.User?.GetUserId() ?? throw new HubException("לא מחובר.");
@@ -63,6 +64,19 @@ namespace FoodRescue.Hubs
 
         public Task UnwatchRoute(int routeId) =>
             Groups.RemoveFromGroupAsync(Context.ConnectionId, RealtimeGroups.Route(routeId));
+
+        // המפה החיה של כל המסלולים - מנהל בלבד. מכאן מגיע כל רישום ביומן של כל מסלול (DeliveryLogAdded).
+        // התפקיד נבדק מה-JWT, שהתפקיד בו מתעדכן מהמסד בכל התחברות (SecurityStampValidator).
+        public async Task WatchAllRoutes()
+        {
+            if (Context.User?.IsInRole("Admin") != true)
+                throw new HubException("רק מנהל יכול לצפות בכל המסלולים.");
+
+            await Groups.AddToGroupAsync(Context.ConnectionId, RealtimeGroups.LiveMap);
+        }
+
+        public Task UnwatchAllRoutes() =>
+            Groups.RemoveFromGroupAsync(Context.ConnectionId, RealtimeGroups.LiveMap);
     }
 
     // המימוש של IRealtimeNotifier (מוגדר ב-BLL) מעל SignalR

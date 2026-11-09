@@ -466,6 +466,7 @@ namespace BLL.Services
             dto.VolunteerId = match.VolunteerId;
             dto.VolunteerName = match.Volunteer?.User?.Name;
             dto.EstimatedArrival = match.EstimatedArrival;
+            dto.VolunteerRouteId = match.VolunteerRouteId;
             return dto;
         }
     }

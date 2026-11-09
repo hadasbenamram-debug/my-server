@@ -9,6 +9,9 @@ using System.Linq;
 
 namespace BLL.Algorithms
 {
+    /// <summary>מתנדב + חלון זמינות אחד שלו שמתאים לתרומה (אזור המוצא ואזור העמותה).</summary>
+    public sealed record VolunteerAvailability(Volunteer Volunteer, AvailabilityWindow Window);
+
     public class RegionAvailabilityMatchingService
     {
         private readonly IMatchingPolicyProvider _policyProvider;
@@ -22,99 +25,87 @@ namespace BLL.Algorithms
             _policyProvider = policy ?? new StaticMatchingPolicyProvider();
         }
 
+        /// <summary>
+        /// תאימות: מתנדבים שזמינים <b>עכשיו</b> (asOf) לנסיעה מאזור התרומה לעמותה הנתונה.
+        /// </summary>
         public List<Volunteer> FindCandidates(
             Donation donation,
             Ngo targetNgo,
             IEnumerable<Volunteer> allVolunteers,
             DateTime asOf)
         {
-            if (donation == null) throw new ArgumentNullException(nameof(donation));
             if (targetNgo == null) throw new ArgumentNullException(nameof(targetNgo));
+
+            return FindAvailability(donation, new[] { targetNgo }, allVolunteers, asOf, asOf, asOf)
+                .Select(a => a.Volunteer)
+                .Distinct()
+                .ToList();
+        }
+
+        /// <summary>
+        /// תיקון 24: כל חלונות הזמינות שמתחילים עד windowToUtc ומסתיימים אחרי windowFromUtc - לא רק "זמין עכשיו".
+        /// כך משמרת שמתחילה בעוד חצי שעה נכנסת לתכנון (לפי מערכת השעות של המתנדב), במקום להחמיץ אותה בין שתי ריצות.
+        ///
+        /// החלון מתאים אם המשבצת משרתת נסיעה מאזור התרומה לאזור של לפחות אחת מהעמותות האפשריות.
+        ///
+        /// תיקון 29: מתנדב עם GPS עדכני נפסל כאן רק אם גם בחסם התחתון (קו אווירי במהירות המקסימלית) הוא לא מגיע
+        /// עד מועד האיסוף. בעבר נעשה שימוש בהערכה "ממוצעת" (40 קמ"ש x 1.3) שפסלה מתנדבים שבפועל, בכביש מהיר,
+        /// מגיעים בזמן - עוד לפני ש-Google נשאל. ההחלטה המדויקת מתקבלת בבניית המסלול.
+        /// </summary>
+        public List<VolunteerAvailability> FindAvailability(
+            Donation donation,
+            IReadOnlyCollection<Ngo> candidateNgos,
+            IEnumerable<Volunteer> allVolunteers,
+            DateTime asOfUtc,
+            DateTime windowFromUtc,
+            DateTime windowToUtc)
+        {
+            if (donation == null) throw new ArgumentNullException(nameof(donation));
+            if (candidateNgos == null) throw new ArgumentNullException(nameof(candidateNgos));
             if (allVolunteers == null) throw new ArgumentNullException(nameof(allVolunteers));
 
-            var _policy = _policyProvider.Current;
-            var localAsOf = LocalClock.ToLocal(asOf);
-            var currentDay = localAsOf.DayOfWeek;
-            var currentTime = localAsOf.TimeOfDay;
+            var policy = _policyProvider.Current;
             var donationRegions = new[] { donation.RegionId };
-
-            var pickupDateTime = NgoAvailabilityHelper.GetPickupDateTime(donation);
-
-            _logger.LogDebug("[MatchingDebug] === Starting FindCandidates for DonationId={DonationId}, NgoId={NgoId} ===", donation.Id, targetNgo.Id);
-            _logger.LogDebug("[MatchingDebug] LocalAsOf={LocalAsOf} | Day={Day} | Time={Time} | DonationRegion={DonationRegion} | NgoRegion={NgoRegion}", localAsOf, currentDay, currentTime, donation.RegionId, targetNgo.RegionId);
-
-            var filtered = new List<Volunteer>();
+            var ngoRegions = candidateNgos.Select(n => n.RegionId).Distinct().ToList();
+            var pickupDeadline = NgoAvailabilityHelper.GetPickupDateTime(donation);
+            var result = new List<VolunteerAvailability>();
 
             foreach (var v in allVolunteers)
             {
-                _logger.LogDebug("[MatchingDebug] Checking Volunteer ID={VolunteerId} | IsAvailable={IsAvailable} | SlotsCount={SlotsCount}", v.Id, v.IsAvailable, v.AvailabilitySlots?.Count ?? 0);
-
-                if (!v.IsAvailable)
-                {
-                    _logger.LogDebug("[MatchingDebug]   -> Skipped: Volunteer is not available (IsAvailable = false).");
+                if (!v.IsAvailable || v.AvailabilitySlots == null || v.AvailabilitySlots.Count == 0)
                     continue;
-                }
 
-                if (v.AvailabilitySlots == null || !v.AvailabilitySlots.Any())
+                bool hasFreshGps = (v.CurrentLatitude != 0 || v.CurrentLongitude != 0) &&
+                                   v.LocationUpdatedAt.HasValue &&
+                                   (asOfUtc - v.LocationUpdatedAt.Value).TotalMinutes <= policy.MaxLocationAgeMinutes;
+
+                double lowerBoundMinutes = hasFreshGps
+                    ? GeoUtils.LowerBoundDriveMinutes(
+                        GeoUtils.HaversineKm(v.CurrentLatitude, v.CurrentLongitude, donation.Latitude, donation.Longitude),
+                        policy.MaxRoadSpeedKmH)
+                    : 0;
+
+                foreach (var window in AvailabilityHelper.GetWindows(v, windowFromUtc, windowToUtc))
                 {
-                    _logger.LogDebug("[MatchingDebug]   -> Skipped: Volunteer has no availability slots.");
-                    continue;
-                }
+                    if (!ngoRegions.Any(r => AvailabilityHelper.SlotServesRoute(window.Slot, donationRegions, r)))
+                        continue;
 
-                bool matchedSlot = false;
-                foreach (var slot in v.AvailabilitySlots)
-                {
-                    bool dayMatch = slot.Day == currentDay;
-                    bool timeMatch = AvailabilityHelper.IsWithinTimeWindow(slot, currentTime);
-                    bool routeMatch = AvailabilityHelper.SlotServesRoute(slot, donationRegions, targetNgo.RegionId);
+                    var departure = window.StartUtc > windowFromUtc ? window.StartUtc : windowFromUtc;
+                    if (departure > window.EndUtc)
+                        continue;
 
-                    _logger.LogDebug("[MatchingDebug]     Slot ID={SlotId}: Day={SlotDay} (Match:{DayMatch}), Time={StartTime}-{EndTime} (Match:{TimeMatch}), Region={RegionId}, ToRegion={ToRegionId} (RouteMatch:{RouteMatch})",
-                        slot.Id, slot.Day, dayMatch, slot.StartTime, slot.EndTime, timeMatch, slot.RegionId, slot.ToRegionId, routeMatch);
-
-                    if (dayMatch && timeMatch && routeMatch)
+                    if (departure.AddMinutes(lowerBoundMinutes) > pickupDeadline)
                     {
-                        matchedSlot = true;
-                        break;
+                        _logger.LogDebug("Volunteer {VolunteerId} cannot reach donation {DonationId} before its pickup deadline even on the fastest road.", v.Id, donation.Id);
+                        continue;
                     }
-                }
 
-                if (!matchedSlot)
-                {
-                    _logger.LogDebug("[MatchingDebug]   -> Skipped: No matching slot found for current day, time, and route.");
-                    continue;
-                }
-
-                bool hasValidLocation = (v.CurrentLatitude != 0 || v.CurrentLongitude != 0) &&
-                                        v.LocationUpdatedAt.HasValue &&
-                                        (asOf - v.LocationUpdatedAt.Value).TotalMinutes <= _policy.MaxLocationAgeMinutes;
-
-                if (hasValidLocation)
-                {
-                    var distanceKm = GeoUtils.HaversineKm(v.CurrentLatitude, v.CurrentLongitude, donation.Latitude, donation.Longitude);
-                    var travelMinutes = GeoUtils.EstimateDriveMinutes(distanceKm, _policy.AverageSpeedKmH, _policy.RoadDetourFactor);
-                    var estimatedArrival = asOf.AddMinutes(travelMinutes);
-
-                    _logger.LogDebug("[MatchingDebug]   -> Has valid GPS. Distance={Distance}km, TravelMinutes={Minutes}, EstimatedArrival={Arrival}, PickupDeadline={Deadline}", distanceKm, travelMinutes, estimatedArrival, pickupDateTime);
-
-                    if (estimatedArrival <= pickupDateTime)
-                    {
-                        filtered.Add(v);
-                        _logger.LogDebug("[MatchingDebug]   -> APPROVED (GPS check passed).");
-                    }
-                    else
-                    {
-                        _logger.LogDebug("[MatchingDebug]   -> Skipped: Estimated arrival is too late.");
-                    }
-                }
-                else
-                {
-                    filtered.Add(v);
-                    _logger.LogDebug("[MatchingDebug]   -> APPROVED (No GPS / Fallback mode used).");
+                    result.Add(new VolunteerAvailability(v, window));
                 }
             }
 
-            _logger.LogDebug("[MatchingDebug] === Finished. Total candidates found: {Count} ===", filtered.Count);
-            return filtered.Distinct().ToList();
+            _logger.LogDebug("FindAvailability: donation {DonationId} - {Count} volunteer availability windows.", donation.Id, result.Count);
+            return result;
         }
     }
 }

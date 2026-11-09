@@ -56,6 +56,32 @@ namespace BLL.Configuration
         /// <summary>כמה זמן (דקות) נשמר במטמון מרחק/זמן נסיעה שהתקבל מ-Google. הערכה (Haversine) נשמרת 5 דקות בלבד.</summary>
         public int DistanceCacheMinutes { get; set; } = 180;
 
+        // ===== תיקונים 19-30: תכנון מסלולים ושיבוץ גלובלי =====
+
+        /// <summary>
+        /// תיקון 24: אופק התכנון (דקות). המנוע מתכנן גם יציאה מאוחרת יותר - כשמשמרת המתנדב מתחילה בקרוב, או כשהעמותה
+        /// נפתחת בקרוב - כל עוד היציאה היא לפני הריצה הבאה. ברירת מחדל: 60, כמו המרווח בין הריצות (EngineCron).
+        /// </summary>
+        public int PlanningHorizonMinutes { get; set; } = 60;
+
+        /// <summary>תיקון 20: לכל מתנדב ותרומה נבדקות עד כמה עמותות (הקרובות ביותר שמתאימות) - ונבחר המסלול הטוב.</summary>
+        public int NgoCandidatesPerRoute { get; set; } = 3;
+
+        /// <summary>
+        /// תיקון 29: מהירות הנסיעה המקסימלית (קמ"ש) לסינון מוקדם. קו אווירי / המהירות הזו = חסם תחתון לזמן הנסיעה,
+        /// ולכן סינון לפיו לעולם לא פוסל מתנדב או עמותה שאפשר להגיע אליהם בזמן (ההחלטה הסופית - לפי Google).
+        /// </summary>
+        public double MaxRoadSpeedKmH { get; set; } = 110.0;
+
+        /// <summary>
+        /// תיקון 19: תקרת צמתים לחיפוש ה-Branch &amp; Bound הגלובלי. בדרך כלל החיפוש נגמר הרבה לפני כן (והתוצאה מוכחת
+        /// כאופטימלית); אם התקרה הושגה - נשמר הפתרון הטוב ביותר שנמצא, שלעולם אינו גרוע מהשיבוץ החמדני.
+        /// </summary>
+        public int AssignmentSearchNodeLimit { get; set; } = 100_000;
+
+        /// <summary>תיקון 19: תקרת זמן (שניות) לחיפוש הגלובלי - כדי שגם ביום עמוס במיוחד הריצה תסתיים מהר.</summary>
+        public double AssignmentSearchTimeLimitSeconds { get; set; } = 5.0;
+
         // ===== שבת (ShabbatClock): מכניסת השבת ועד צאתה המנוע לא שולח הצעות ולא משבץ מסלולים =====
         public bool ObserveShabbat { get; set; } = true;
 

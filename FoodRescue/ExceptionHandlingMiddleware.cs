@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
+using System.ClientModel;
 using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
@@ -77,6 +78,12 @@ namespace FoodRescue.Middlewares
             ArgumentException e => Error(StatusCodes.Status400BadRequest, "BadRequest", CleanArgumentMessage(e), traceId),
             IOException => Error(StatusCodes.Status500InternalServerError, "StorageError",
                 "שמירת הקובץ נכשלה. נסו שוב מאוחר יותר.", traceId),
+            // העוזר החכם: שגיאה מספק ה-AI (Gemini דרך חבילת OpenAI). 429 = נגמרה המכסה לדקה (נפוץ במכסה החינמית)
+            ClientResultException { Status: 429 } => Error(StatusCodes.Status429TooManyRequests, "AiQuotaExceeded",
+                "העוזר החכם עמוס כרגע (מכסת השימוש בשירות ה-AI). נסו שוב בעוד דקה.", traceId),
+            // כל שגיאה אחרת מהספק (למשל מפתח לא תקין). בפיתוח מציגים את הסיבה, כמו בשגיאה הכללית שלמטה
+            ClientResultException e => Error(StatusCodes.Status503ServiceUnavailable, "AiUnavailable",
+                includeDetails ? $"העוזר החכם לא זמין: {e.Message}" : "העוזר החכם לא זמין כרגע. נסו שוב מאוחר יותר.", traceId),
             _ => Error(StatusCodes.Status500InternalServerError, "ServerError",
                 includeDetails ? $"שגיאה פנימית בשרת: {ex.Message}" : "אופס! ארעה שגיאה פנימית בשרת. אנא נסו שוב מאוחר יותר.",
                 traceId)

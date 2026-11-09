@@ -311,7 +311,8 @@ namespace FoodRescue.Tests
             await _h.Db.SaveChangesAsync();
             _h.Fresh();
 
-            var jobs = new MaintenanceJobs(_h.Donations, _h.ActionTokenRepo, new LoginAttemptRepository(_h.Db), _h.Workflow, _h.UnitOfWork, TestDb.Log<MaintenanceJobs>());
+            var jobs = new MaintenanceJobs(_h.Donations, _h.ActionTokenRepo, new LoginAttemptRepository(_h.Db), _h.Workflow, _h.UnitOfWork,
+                TestDb.Log<MaintenanceJobs>(), _h.DeliveryLogs);
             Assert.Equal(1, await jobs.ExpireDonationsAsync());
 
             _h.Fresh();

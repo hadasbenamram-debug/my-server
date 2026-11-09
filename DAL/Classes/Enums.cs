@@ -62,4 +62,17 @@
         Failed,
         Sending
     }
+
+    // סוג הרישום ביומן המשלוח (DeliveryLogs) - ממנו נבנה המעקב החי של העמותה
+    public enum DeliveryLogType
+    {
+        Note,             // רישום ידני (api/deliverylogs), וגם רישומים מלפני שהיה סוג
+        Location,         // עדכון מיקום GPS בזמן ביצוע המסלול - מהם נבנה מסלול הנסיעה בפועל
+        Accepted,         // המתנדב אישר את המסלול
+        RouteStarted,     // המתנדב יצא לדרך
+        PickedUp,         // תרומה נאספה מהספק
+        Delivered,        // תרומה נמסרה לעמותה
+        ReceiptConfirmed, // העמותה אישרה את הקבלה
+        Cancelled         // המסלול בוטל באמצע (למשל No-Show)
+    }
 }

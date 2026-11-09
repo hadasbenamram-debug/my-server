@@ -11,12 +11,16 @@ namespace BLL.Services
     // ג'ובים תקופתיים לניקיון ולסטטוסים שלא עודכנו אף פעם.
     public class MaintenanceJobs
     {
+        // מיקומי GPS של מתנדבים (יומן המשלוח) נשמרים 30 יום. האירועים במסלול (איסוף, מסירה...) נשארים.
+        public const int LocationRetentionDays = 30;
+
         private readonly IDonationRepository _donationRepository;
         private readonly IActionTokenRepository _actionTokenRepository;
         private readonly ILoginAttemptRepository _loginAttemptRepository;
         private readonly RouteWorkflowService _workflow;
         private readonly IUnitOfWork _unitOfWork;
         private readonly ILogger<MaintenanceJobs> _logger;
+        private readonly IDeliveryLogRepository _deliveryLogRepository;
 
         public MaintenanceJobs(
             IDonationRepository donationRepository,
@@ -24,8 +28,10 @@ namespace BLL.Services
             ILoginAttemptRepository loginAttemptRepository,
             RouteWorkflowService workflow,
             IUnitOfWork unitOfWork,
-            ILogger<MaintenanceJobs> logger)
+            ILogger<MaintenanceJobs> logger,
+            IDeliveryLogRepository deliveryLogRepository)
         {
+            _deliveryLogRepository = deliveryLogRepository;
             _donationRepository = donationRepository;
             _actionTokenRepository = actionTokenRepository;
             _loginAttemptRepository = loginAttemptRepository;
@@ -71,7 +77,7 @@ namespace BLL.Services
             return count;
         }
 
-        // ניקוי טוקנים חד-פעמיים ישנים וניסיונות התחברות ישנים
+        // ניקוי טוקנים חד-פעמיים ישנים, ניסיונות התחברות ישנים, ומיקומי GPS ישנים מיומן המשלוח
         [DisableConcurrentExecution(timeoutInSeconds: 600)]
         [AutomaticRetry(Attempts = 0)]
         public async Task CleanupAsync()
@@ -79,6 +85,10 @@ namespace BLL.Services
             var now = DateTime.UtcNow;
             await _actionTokenRepository.DeleteExpiredAsync(now.AddDays(-7));
             await _loginAttemptRepository.DeleteOlderThanAsync(now.AddDays(-30));
+
+            var locations = await _deliveryLogRepository.DeleteLocationsOlderThanAsync(now.AddDays(-LocationRetentionDays));
+            if (locations > 0)
+                _logger.LogInformation("Deleted {Count} old location rows from the delivery log.", locations);
         }
     }
 }

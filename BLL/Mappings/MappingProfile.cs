@@ -30,7 +30,8 @@ namespace BLL.Mappings
                 .ForMember(d => d.NgoName, o => o.Ignore())
                 .ForMember(d => d.VolunteerId, o => o.Ignore())
                 .ForMember(d => d.VolunteerName, o => o.Ignore())
-                .ForMember(d => d.EstimatedArrival, o => o.Ignore());
+                .ForMember(d => d.EstimatedArrival, o => o.Ignore())
+                .ForMember(d => d.VolunteerRouteId, o => o.Ignore());
 
             // תוקן: בעבר היה כאן ReverseMap - כלומר אפשר היה (בטעות) למפות DTO של תשובה חזרה ל-Entity.
             CreateMap<CreateDonationDto, Donation>(MemberList.Source)
@@ -144,6 +145,7 @@ namespace BLL.Mappings
 
             // ===================== לוגי משלוח =====================
             CreateMap<DeliveryLog, DeliveryLogResponseDto>()
+                .ForMember(d => d.Type, o => o.MapFrom(s => s.Type.ToString()))
                 .ForMember(d => d.Status, o => o.MapFrom(s => s.StatusDescription))
                 .ForMember(d => d.Notes, o => o.Ignore());
             CreateMap<CreateDeliveryLogDto, DeliveryLog>(MemberList.Source)

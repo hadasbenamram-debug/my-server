@@ -1,5 +1,6 @@
 ﻿using BLL.Exceptions;
 using BLL.Interfaces;
+using FoodRescue.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System;
@@ -7,7 +8,8 @@ using System.Threading.Tasks;
 
 namespace FoodRescue.Controllers
 {
-    // מפות. המפתח של Google נמצא רק בשרת: השרת מביא מ-Google את תמונת המפה ומחזיר אותה ללקוח.
+    // מפות. מפתח השרת של Google נמצא רק בשרת: השרת מביא מ-Google את תמונת המפה ומחזיר אותה ללקוח.
+    // למפה האינטראקטיבית (הזזה, זום, מעקב חי) הדפדפן מקבל מפתח נפרד ומוגבל - רק אחרי התחברות (browser-config).
     [Route("api/map")]
     [Authorize]
     public class MapController : ApiControllerBase
@@ -17,6 +19,16 @@ namespace FoodRescue.Controllers
         public MapController(IMapService mapService)
         {
             _mapService = mapService ?? throw new ArgumentNullException(nameof(mapService));
+        }
+
+        // מפתח הדפדפן (Maps JavaScript API בלבד, מוגבל ב-Google Cloud לכתובות האתר) ו-Map ID.
+        // רק למשתמש מחובר, ובלי שמירה במטמון של הדפדפן / פרוקסי. Enabled=false - הלקוח מציג תמונה מהשרת.
+        [HttpGet("browser-config")]
+        public ActionResult<BrowserMapConfigDto> GetBrowserConfig()
+        {
+            Response.Headers.CacheControl = "no-store, max-age=0";
+            Response.Headers.Pragma = "no-cache";
+            return Ok(_mapService.GetBrowserConfig());
         }
 
         // שליפת כלל הישויות (ספקים, עמותות ומתנדבים) עבור תמונת המצב המרחבית - מנהלים בלבד.

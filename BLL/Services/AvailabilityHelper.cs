@@ -7,20 +7,66 @@ using System.Linq;
 namespace BLL.Algorithms
 {
     /// <summary>
+    /// הופעה בפועל של משבצת זמינות בתאריך מסוים (UTC). משבצת שחוצה חצות (למשל 22:00-02:00) נמשכת אל היום הבא.
+    /// </summary>
+    public readonly record struct AvailabilityWindow(AvailabilitySlot Slot, DateTime StartUtc, DateTime EndUtc)
+    {
+        public bool Contains(DateTime utc) => utc >= StartUtc && utc <= EndUtc;
+        public bool Covers(DateTime fromUtc, DateTime toUtc) => fromUtc >= StartUtc && toUtc <= EndUtc;
+    }
+
+    /// <summary>
     /// לוגיקת עזר משותפת לבדיקת AvailabilitySlot. כל הבדיקות מבוצעות בשעון מקומי (LocalClock).
     ///
     /// משמעות Slot לפי מסמך התיאור: RegionId = אזור שממנו אפשר להתחיל את הנסיעה,
     /// ToRegionId = אזור היעד שאליו אפשר להעביר תרומות (null = זמינות רגילה באזור אחד).
+    ///
+    /// תיקון 28: הבדיקות הושוו בעבר ל"יום של היום" בלבד (slot.Day == היום). משבצת של יום שני 22:00-02:00
+    /// לא זוהתה ביום שלישי ב-01:00 (באמצע המשמרת), ומנגד המשבצת של יום שלישי בלילה "נפתחה" כבר ב-01:00.
+    /// עכשיו כל משבצת הופכת לחלון זמן אמיתי (GetWindows) - כולל ההמשך ביום שאחרי - וכל הבדיקות עוברות דרכו.
+    /// זה גם מה שמאפשר למנוע לתכנן לפי מערכת השעות של המתנדב (משמרת שמתחילה בעוד חצי שעה - תיקון 24).
     /// </summary>
     public static class AvailabilityHelper
     {
-        /// <summary>תומך גם בחלון שחוצה חצות (למשל 22:00-02:00).</summary>
+        /// <summary>תומך גם בחלון שחוצה חצות (למשל 22:00-02:00). בודק שעה בלבד, בלי היום.</summary>
         public static bool IsWithinTimeWindow(AvailabilitySlot slot, TimeSpan currentTime)
         {
             if (slot.StartTime <= slot.EndTime)
                 return currentTime >= slot.StartTime && currentTime <= slot.EndTime;
 
             return currentTime >= slot.StartTime || currentTime <= slot.EndTime;
+        }
+
+        /// <summary>
+        /// כל החלונות בפועל של המשבצות של המתנדב שחופפים לטווח [fromUtc, toUtc], ממוינים לפי שעת ההתחלה.
+        /// נבדק גם היום שלפני הטווח - בשביל משבצת לילה שהתחילה אתמול ונמשכת לתוך הטווח.
+        /// </summary>
+        public static List<AvailabilityWindow> GetWindows(Volunteer volunteer, DateTime fromUtc, DateTime toUtc)
+        {
+            var windows = new List<AvailabilityWindow>();
+            if (volunteer?.AvailabilitySlots == null || volunteer.AvailabilitySlots.Count == 0 || toUtc < fromUtc)
+                return windows;
+
+            var firstDay = LocalClock.ToLocal(fromUtc).Date.AddDays(-1);
+            var lastDay = LocalClock.ToLocal(toUtc).Date;
+
+            for (var day = firstDay; day <= lastDay; day = day.AddDays(1))
+            {
+                foreach (var slot in volunteer.AvailabilitySlots)
+                {
+                    if (slot.Day != day.DayOfWeek) continue;
+
+                    var localStart = day + slot.StartTime;
+                    var localEnd = slot.StartTime <= slot.EndTime ? day + slot.EndTime : day.AddDays(1) + slot.EndTime;
+                    var window = new AvailabilityWindow(slot, LocalClock.ToUtc(localStart), LocalClock.ToUtc(localEnd));
+
+                    if (window.EndUtc >= fromUtc && window.StartUtc <= toUtc)
+                        windows.Add(window);
+                }
+            }
+
+            windows.Sort((a, b) => a.StartUtc.CompareTo(b.StartUtc));
+            return windows;
         }
 
         /// <summary>
@@ -45,23 +91,17 @@ namespace BLL.Algorithms
             return false;
         }
 
-        /// <summary>האם למתנדב יש Slot פעיל ברגע asOfUtc (יום + שעה מקומיים) שמתאים לתרומה ולעמותה.</summary>
+        /// <summary>האם למתנדב יש Slot פעיל ברגע asOfUtc שמתאים לתרומה ולעמותה.</summary>
         public static bool CanServeAt(Volunteer volunteer, DateTime asOfUtc, int donationRegionId, int ngoRegionId)
         {
-            if (volunteer.AvailabilitySlots == null) return false;
-
-            var local = LocalClock.ToLocal(asOfUtc);
             var regions = new[] { donationRegionId };
-
-            return volunteer.AvailabilitySlots.Any(slot =>
-                slot.Day == local.DayOfWeek &&
-                IsWithinTimeWindow(slot, local.TimeOfDay) &&
-                SlotServesRoute(slot, regions, ngoRegionId));
+            return GetWindows(volunteer, asOfUtc, asOfUtc)
+                .Any(w => w.Contains(asOfUtc) && SlotServesRoute(w.Slot, regions, ngoRegionId));
         }
 
         /// <summary>
-        /// האם Slot אחד מכסה את כל המסלול: שעת היציאה ושעת ההגעה לעמותה בתוך החלון,
-        /// והאזורים מתאימים. תומך במסלול שחוצה חצות בתוך Slot שחוצה חצות.
+        /// האם חלון זמינות אחד מכסה את כל המסלול (מהיציאה ועד ההגעה לעמותה), והאזורים מתאימים.
+        /// מסלול שחוצה חצות בתוך משבצת לילה - נתמך (החלון נמשך ליום שאחרי).
         /// </summary>
         public static bool CoversRoute(
             Volunteer volunteer,
@@ -73,43 +113,15 @@ namespace BLL.Algorithms
             if (volunteer?.AvailabilitySlots == null || donationRegionIds == null || donationRegionIds.Count == 0)
                 return false;
 
-            var start = LocalClock.ToLocal(routeStartUtc);
-            var end = LocalClock.ToLocal(routeEndUtc);
-
-            foreach (var slot in volunteer.AvailabilitySlots)
-            {
-                if (slot.Day != start.DayOfWeek) continue;
-                if (!SlotServesRoute(slot, donationRegionIds, ngoRegionId)) continue;
-                if (!IsWithinTimeWindow(slot, start.TimeOfDay)) continue;
-
-                if (end.Date == start.Date)
-                {
-                    if (IsWithinTimeWindow(slot, end.TimeOfDay)) return true;
-                }
-                else if (slot.StartTime > slot.EndTime &&
-                         end.Date == start.Date.AddDays(1) &&
-                         end.TimeOfDay <= slot.EndTime)
-                {
-                    // ה-Slot חוצה חצות והסיום נופל בזנב שלו, ביום המחרת
-                    return true;
-                }
-            }
-
-            return false;
+            return GetWindows(volunteer, routeStartUtc, routeEndUtc)
+                .Any(w => w.Covers(routeStartUtc, routeEndUtc) && SlotServesRoute(w.Slot, donationRegionIds, ngoRegionId));
         }
 
         /// <summary>בדיקה בין-אזורית מפורשת: Slot שמכריז מעבר מ-fromRegionId ל-toRegionId ופתוח ברגע asOf (UTC).</summary>
         public static bool HasCrossRegionAvailability(Volunteer volunteer, int fromRegionId, int toRegionId, DateTime asOf)
         {
-            if (volunteer.AvailabilitySlots == null) return false;
-
-            var local = LocalClock.ToLocal(asOf);
-
-            return volunteer.AvailabilitySlots.Any(slot =>
-                slot.RegionId == fromRegionId &&
-                slot.ToRegionId == toRegionId &&
-                slot.Day == local.DayOfWeek &&
-                IsWithinTimeWindow(slot, local.TimeOfDay));
+            return GetWindows(volunteer, asOf, asOf)
+                .Any(w => w.Contains(asOf) && w.Slot.RegionId == fromRegionId && w.Slot.ToRegionId == toRegionId);
         }
     }
 }

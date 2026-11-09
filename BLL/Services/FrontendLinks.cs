@@ -19,6 +19,9 @@ namespace BLL.Services
             return $"{baseUrl.TrimEnd('/')}/{pathAndQuery.TrimStart('/')}";
         }
 
+        // מסך המעקב החי אחרי מסלול (עמותה / ספק / מנהל)
+        public static string TrackingPath(int routeId) => $"/app/track/{routeId}";
+
         // המסך הראשון של כל תפקיד אחרי האישור (גם בהתראה וגם בקישור הכניסה מהמייל)
         public static string RoleHomePath(DAL.Classes.RequestedRole role) => role switch
         {

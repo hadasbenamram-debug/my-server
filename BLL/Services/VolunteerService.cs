@@ -39,6 +39,7 @@ namespace BLL.Services
         private readonly ILogger<VolunteerService> _logger;
         private readonly IPasswordHasher<User> _passwordHasher;
         private readonly IRegistrationNoticeService _registrationNotices;
+        private readonly DeliveryTracker _tracker;
 
         public VolunteerService(
             IVolunteerRepository volunteerRepository,
@@ -53,10 +54,12 @@ namespace BLL.Services
             IMapper mapper,
             ILogger<VolunteerService> logger,
             IPasswordHasher<User> passwordHasher,
-            IRegistrationNoticeService registrationNotices)
+            IRegistrationNoticeService registrationNotices,
+            DeliveryTracker tracker)
         {
             _passwordHasher = passwordHasher;
             _registrationNotices = registrationNotices;
+            _tracker = tracker;
             _volunteerRepository = volunteerRepository;
             _userRepository = userRepository;
             _availabilitySlotRepository = availabilitySlotRepository;
@@ -294,18 +297,9 @@ namespace BLL.Services
             volunteer.LocationUpdatedAt = DateTime.UtcNow;
             await _volunteerRepository.UpdateAsync(volunteer);
 
-            var route = await _routeRepository.GetActiveForVolunteerAsync(volunteer.Id);
-            if (route != null)
-            {
-                await _notifications.PublishAsync(RealtimeGroups.Route(route.Id), RealtimeEvents.VolunteerLocation, new
-                {
-                    routeId = route.Id,
-                    volunteerId = volunteer.Id,
-                    latitude,
-                    longitude,
-                    at = volunteer.LocationUpdatedAt
-                });
-            }
+            // בזמן ביצוע מסלול: נרשם ביומן המשלוח (DeliveryLogs) ונשלח בזמן אמת לעמותה ולשאר הצופים במסלול.
+            // לפני היציאה לדרך המיקום לא נרשם ולא נשלח לאף אחד.
+            await _tracker.RecordLocationAsync(volunteer.Id, latitude, longitude);
         }
 
         // =========================================================

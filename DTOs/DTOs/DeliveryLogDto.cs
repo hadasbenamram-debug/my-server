@@ -23,11 +23,18 @@ namespace FoodRescue.DTOs
         public double? Longitude { get; set; }
     }
 
-    // DTO מלא להצגה בשרת
+    // DTO מלא להצגה בשרת. נשלח גם בזמן אמת (SignalR, האירוע DeliveryLogAdded) לכל מי שצופה במסלול.
     public class DeliveryLogResponseDto
     {
         public int Id { get; set; }
         public int VolunteerRouteId { get; set; }
+
+        // סוג הרישום: Location (עדכון מיקום), Accepted, RouteStarted, PickedUp, Delivered, ReceiptConfirmed, Cancelled, Note
+        public string Type { get; set; } = string.Empty;
+
+        // התחנה (השידוך) שהרישום מתייחס אליה, אם יש
+        public int? MatchId { get; set; }
+
         public string Status { get; set; }
         public string Notes { get; set; }
         public DateTime Timestamp { get; set; }

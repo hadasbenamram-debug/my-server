@@ -56,7 +56,7 @@ namespace FoodRescue.Tests
         private VolunteerService Volunteers() => new(
             _h.Volunteers, _h.Users, new AvailabilitySlotRepository(Db), new RegionRepository(Db), _h.Routes,
             Approvals(), new ValidationService(), _h.UnitOfWork, _h.NotificationService,
-            TestDb.Mapper, TestDb.Log<VolunteerService>(), new PasswordHasherWithLegacySupport(), Notices());
+            TestDb.Mapper, TestDb.Log<VolunteerService>(), new PasswordHasherWithLegacySupport(), Notices(), _h.Tracker);
 
         private NgoService Ngos()
         {

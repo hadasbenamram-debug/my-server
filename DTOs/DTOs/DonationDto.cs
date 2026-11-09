@@ -90,5 +90,8 @@ namespace FoodRescue.DTOs
         public int? VolunteerId { get; set; }
         public string? VolunteerName { get; set; }
         public DateTime? EstimatedArrival { get; set; }
+
+        // המסלול של השידוך - למעקב החי (api/tracking/routes/{id}). null = עוד אין מסלול
+        public int? VolunteerRouteId { get; set; }
     }
 }

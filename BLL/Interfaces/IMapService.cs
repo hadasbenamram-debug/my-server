@@ -13,5 +13,9 @@ namespace BLL.Interfaces
 
         // תמונת מפה של מסלול. null אם המסלול לא קיים או שהמשתמש לא קשור אליו
         Task<MapImageDto?> GetRouteImageAsync(int routeId, CurrentUserDto currentUser);
+
+        // הגדרות המפה האינטראקטיבית בדפדפן: מפתח הדפדפן (נפרד ממפתח השרת) ו-Map ID.
+        // Enabled = false כשאין מפתח דפדפן, או כשהוגדר בטעות המפתח של השרת (הוא לעולם לא נשלח ללקוח).
+        BrowserMapConfigDto GetBrowserConfig();
     }
 }

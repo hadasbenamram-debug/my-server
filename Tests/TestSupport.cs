@@ -63,6 +63,24 @@ namespace FoodRescue.Tests
             Jobs.Count(j => j.Job.Type == typeof(T) && j.Job.Method.Name == methodName);
     }
 
+    // במקום SignalR: שומר כל מה שנשלח לקבוצות ולמשתמשים
+    public sealed class RecordingRealtimeNotifier : IRealtimeNotifier
+    {
+        public List<(string Target, string Method, object Payload)> Sent { get; } = new();
+
+        public Task SendToUserAsync(int userId, string method, object payload)
+        {
+            Sent.Add((RealtimeGroups.User(userId), method, payload));
+            return Task.CompletedTask;
+        }
+
+        public Task SendToGroupAsync(string group, string method, object payload)
+        {
+            Sent.Add((group, method, payload));
+            return Task.CompletedTask;
+        }
+    }
+
     // מרחקים לפי קו אווירי בלבד (בלי פנייה ל-Google)
     public sealed class EstimateOnlyDistances : IGoogleMapsDistanceService
     {
@@ -163,6 +181,9 @@ namespace FoodRescue.Tests
         public StaticMatchingPolicyProvider Policy { get; }
         public IPayloadProtector Protector { get; } = new AesGcmPayloadProtector(RandomNumberGenerator.GetBytes(32));
 
+        // מה שנשלח בזמן אמת (SignalR) - כדי לבדוק שהעמותה מקבלת את עדכוני המעקב
+        public RecordingRealtimeNotifier Realtime { get; } = new();
+
         public UserRepository Users { get; }
         public DonationRepository Donations { get; }
         public MatchRepository Matches { get; }
@@ -172,10 +193,12 @@ namespace FoodRescue.Tests
         public VolunteerRouteRepository Routes { get; }
         public NotificationRepository Notifications { get; }
         public ActionTokenRepository ActionTokenRepo { get; }
+        public DeliveryLogRepository DeliveryLogs { get; }
         public UnitOfWork UnitOfWork { get; }
 
         public ActionTokenService ActionTokens { get; }
         public NotificationService NotificationService { get; }
+        public DeliveryTracker Tracker { get; }
         public MatchCreationService MatchCreation { get; }
         public RouteWorkflowService Workflow { get; }
         public VolunteerReliabilityService Reliability { get; }
@@ -205,19 +228,21 @@ namespace FoodRescue.Tests
             Routes = new VolunteerRouteRepository(Db);
             Notifications = new NotificationRepository(Db);
             ActionTokenRepo = new ActionTokenRepository(Db);
+            DeliveryLogs = new DeliveryLogRepository(Db);
             UnitOfWork = new UnitOfWork(Db);
             var regions = new RegionRepository(Db);
             var feedbacks = new FeedbackRepository(Db);
 
             ActionTokens = new ActionTokenService(ActionTokenRepo);
-            NotificationService = new NotificationService(Notifications, Users, Protector, Jobs, new NullRealtimeNotifier(), TestDb.Log<NotificationService>());
+            NotificationService = new NotificationService(Notifications, Users, Protector, Jobs, Realtime, TestDb.Log<NotificationService>());
+            Tracker = new DeliveryTracker(DeliveryLogs, Routes, NotificationService, TestDb.Mapper, TestDb.Log<DeliveryTracker>());
             Reliability = new VolunteerReliabilityService(Volunteers, feedbacks, Matches, Policy);
 
             MatchCreation = new MatchCreationService(Matches, Donations, Routes, Users, UnitOfWork, ActionTokens,
                 NotificationService, Jobs, Policy, config, TestDb.Log<MatchCreationService>());
 
             Workflow = new RouteWorkflowService(Matches, Routes, Volunteers, ActionTokens, NotificationService, UnitOfWork,
-                Jobs, Reliability, TestDb.Log<RouteWorkflowService>());
+                Jobs, Reliability, TestDb.Log<RouteWorkflowService>(), Tracker);
 
             var distances = new EstimateOnlyDistances(Policy);
             var routeOptimization = new RouteOptimizationService(distances, Policy);

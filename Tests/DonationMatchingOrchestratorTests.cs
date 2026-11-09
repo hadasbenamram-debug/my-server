@@ -60,26 +60,18 @@ namespace FoodRescue.Tests
             SunToThuOpenTime = TimeSpan.Zero, SunToThuCloseTime = close ?? new TimeSpan(23, 59, 0)
         };
 
-        // שירות מסלול מדומה: כל תחנה מגיעה אחרי "minutesPerStop" דקות, והקטע לעמותה לוקח 10 דקות
+        // שירות מסלול מדומה: כל קטע אל תחנת איסוף לוקח "minutesPerStop" דקות, והקטע אל העמותה (32.0, 34.0) - 10 דקות.
+        // תיקון 23: המתזמר מחשב את המסלול בעצמו (RoutePlanner, DP מדויק) מתוך זמני הקטעים - ולא מקבל סדר מוכן
+        // מ"השכן הקרוב", ולכן המדמה מספק זמני קטעים (EstimateLegAsync) במקום מסלול שלם.
         private static Mock<IRouteOptimizationService> RouteService(double minutesPerStop)
         {
             var mock = new Mock<IRouteOptimizationService>();
-            mock.Setup(s => s.OptimizeRouteWithGoogleMapsAsync(It.IsAny<GeoCoordinate>(), It.IsAny<List<PickupStop>>(),
-                    It.IsAny<DateTime>(), It.IsAny<Func<PickupStop, DateTime, bool>?>()))
-                .Returns((GeoCoordinate start, List<PickupStop> stops, DateTime t, Func<PickupStop, DateTime, bool>? ok) =>
-                {
-                    var eta = t;
-                    foreach (var st in stops)
-                    {
-                        eta = eta.AddMinutes(minutesPerStop);
-                        st.EstimatedArrival = eta;
-                        st.LegDistanceKm = 1;
-                        st.LegDurationMinutes = minutesPerStop;
-                    }
-                    return Task.FromResult(stops);
-                });
             mock.Setup(s => s.EstimateLegAsync(It.IsAny<GeoCoordinate>(), It.IsAny<GeoCoordinate>()))
-                .Returns(Task.FromResult((1.0, 10.0)));
+                .Returns((GeoCoordinate from, GeoCoordinate to) =>
+                {
+                    bool toNgo = to.Latitude == 32.0 && to.Longitude == 34.0;
+                    return Task.FromResult((1.0, toNgo ? 10.0 : minutesPerStop));
+                });
             return mock;
         }
 

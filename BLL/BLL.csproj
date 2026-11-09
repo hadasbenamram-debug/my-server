@@ -16,6 +16,10 @@
   <ItemGroup>
     <PackageReference Include="AutoMapper" Version="16.2.0" />
     <PackageReference Include="Hangfire" Version="1.8.25" />
+    <!-- העוזר החכם (BLL/Agent): IChatClient + הרצת הכלים (UseFunctionInvocation), והחיבור ל-Gemini
+         דרך הכתובת שלו שמדברת בפורמט של OpenAI. החבילה OpenAI מגיעה איתה. -->
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.11.0" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.11.0" />
     <!-- Hangfire תלוי ב-Newtonsoft.Json >= 11.0.1, גרסה עם פרצת אבטחה ידועה (NU1903).
          ההפניה המפורשת מכריחה גרסה מתוקנת. -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />

@@ -1,7 +1,6 @@
 using AutoMapper;
 using BLL.Exceptions;
 using BLL.Interfaces;
-using BLL.Notifications;
 using DAL.Classes;
 using DAL.Interfaces;
 using FoodRescue.DTOs;
@@ -16,7 +15,7 @@ namespace BLL.Services
         private readonly IDeliveryLogRepository _deliveryLogRepository;
         private readonly IVolunteerRouteRepository _routeRepository;
         private readonly IVolunteerRepository _volunteerRepository;
-        private readonly INotificationService _notifications;
+        private readonly DeliveryTracker _tracker;
         private readonly CallerProfileService _caller;
         private readonly IMapper _mapper;
 
@@ -24,14 +23,14 @@ namespace BLL.Services
             IDeliveryLogRepository deliveryLogRepository,
             IVolunteerRouteRepository routeRepository,
             IVolunteerRepository volunteerRepository,
-            INotificationService notifications,
+            DeliveryTracker tracker,
             CallerProfileService caller,
             IMapper mapper)
         {
             _deliveryLogRepository = deliveryLogRepository;
             _routeRepository = routeRepository;
             _volunteerRepository = volunteerRepository;
-            _notifications = notifications;
+            _tracker = tracker;
             _caller = caller;
             _mapper = mapper;
         }
@@ -63,10 +62,11 @@ namespace BLL.Services
 
             var logEntity = _mapper.Map<DeliveryLog>(dto);
             logEntity.Id = 0;
+            logEntity.Type = DeliveryLogType.Note;
             logEntity.Timestamp = DateTime.UtcNow;
             await _deliveryLogRepository.AddAsync(logEntity);
 
-            // עדכון המיקום הנוכחי של המתנדב (רק כשנשלחו קואורדינטות) ושידור למי שעוקב אחרי המסלול
+            // עדכון המיקום הנוכחי של המתנדב (רק כשנשלחו קואורדינטות)
             if (dto.Latitude.HasValue && dto.Longitude.HasValue)
             {
                 var volunteer = await _volunteerRepository.GetByIdAsync(route.VolunteerId);
@@ -77,18 +77,10 @@ namespace BLL.Services
                     volunteer.LocationUpdatedAt = logEntity.Timestamp;
                     await _volunteerRepository.UpdateAsync(volunteer);
                 }
-
-                await _notifications.PublishAsync(RealtimeGroups.Route(route.Id), RealtimeEvents.VolunteerLocation, new
-                {
-                    routeId = route.Id,
-                    volunteerId = route.VolunteerId,
-                    latitude = dto.Latitude.Value,
-                    longitude = dto.Longitude.Value,
-                    at = logEntity.Timestamp
-                });
             }
 
-            return _mapper.Map<DeliveryLogResponseDto>(logEntity);
+            // הרישום נשלח בזמן אמת לכל מי שצופה במסלול (העמותה, הספקים, מנהלים)
+            return await _tracker.PublishAsync(logEntity);
         }
     }
 }

@@ -105,11 +105,16 @@ namespace BLL.Services
                     route = new VolunteerRoute
                     {
                         VolunteerId = volunteer.Id,
-                        ScheduledAt = now,
+                        // תיקונים 24, 26, 27: שעת היציאה המתוכננת (אחרי חלון התגובה, ולפעמים מאוחר יותר - תחילת המשמרת /
+                        // פתיחת העמותה). ScheduledAt + EstimatedTotalDurationMinutes = ההגעה המשוערת לעמותה (RouteDto).
+                        ScheduledAt = plan.StartTime != default ? plan.StartTime : now,
                         TotalWeightKg = plan.TotalWeightKg,
                         Status = RouteStatus.Planned,
                         GoogleDirectionsPolyline = encoded?.Polyline,
-                        EstimatedTotalDurationMinutes = encoded?.DurationMinutes > 0 ? encoded.DurationMinutes : plan.TotalDurationMinutes,
+                        // משך התכנון כולל את זמן הטעינה בכל תחנה; ה-Polyline של Google הוא נסיעה בלבד
+                        EstimatedTotalDurationMinutes = plan.TotalDurationMinutes > 0
+                            ? plan.TotalDurationMinutes
+                            : encoded?.DurationMinutes > 0 ? encoded.DurationMinutes : (double?)null,
                         EstimatedTotalDistanceKm = encoded?.DistanceKm > 0 ? encoded.DistanceKm : plan.TotalDistanceKm,
                         MatchScore = Math.Round(matchScore, 2)
                     };
@@ -171,7 +176,7 @@ namespace BLL.Services
             await _notifications.NotifyUserAsync(
                 volunteer.UserId,
                 "בקשת התנדבות חדשה",
-                $"מסלול עם {createdMatches.Count} תחנות איסוף. יש לאשר עד {LocalClock.ToLocal(deadline):HH:mm}.",
+                $"מסלול עם {createdMatches.Count} תחנות איסוף. יש לאשר עד {LocalClock.ToLocal(deadline):HH:mm}." + PlannedDepartureText(plan, deadline),
                 link: $"/app/volunteer/incoming-request/{createdMatches[0].Id}",
                 type: "request");
 
@@ -204,8 +209,14 @@ namespace BLL.Services
             var stopsHtml = string.Join("", plan.Stops.Select((s, i) =>
                 $"<li>תחנה {i + 1}: תרומה #{s.DonationId}, הגעה משוערת {LocalClock.ToLocal(s.EstimatedArrival ?? plan.StartTime):HH:mm}</li>"));
 
+            // יציאה מאוחרת מהרגיל (תחילת המשמרת / פתיחת העמותה) - כתוב במפורש מתי לצאת
+            var departureHtml = PlannedDepartureText(plan, deadline).Length > 0
+                ? $"שעת יציאה מתוכננת: <b>{LocalClock.ToLocal(plan.StartTime):HH:mm}</b><br/>"
+                : "";
+
             var body =
                 $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>נמצא עבורך מסלול איסוף חדש:<br/>" +
+                departureHtml +
                 $"<ul>{stopsHtml}</ul>" +
                 $"יעד: {WebUtility.HtmlEncode(ngo.NgoName)} - {WebUtility.HtmlEncode(ngo.Address)}<br/>" +
                 $"משקל כולל: {plan.TotalWeightKg:0.#} ק\"ג, הגעה משוערת לעמותה: {LocalClock.ToLocal(plan.NgoArrival):HH:mm}<br/><br/>" +
@@ -220,9 +231,15 @@ namespace BLL.Services
             {
                 await _notifications.QueueSmsAsync(user.Id, user.Phone,
                     $"לתת באהבה: בקשת איסוף חדשה ({plan.Stops.Count} תחנות). יש לאשר עד {LocalClock.ToLocal(deadline):HH:mm}" +
-                    (link == null ? "." : $": {link}"),
+                    (link == null ? "." : $": {link}") + PlannedDepartureText(plan, deadline),
                     summary: $"SMS: בקשת התנדבות למסלול #{route.Id}");
             }
         }
+
+        // תיקונים 24, 26: כשהיציאה מתוכננת מאוחר יותר (תחילת המשמרת / פתיחת העמותה) - אומרים למתנדב מתי לצאת
+        private static string PlannedDepartureText(RoutePlan plan, DateTime responseDeadline) =>
+            plan.StartTime > responseDeadline.AddMinutes(1)
+                ? $" יציאה מתוכננת ב-{LocalClock.ToLocal(plan.StartTime):HH:mm}."
+                : "";
     }
 }

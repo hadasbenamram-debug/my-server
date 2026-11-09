@@ -29,5 +29,16 @@ namespace BLL.Algorithms
             if (roadDetourFactor < 1.0) roadDetourFactor = 1.0;
             return straightLineKm * roadDetourFactor / averageSpeedKmH * 60.0;
         }
+
+        /// <summary>
+        /// תיקון 29: חסם תחתון לזמן הנסיעה - קו אווירי (הדרך בפועל לעולם לא קצרה ממנו) במהירות המקסימלית.
+        /// סינון מוקדם לפיו אף פעם לא פוסל אפשרות שבפועל עומדת בזמנים (בניגוד ל-EstimateDriveMinutes,
+        /// שהוא הערכה "ממוצעת" ויכול להיות גבוה מזמן הנסיעה האמיתי).
+        /// </summary>
+        public static double LowerBoundDriveMinutes(double straightLineKm, double maxRoadSpeedKmH)
+        {
+            if (maxRoadSpeedKmH <= 0) maxRoadSpeedKmH = 110.0;
+            return Math.Max(0, straightLineKm) / maxRoadSpeedKmH * 60.0;
+        }
     }
 }

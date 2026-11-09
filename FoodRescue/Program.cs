@@ -1,5 +1,7 @@
-﻿using BLL.Algorithms;
+﻿using BLL.Agent;
+using BLL.Algorithms;
 using BLL.Configuration;
+using BLL.Exceptions;
 using BLL.Integrations.GoogleMaps;
 using BLL.Interfaces;
 using BLL.Mappings;
@@ -20,9 +22,12 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
+using OpenAI;
 using System;
+using System.ClientModel;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -146,6 +151,19 @@ builder.Services.AddRateLimiter(options =>
                 AutoReplenishment = true
             }));
 
+    // העוזר החכם (AI) - עד 10 שאלות בדקה למשתמש. כל שאלה יכולה לגרור כמה קריאות למודל (כלי ועוד כלי),
+    // וכל קריאה יורדת מהמכסה של מפתח ה-Gemini
+    options.AddPolicy("agent-chat", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.User.GetUserId()?.ToString() ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+
     // טופס צור קשר - פתוח לאורחים, לכן מוגבל לפי IP: עד 3 פניות ב-10 דקות
     options.AddPolicy("contact-form", httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
@@ -173,9 +191,11 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // =========================================================
-// Google Maps: Routes API (מרחקים וזמני נסיעה), Geocoding API (כתובת -> מיקום מדויק)
-// ו-Maps Static API (תמונות המפה שהלקוח מציג).
+// Google Maps: Routes API (מרחקים, זמני נסיעה וזמן ההגעה במעקב החי), Geocoding API (כתובת -> מיקום מדויק)
+// ו-Maps Static API (תמונת מפה - גיבוי כשאין מפה אינטראקטיבית).
 // המפתח נשאר בשרת בלבד (User Secrets / משתנה הסביבה GoogleMaps__ApiKey). הלקוח מקבל רק את התוצאות.
+// למפה האינטראקטיבית בדפדפן יש מפתח נפרד: GoogleMaps:BrowserApiKey (Maps JavaScript API בלבד, מוגבל לכתובות
+// האתר), שנשלח רק למשתמש מחובר דרך api/map/browser-config. בלעדיו הלקוח מציג את תמונת המפה מהשרת.
 // מרחקים נשמרים במטמון (DistanceCacheMinutes, ברירת מחדל 3 שעות) לפי קואורדינטות מעוגלות,
 // כך שהמנוע לא פונה ל-Google בכל ריצה (בעבר: ריצה כל 2 דקות ומטמון של 2 דקות).
 // =========================================================
@@ -256,6 +276,9 @@ builder.Services.AddScoped<IFoodCategoryService, FoodCategoryService>();
 builder.Services.AddScoped<IRegionService, RegionService>();
 builder.Services.AddScoped<IMapService, MapService>();
 builder.Services.AddScoped<IDeliveryLogService, DeliveryLogService>();
+// יומן המשלוח = המעקב החי: כתיבה (מיקום + שלבים במסלול) ושליפה למסך המעקב של העמותה
+builder.Services.AddScoped<DeliveryTracker>();
+builder.Services.AddScoped<IDeliveryTrackingService, DeliveryTrackingService>();
 builder.Services.AddScoped<IFeedbackService, FeedbackService>();
 builder.Services.AddScoped<ISupportService, SupportService>();
 builder.Services.AddScoped<IAdminReportService, AdminReportService>();
@@ -334,6 +357,58 @@ builder.Services.AddHttpClient<IImageAnalysisService, GeminiImageAnalysisService
     client.BaseAddress = new Uri("https://generativelanguage.googleapis.com/");
     client.Timeout = TimeSpan.FromSeconds(60);
 });
+
+// =========================================================
+// העוזר החכם (AI Agent): צ'אט עם Gemini שיודע להשתמש בכלים (BLL/Agent) ועונה בהזרמה (api/chat/stream).
+// המפתח - אותו Gemini:ApiKey של ניתוח התמונות: משתנה הסביבה Gemini__ApiKey (או User Secrets). לא בקוד, לא ב-Git ולא בקליינט.
+// ל-Gemini יש כתובת שמקבלת בקשות בפורמט של OpenAI, ולכן משתמשים בחבילה של OpenAI ומפנים אותה לשרתים של גוגל.
+// שאר הקוד מכיר רק את IChatClient - כדי לעבור לספק אחר מחליפים רק את השורות האלה.
+// =========================================================
+
+// הלקוח נוצר רק כשמשתמשים בו בפעם הראשונה: בלי מפתח השרת עדיין עולה (כמו ניתוח התמונות),
+// והצ'אט מחזיר 503 עם הודעה ברורה (ExceptionHandlingMiddleware).
+builder.Services.AddChatClient(_ =>
+    {
+        var apiKey = builder.Configuration["Gemini:ApiKey"]?.Trim();
+        if (string.IsNullOrEmpty(apiKey))
+            throw new ServiceUnavailableException("העוזר החכם לא הוגדר בשרת (חסר המפתח Gemini:ApiKey).");
+
+        var model = builder.Configuration["Gemini:Model"];
+        if (string.IsNullOrWhiteSpace(model))
+            model = "gemini-2.5-flash";
+
+        // ה-/ בסוף הכתובת חשוב: בלעדיו הבקשות נשלחות לנתיב לא נכון
+        var openAiOptions = new OpenAIClientOptions
+        {
+            Endpoint = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/")
+        };
+
+        return new OpenAIClient(new ApiKeyCredential(apiKey), openAiOptions)
+            .GetChatClient(model)
+            .AsIChatClient();
+    })
+    .UseFunctionInvocation(configure: client =>
+    {
+        // מריץ את הכלים שהמודל מבקש, עד שמגיעה תשובה בטקסט
+        client.MaximumIterationsPerRequest = 5;   // תקרה לסבבים בשאלה אחת - שלא ייתקע בלולאה על חשבון המכסה
+        client.AllowConcurrentInvocation = false; // כלים אחד אחרי השני: DbContext לא תומך בשתי פעולות בו-זמנית
+    });
+
+// "מי שואל" ומחלקות הכלים - Scoped, אחד לכל בקשה (כמו ה-Services שהם קוראים להם)
+builder.Services.AddScoped<AgentCaller>();
+builder.Services.AddScoped<DonationTools>();
+builder.Services.AddScoped<NgoTools>();
+builder.Services.AddScoped<VolunteerTools>();
+builder.Services.AddScoped<AdminTools>();
+
+// הכלי שפונה ל-API חיצוני (Hebcal - לוח חגים, בלי מפתח). AddHttpClient מזריק HttpClient עם הכתובת הבסיסית - בלי new HttpClient()
+builder.Services.AddHttpClient<CalendarTools>(client =>
+{
+    client.BaseAddress = new Uri("https://www.hebcal.com/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
+
+builder.Services.AddScoped<IAgentService, AgentService>();
 
 // =========================================================
 // Hangfire
@@ -447,6 +522,13 @@ builder.Services.AddCors(options =>
 // =========================================================
 
 var app = builder.Build();
+
+// מפתח הדפדפן של Google Maps: חייב להיות מפתח נפרד ממפתח השרת (שלא יוצא מהשרת אף פעם)
+var browserMapsKey = builder.Configuration["GoogleMaps:BrowserApiKey"]?.Trim();
+if (string.IsNullOrEmpty(browserMapsKey))
+    app.Logger.LogWarning("GoogleMaps:BrowserApiKey is not set - the client shows map images from the server instead of the interactive map.");
+else if (browserMapsKey == builder.Configuration["GoogleMaps:ApiKey"]?.Trim())
+    app.Logger.LogError("GoogleMaps:BrowserApiKey must be a separate key, not the server key. The interactive map stays off until it is replaced.");
 
 app.UseForwardedHeaders();
 

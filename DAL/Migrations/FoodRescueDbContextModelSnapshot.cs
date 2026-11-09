@@ -201,6 +201,9 @@ namespace DAL.Migrations
                     b.Property<double?>("Longitude")
                         .HasColumnType("float");
 
+                    b.Property<int?>("MatchId")
+                        .HasColumnType("int");
+
                     b.Property<string>("StatusDescription")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -208,12 +211,17 @@ namespace DAL.Migrations
                     b.Property<DateTime>("Timestamp")
                         .HasColumnType("datetime2");
 
+                    b.Property<int>("Type")
+                        .HasColumnType("int");
+
                     b.Property<int>("VolunteerRouteId")
                         .HasColumnType("int");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("VolunteerRouteId");
+                    b.HasIndex("MatchId");
+
+                    b.HasIndex("VolunteerRouteId", "Timestamp");
 
                     b.ToTable("DeliveryLogs");
                 });
@@ -985,11 +993,18 @@ namespace DAL.Migrations
 
             modelBuilder.Entity("DAL.Classes.DeliveryLog", b =>
                 {
+                    b.HasOne("DAL.Classes.Match", "Match")
+                        .WithMany()
+                        .HasForeignKey("MatchId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("DAL.Classes.VolunteerRoute", "VolunteerRoute")
                         .WithMany("DeliveryLogs")
                         .HasForeignKey("VolunteerRouteId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Match");
 
                     b.Navigation("VolunteerRoute");
                 });

@@ -175,6 +175,31 @@ namespace DAL.Repositories
                 .ToListAsync();
         }
 
+        // תיקון 21: הסטטוסים שתופסים מקום בקיבולת היומית של העמותה
+        private static readonly MatchStatus[] CapacityStatuses =
+        {
+            MatchStatus.AwaitingVolunteerConfirmation,
+            MatchStatus.Confirmed,
+            MatchStatus.InPickup,
+            MatchStatus.InTransit,
+            MatchStatus.Completed
+        };
+
+        public async Task<Dictionary<int, double>> SumWeightKgByNgoOnDateAsync(IEnumerable<int> ngoIds, DateTime dayStartUtc, DateTime dayEndUtc)
+        {
+            var ids = ngoIds.ToList();
+
+            var rows = await _context.Matches
+                .Where(m => ids.Contains(m.NgoId) && m.AssignedAt >= dayStartUtc && m.AssignedAt < dayEndUtc &&
+                            CapacityStatuses.Contains(m.Status))
+                .SelectMany(m => m.Donation.DonationFoodCategories.Select(c => new { m.NgoId, c.WeightKg }))
+                .ToListAsync();
+
+            return rows
+                .GroupBy(r => r.NgoId)
+                .ToDictionary(g => g.Key, g => g.Sum(r => r.WeightKg));
+        }
+
         public async Task<Dictionary<int, int>> CountByNgoOnDateAsync(IEnumerable<int> ngoIds, DateTime dayStartUtc, DateTime dayEndUtc)
         {
             var ids = ngoIds.ToList();
