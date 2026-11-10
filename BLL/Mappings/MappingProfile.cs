@@ -42,6 +42,9 @@ namespace BLL.Mappings
                 // התמונה: השירות בודק שהקובץ הועלה ע"י המשתמש ורק אז ממלא את השדה בעצמו
                 .ForMember(d => d.Image, o => o.Ignore())
                 .ForSourceMember(s => s.Image, o => o.DoNotValidate())
+                // תיקון 33: האזור נקבע בשירות לפי מיקום העסק (DonationService.ResolveRegionIdAsync)
+                .ForMember(d => d.RegionId, o => o.Ignore())
+                .ForSourceMember(s => s.RegionId, o => o.DoNotValidate())
                 .ForMember(d => d.CreatedAt, o => o.Ignore())
                 .ForMember(d => d.Status, o => o.Ignore())
                 .ForMember(d => d.PriorityScore, o => o.Ignore())
@@ -97,7 +100,9 @@ namespace BLL.Mappings
             CreateMap<Supplier, SupplierResponseDto>();
             CreateMap<CreateSupplierDto, Supplier>(MemberList.Source)
                 // הקובץ נשמר בשירות (LicenseFileService) ובמסד נשמר רק שם הקובץ
-                .ForSourceMember(s => s.LicenseFile, o => o.DoNotValidate());
+                .ForSourceMember(s => s.LicenseFile, o => o.DoNotValidate())
+                // תיקון 32: מספר העוסק מהחשבון נקבע בשירות (SupplierService.AddRoleAsync)
+                .ForSourceMember(s => s.UseAccountIdNumber, o => o.DoNotValidate());
             CreateMap<Supplier, AdminSupplierListItemDto>()
                 .ForMember(d => d.Name, o => o.MapFrom(s => s.BusinessName))
                 .ForMember(d => d.Phone, o => o.MapFrom(s => s.User != null ? s.User.Phone : "לא צויין"))

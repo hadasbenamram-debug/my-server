@@ -48,16 +48,18 @@ namespace BLL.Services
             var forgotUrl = FrontendLinks.TryBuild(_configuration, "app/forgot-password");
             string what = string.IsNullOrWhiteSpace(roleTitle) ? "" : $" ({roleTitle})";
 
+            // תיקון 37: מייל מעוצב (EmailTemplate)
             var body =
-                $"שלום {WebUtility.HtmlEncode(existingUser.Name)},<br/>" +
-                $"קיבלנו בקשת הרשמה ל\"לתת באהבה\"{what} עם כתובת המייל הזו - אבל כבר יש לך חשבון אצלנו, ולכן לא נוצר חשבון חדש.<br/><br/>" +
-                (loginUrl == null ? "" : $"אפשר להתחבר עם המייל והסיסמה שלך: <a href='{loginUrl}'>כניסה למערכת</a><br/>") +
-                (forgotUrl == null ? "" : $"שכחת את הסיסמה? <a href='{forgotUrl}'>איפוס סיסמה</a><br/>") +
+                EmailTemplate.Greeting(existingUser.Name) +
+                EmailTemplate.Paragraph($"קיבלנו בקשת הרשמה ל\"לתת באהבה\"{WebUtility.HtmlEncode(what)} עם כתובת המייל הזו - אבל כבר יש לך חשבון אצלנו, ולכן לא נוצר חשבון חדש.") +
+                (loginUrl == null ? "" : EmailTemplate.Button(loginUrl, "כניסה למערכת")) +
+                (forgotUrl == null ? "" : EmailTemplate.Paragraph($"שכחת את הסיסמה? <a href='{forgotUrl}'>איפוס סיסמה</a>")) +
                 // תיקון 10: אותו חשבון יכול להחזיק כמה תפקידים - מסבירים איך מוסיפים תפקיד במקום להירשם מחדש
-                "<br/>רוצה להצטרף בתפקיד נוסף (למשל גם כמתנדב/ת וגם כספק) עם אותו חשבון? אחרי הכניסה למערכת, " +
-                "בעמוד <b>פרופיל אישי</b> יש כרטיס <b>התפקידים שלי</b> - שם בוחרים את התפקיד הנוסף וממלאים רק את הפרטים שלו.<br/>" +
-                "<br/>אם לא ביקשת להירשם - אפשר פשוט להתעלם מההודעה הזו.<br/><br/>" +
-                "תודה,<br/>צוות לתת באהבה";
+                EmailTemplate.Paragraph("רוצה להצטרף בתפקיד נוסף (למשל גם כמתנדב/ת וגם כספק) עם אותו חשבון? אחרי הכניסה למערכת, " +
+                    "בעמוד <b>פרופיל אישי</b> יש כרטיס <b>התפקידים שלי</b> - שם בוחרים את התפקיד הנוסף וממלאים רק את הפרטים שלו " +
+                    "(פרטים שכבר שמורים בחשבון, כמו תעודת הזהות, לא צריך להזין שוב).") +
+                EmailTemplate.Note("אם לא ביקשת להירשם - אפשר פשוט להתעלם מההודעה הזו.") +
+                EmailTemplate.Signature();
 
             await _notifications.QueueEmailAsync(existingUser.Id, existingUser.Email, Subject, body,
                 summary: "ניסיון הרשמה עם מייל קיים");
@@ -68,11 +70,12 @@ namespace BLL.Services
             if (user == null || string.IsNullOrWhiteSpace(user.Email))
                 return;
 
+            // תיקון 37: מייל מעוצב (EmailTemplate)
             var body =
-                $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>" +
-                $"הבקשה שלך להצטרף גם {roleTitle} התקבלה וממתינה לאישור מנהל.<br/>" +
-                "עד האישור אפשר להמשיך להשתמש בחשבון כרגיל. אחרי האישור יישלח אליך מייל, ותוכל/י לעבור בין התפקידים מהתפריט.<br/><br/>" +
-                "תודה,<br/>צוות לתת באהבה";
+                EmailTemplate.Greeting(user.Name) +
+                EmailTemplate.Paragraph($"הבקשה שלך להצטרף גם {WebUtility.HtmlEncode(roleTitle)} התקבלה וממתינה לאישור מנהל.") +
+                EmailTemplate.Paragraph("עד האישור אפשר להמשיך להשתמש בחשבון כרגיל. אחרי האישור יישלח אליך מייל, ותוכל/י לעבור בין התפקידים מהתפריט.") +
+                EmailTemplate.Signature();
 
             await _notifications.QueueEmailAsync(user.Id, user.Email, "קיבלנו את הבקשה שלך להצטרף בתפקיד נוסף - לתת באהבה", body,
                 summary: "בקשה לתפקיד נוסף התקבלה");

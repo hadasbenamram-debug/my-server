@@ -143,9 +143,38 @@ namespace FoodRescue.Controllers
         public async Task<IActionResult> MarkNoShow(int id,
             [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] NoShowDto? dto)
         {
-            var count = await _matchService.MarkNoShowAsync(id, dto?.Reason);
-            return Ok(new { message = $"סומן No-Show. {count} תרומות הוחזרו לשיבוץ מחדש.", requeued = count });
+            // תיקון 36: AutoReassign=false - המנהל משבץ בעצמו (ברירת המחדל: שיבוץ אוטומטי מיידי, כמו קודם)
+            bool autoReassign = dto?.AutoReassign ?? true;
+            var count = await _matchService.MarkNoShowAsync(id, dto?.Reason, autoReassign);
+            return Ok(new
+            {
+                message = autoReassign
+                    ? $"סומן No-Show. {count} תרומות הוחזרו לשיבוץ מחדש."
+                    : $"סומן No-Show. {count} תרומות ממתינות לשיבוץ ידני.",
+                requeued = count
+            });
         }
+
+        // ---------------- תיקון 36: טיפול ידני באי-הגעה (מנהל) ----------------
+
+        // מי מאחר לאיסוף ובכמה (כולל טלפון המתנדב), ומה קרה לתרומות שסומנו No-Show
+        [HttpGet("no-show/board")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<NoShowBoardDto>> GetNoShowBoard() =>
+            Ok(await _matchService.GetNoShowBoardAsync());
+
+        // המתנדבים שאפשר לשבץ לתרומה, המתאימים ביותר ראשונים (מרחק, קיבולת, משמרת, אמינות)
+        [HttpGet("assign-donation/{donationId:int}/candidates")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<ManualAssignmentOptionsDto>> GetManualAssignmentOptions(int donationId) =>
+            Ok(await _matchService.GetManualAssignmentOptionsAsync(donationId) ?? throw new NotFoundException("התרומה לא נמצאה."));
+
+        // שיבוץ ידני למתנדב שהמנהל בחר: נבנה מסלול (עמותה, זמנים) ונשלחת אליו הצעה כרגיל
+        [HttpPost("assign-donation/{donationId:int}/volunteer/{volunteerId:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<AssignDonationResultDto>> AssignDonationToVolunteer(int donationId, int volunteerId,
+            [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] ManualAssignDto? dto) =>
+            Ok(await _matchService.AssignDonationToVolunteerAsync(donationId, volunteerId, dto?.IgnoreSchedule ?? false));
 
         // ---------------- מסלולים ----------------
 

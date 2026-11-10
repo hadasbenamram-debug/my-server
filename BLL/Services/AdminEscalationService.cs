@@ -1,6 +1,7 @@
 using BLL.Notifications;
 using DAL.Classes;
 using DAL.Interfaces;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Net;
@@ -24,13 +25,17 @@ namespace BLL.Services
         private readonly INotificationRepository _notificationRepository;
         private readonly INotificationService _notifications;
         private readonly ILogger<AdminEscalationService> _logger;
+        private readonly IConfiguration? _configuration;
 
         public AdminEscalationService(
             IUserRepository userRepository,
             INotificationRepository notificationRepository,
             INotificationService notifications,
-            ILogger<AdminEscalationService> logger)
+            ILogger<AdminEscalationService> logger,
+            // תיקון 37: לקישור "לשיבוץ ידני" במייל (App:FrontendBaseUrl)
+            IConfiguration? configuration = null)
         {
+            _configuration = configuration;
             _userRepository = userRepository;
             _notificationRepository = notificationRepository;
             _notifications = notifications;
@@ -52,12 +57,18 @@ namespace BLL.Services
             }
 
             string subject = SubjectFor(donation.Id);
+            // תיקון 37: מייל מעוצב (EmailTemplate). תיקון 36: אפשר לשבץ ידנית למתנדב שהמנהל בוחר (גם בתיאום טלפוני)
             string content =
-                $"לא ניתן לשבץ מתנדב לתרומה #{donation.Id}.<br/>" +
-                $"סיבה: {WebUtility.HtmlEncode(reason)}<br/>" +
-                $"שעת איסוף אחרונה: {donation.LatestPickupTime:hh\\:mm}<br/>" +
-                $"תאריך תפוגה: {BLL.Algorithms.LocalClock.ToLocal(donation.ExpirationTime):yyyy-MM-dd HH:mm}<br/>" +
-                "נדרש טיפול ידני (למשל פנייה ישירה למתנדבים או לעמותה, או שיבוץ ידני במסך ה-No-Show).";
+                EmailTemplate.Paragraph($"המנוע לא הצליח לשבץ מתנדב לתרומה <b>#{donation.Id}</b>, ונדרש טיפול ידני.") +
+                EmailTemplate.Details(
+                    ("סיבה", WebUtility.HtmlEncode(reason)),
+                    ("שעת איסוף אחרונה", $"{donation.LatestPickupTime:hh\\:mm}"),
+                    ("המזון טוב עד", $"{BLL.Algorithms.LocalClock.ToLocal(donation.ExpirationTime):dd/MM/yyyy HH:mm}")) +
+                EmailTemplate.Paragraph("בעמוד <b>ניהול תרומות</b> אפשר לבחור מתנדב ולשלוח אליו את התרומה (שיבוץ ידני) - " +
+                                        "גם מתנדב שתיאמתם איתו בטלפון, מחוץ למשמרת הזמינות שלו. אפשר גם לפנות ישירות לספק או לעמותה.") +
+                (_configuration == null || FrontendLinks.TryBuild(_configuration, "app/admin/donations") is not string link
+                    ? ""
+                    : EmailTemplate.Button(link, "לשיבוץ ידני"));
 
             var since = DateTime.UtcNow - RepeatWindow;
             int notified = 0;
@@ -70,7 +81,7 @@ namespace BLL.Services
                 try
                 {
                     await _notifications.QueueEmailAsync(admin.Id, admin.Email, subject, content, summary: reason);
-                    await _notifications.NotifyUserAsync(admin.Id, subject, reason, link: "/app/admin/noshow", type: "warning");
+                    await _notifications.NotifyUserAsync(admin.Id, subject, reason, link: "/app/admin/donations", type: "warning");
                     notified++;
                 }
                 catch (Exception ex)

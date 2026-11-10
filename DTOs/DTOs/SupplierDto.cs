@@ -16,9 +16,13 @@ namespace FoodRescue.DTOs
         public string Address { get; set; } = string.Empty;
 
         // תוקן: המסד מקבל עד 20 תווים (Supplier.TaxId) - בעבר 50
-        [Required(ErrorMessage = "יש להזין ח.פ / מספר עוסק.")]
+        // תיקון 32: לא חובה כש-UseAccountIdNumber מסומן (השרת ממלא אותו). אחרת - חובה (נבדק ב-SupplierService.AddRoleAsync).
         [StringLength(20, MinimumLength = 5, ErrorMessage = "ח.פ / מספר עוסק יכול להכיל 5-20 תווים.")]
-        public string TaxId { get; set; } = string.Empty;
+        public string? TaxId { get; set; }
+
+        // תיקון 32: עוסק מורשה / עוסק פטור - מספר העוסק הוא מספר תעודת הזהות שכבר שמורה בחשבון (פרופיל המתנדב),
+        // ולכן לא מזינים אותו שוב
+        public bool UseAccountIdNumber { get; set; }
 
         [Required(ErrorMessage = "קובץ רישיון עסק הוא שדה חובה.")]
         public IFormFile LicenseFile { get; set; } = null!;

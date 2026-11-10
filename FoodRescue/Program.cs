@@ -282,6 +282,8 @@ builder.Services.AddScoped<IDeliveryTrackingService, DeliveryTrackingService>();
 builder.Services.AddScoped<IFeedbackService, FeedbackService>();
 builder.Services.AddScoped<ISupportService, SupportService>();
 builder.Services.AddScoped<IAdminReportService, AdminReportService>();
+// תיקון 31: נתוני "ההשפעה שלנו" בדף הבית (api/stats/public) - מהמסד, עם מטמון של 5 דקות
+builder.Services.AddScoped<IPublicStatsService, PublicStatsService>();
 builder.Services.AddScoped<IValidationService, ValidationService>();
 builder.Services.AddScoped<AdminSeedService>();
 builder.Services.AddScoped<FoodCategorySeedService>();
@@ -559,6 +561,14 @@ app.UseAuthentication();
 app.UseMiddleware<PasswordChangeRequiredMiddleware>();
 app.UseAuthorization();
 app.UseRateLimiter();
+
+// =========================================================
+// תיקון 34: migrations שלא הורצו על המסד. בגלל DeliveryLogTracking שלא הורץ, טבלת DeliveryLogs לא התעדכנה
+// (חסרו העמודות Type ו-MatchId והשגיאה נבלעה). ב-Development הם מורצים אוטומטית; בסביבות אחרות - שגיאה ברורה בלוג.
+// אפשר לשלוט בזה עם Database:AutoMigrate (true / false).
+// =========================================================
+
+await DatabaseMigrator.EnsureUpToDateAsync(app);
 
 // =========================================================
 // אתחול: מנהל ראשי, קטגוריות ואזורים בסיסיים, ומדיניות השידוך מהמסד

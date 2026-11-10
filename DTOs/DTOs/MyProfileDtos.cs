@@ -19,6 +19,10 @@ namespace FoodRescue.DTOs
 
         // אפשר להוסיף לחשבון תפקיד נוסף (מתנדב / ספק / עמותה). מנהל - לא.
         public bool CanAddRoles { get; set; }
+
+        // תיקון 32: תעודת זהות שכבר שמורה בחשבון, מוסתרת ("•••••6789") - מפרופיל המתנדב, או ממספר העוסק של הספק
+        // כשהוא מספר זהות של אדם (עוסק מורשה / פטור). בהוספת תפקיד השרת ממלא אותה בעצמו. null = אין.
+        public string? KnownIdNumberMasked { get; set; }
     }
 
     public class AccountRoleDto

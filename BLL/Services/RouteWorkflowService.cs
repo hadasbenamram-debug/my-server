@@ -91,7 +91,9 @@ namespace BLL.Services
                 return RouteResponseResult.NotAwaiting;
 
             var now = DateTime.UtcNow;
-            if (group.Any(m => m.ResponseDeadline.HasValue && m.ResponseDeadline.Value < now))
+            // תיקון 38: ברגע שהזמן הגיע (ולא רק אחריו) - כבר מאוחר. השרת קובע לפי השעון שלו, גם אם הדף אצל המתנדב
+            // לא רוענן והכפתור עוד מוצג.
+            if (IsPastDeadline(group, now))
             {
                 // תיקון 13: הזמן עבר - אין אישור מאוחר. אם הג'וב שמסמן "לא ענה בזמן" עוד לא הספיק לרוץ,
                 // מסמנים כאן TimedOut והבקשה עוברת מיד למתנדב הבא (לא מחכים לג'וב)
@@ -113,8 +115,17 @@ namespace BLL.Services
 
             // תיקון 14: אם בדיוק באותו רגע הבקשה סומנה "לא ענה בזמן" (או נענתה במכשיר אחר) - העדכון שלנו נכשל
             // (הסטטוס הוא Concurrency Token) והאישור לא נשמר. אין מצב של שני מתנדבים לאותה תרומה.
+            bool lateAtSave = false;
             bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
+                // תיקון 38: בדיקה חוזרת ממש לפני השמירה - אישור שהתחיל ב-4:59.9 ונשמר אחרי 5:00 לא נקלט
+                now = DateTime.UtcNow;
+                if (IsPastDeadline(group, now))
+                {
+                    lateAtSave = true;
+                    return;
+                }
+
                 foreach (var m in group)
                 {
                     m.Status = MatchStatus.Confirmed;
@@ -135,6 +146,12 @@ namespace BLL.Services
                 await RevokeLinkTokensAsync(group[0]);
             });
 
+            if (lateAtSave)
+            {
+                await DeclineAsync(match, volunteerId, MatchStatus.TimedOut);
+                return RouteResponseResult.Expired;
+            }
+
             if (!saved)
                 return RouteResponseResult.NotAwaiting;
 
@@ -143,6 +160,10 @@ namespace BLL.Services
             await PublishStatusAsync(group);
             return RouteResponseResult.Done;
         }
+
+        // תיקון 38: חלון התגובה הסתיים (deadline כולל: ב-5:00 בדיוק כבר מאוחר)
+        private static bool IsPastDeadline(IEnumerable<Match> group, DateTime nowUtc) =>
+            group.Any(m => m.ResponseDeadline.HasValue && m.ResponseDeadline.Value <= nowUtc);
 
         // דחייה של המתנדב (Declined) או אי-מענה בזמן (TimedOut). NotAwaiting = הבקשה כבר לא ממתינה (בלי חריגה).
         public async Task<RouteResponseResult> DeclineAsync(Match match, int volunteerId, MatchStatus outcome = MatchStatus.Declined)
@@ -378,7 +399,9 @@ namespace BLL.Services
         // No-Show
         // =========================================================
 
-        public async Task<int> MarkNoShowAsync(Match match, string? reason, bool automatic)
+        // תיקון 36: autoReassign=false - המנהל מטפל בתרומות בעצמו (שיבוץ ידני למתנדב שהוא בוחר), ולכן לא מתזמנים
+        // שיבוץ אוטומטי מיידי. התרומות חוזרות ל-Pending, כך שאם המנהל לא ישבץ - הריצה הבאה של המנוע תטפל בהן.
+        public async Task<int> MarkNoShowAsync(Match match, string? reason, bool automatic, bool autoReassign = true)
         {
             var all = await GetGroupAsync(match);
             var group = all
@@ -407,7 +430,8 @@ namespace BLL.Services
             EnsureSaved(saved);
 
             await _tracker.RecordEventAsync(group[0].VolunteerRouteId, DeliveryLogType.Cancelled,
-                "המתנדב לא הגיע לאיסוף" + (automatic ? " (זוהה אוטומטית)" : "") + ". התרומות הועברו לשיבוץ מחדש.");
+                "המתנדב לא הגיע לאיסוף" + (automatic ? " (זוהה אוטומטית)" : "") +
+                (autoReassign ? ". התרומות הועברו לשיבוץ מחדש." : ". מנהל המערכת משבץ את התרומות מחדש."));
 
             // ציון האמינות יורד (MatchingPolicy:NoShowReliabilityPenalty)
             await _reliability.RecalculateAsync(volunteerId);
@@ -423,14 +447,18 @@ namespace BLL.Services
 
             await _notifications.NotifyAdminsAsync(
                 $"No-Show במסלול #{group[0].VolunteerRouteId ?? group[0].Id}",
-                (automatic ? "זוהה אוטומטית. " : "") + "התרומות הועברו לשיבוץ מחדש מיידי.",
+                (automatic ? "זוהה אוטומטית. " : "") +
+                (autoReassign ? "התרומות הועברו לשיבוץ מחדש מיידי." : "התרומות ממתינות לשיבוץ ידני בעמוד \"טיפול באי-הגעה\"."),
                 link: "/app/admin/noshow", type: "warning");
 
             await PublishStatusAsync(group);
 
             // מסמך התיאור, שלב 9: שיבוץ מחדש מיידי, בלי לחכות לריצה השעתית
-            foreach (var donationId in group.Select(m => m.DonationId).Distinct())
-                ScheduleReassign(donationId);
+            if (autoReassign)
+            {
+                foreach (var donationId in group.Select(m => m.DonationId).Distinct())
+                    ScheduleReassign(donationId);
+            }
 
             return group.Count;
         }

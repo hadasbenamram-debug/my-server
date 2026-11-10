@@ -27,5 +27,10 @@ namespace DAL.Repositories
                 .AsNoTracking()
                 .ToListAsync();
         }
+
+        public async Task<int> CountByApprovalStatusAsync(ApprovalStatus status)
+        {
+            return await _context.Suppliers.CountAsync(s => s.ApprovalStatus == status);
+        }
     }
 }

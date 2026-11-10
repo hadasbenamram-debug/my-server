@@ -239,10 +239,149 @@ namespace BLL.Services
             await _workflow.DeliverAsync(match);
         }
 
-        public async Task<int> MarkNoShowAsync(int id, string? reason)
+        public async Task<int> MarkNoShowAsync(int id, string? reason, bool autoReassign = true)
         {
             var match = await _matchRepository.GetByIdWithDetailsAsync(id) ?? throw new NotFoundException(MatchNotFound);
-            return await _workflow.MarkNoShowAsync(match, reason, automatic: false);
+            return await _workflow.MarkNoShowAsync(match, reason, automatic: false, autoReassign: autoReassign);
+        }
+
+        // =========================================================
+        // תיקון 36: טיפול ידני של המנהל באי-הגעה
+        // =========================================================
+
+        private const int NoShowHistoryLimit = 50;
+
+        private static readonly MatchStatus[] AwaitingPickupStatuses = { MatchStatus.Confirmed, MatchStatus.InPickup };
+
+        public async Task<NoShowBoardDto> GetNoShowBoardAsync()
+        {
+            var now = DateTime.UtcNow;
+            var localToday = LocalClock.ToLocal(now).Date;
+
+            // מסלולים שאושרו ויש בהם תחנה שעוד לא נאספה (Confirmed / InPickup) - מועמדים ל-No-Show
+            var active = await _matchRepository.GetActiveMatchesAsync();
+            var awaiting = active
+                .Where(m => m.PickedUpAt == null && AwaitingPickupStatuses.Contains(m.Status))
+                .GroupBy(m => m.VolunteerRouteId ?? -m.Id)
+                .Select(g =>
+                {
+                    var stops = g.OrderBy(m => m.EstimatedArrival ?? DateTime.MaxValue).ThenBy(m => m.Id).ToList();
+                    var first = stops[0];
+                    var eta = stops.Select(m => m.EstimatedArrival).FirstOrDefault(e => e.HasValue);
+                    return new AwaitingPickupRouteDto
+                    {
+                        RouteId = first.VolunteerRouteId,
+                        MatchId = first.Id,
+                        VolunteerId = first.VolunteerId,
+                        VolunteerName = first.Volunteer?.User?.Name ?? $"מתנדב #{first.VolunteerId}",
+                        VolunteerPhone = first.Volunteer?.User?.Phone,
+                        Started = stops.Any(m => m.Status == MatchStatus.InPickup),
+                        NextPickupEta = eta,
+                        MinutesLate = eta.HasValue && now > eta.Value ? (int)Math.Floor((now - eta.Value).TotalMinutes) : 0,
+                        LastLocationAt = first.Volunteer?.LocationUpdatedAt,
+                        Stops = stops.Select(m => new AwaitingPickupStopDto
+                        {
+                            MatchId = m.Id,
+                            DonationId = m.DonationId,
+                            SupplierName = m.Donation?.Supplier?.BusinessName,
+                            PickupAddress = m.Donation?.Supplier?.Address,
+                            EstimatedArrival = m.EstimatedArrival,
+                            Status = m.Status.ToString()
+                        }).ToList()
+                    };
+                })
+                .OrderByDescending(r => r.MinutesLate)
+                .ThenBy(r => r.NextPickupEta ?? DateTime.MaxValue)
+                .ToList();
+
+            // אירועי No-Show אחרונים, ומה קרה לתרומה מאז
+            var noShows = await _matchRepository.GetPageAsync(0, NoShowHistoryLimit, MatchStatus.NoShow);
+            var events = new List<NoShowEventDto>(noShows.Items.Count);
+            var currentByDonation = new Dictionary<int, DAL.Classes.Match?>();
+            foreach (var m in noShows.Items)
+            {
+                if (!currentByDonation.TryGetValue(m.DonationId, out var current))
+                {
+                    current = await _matchRepository.GetCurrentForDonationAsync(m.DonationId);
+                    currentByDonation[m.DonationId] = current;
+                }
+
+                // המצב העדכני של התרומה מהשידוך הנוכחי שלה (ה-Include של אירוע ישן יכול להיות מאותה טעינה)
+                var donation = current?.Donation ?? m.Donation;
+                bool reassigned = current != null && current.Id != m.Id && current.IsActive;
+                bool canAssign = donation != null &&
+                                 donation.Status == DonationStatus.Pending &&
+                                 NgoAvailabilityHelper.GetPickupDateTime(donation) > now &&
+                                 LocalClock.ToLocal(donation.CreatedAt).Date == localToday;
+
+                events.Add(new NoShowEventDto
+                {
+                    MatchId = m.Id,
+                    DonationId = m.DonationId,
+                    RouteId = m.VolunteerRouteId,
+                    VolunteerName = m.Volunteer?.User?.Name ?? $"מתנדב #{m.VolunteerId}",
+                    VolunteerPhone = m.Volunteer?.User?.Phone,
+                    SupplierName = m.Donation?.Supplier?.BusinessName,
+                    PickupAddress = m.Donation?.Supplier?.Address,
+                    AssignedAt = m.AssignedAt,
+                    EstimatedArrival = m.EstimatedArrival,
+                    DonationStatus = donation?.Status.ToString() ?? string.Empty,
+                    ReassignedToVolunteerName = reassigned ? current!.Volunteer?.User?.Name ?? $"מתנדב #{current.VolunteerId}" : null,
+                    CanAssign = canAssign
+                });
+            }
+
+            return new NoShowBoardDto { GeneratedAt = now, AwaitingPickup = awaiting, NoShows = events };
+        }
+
+        public async Task<ManualAssignmentOptionsDto?> GetManualAssignmentOptionsAsync(int donationId)
+        {
+            var result = await _engine.GetManualCandidatesAsync(donationId);
+            if (result.Donation == null)
+                return null;
+
+            // התרומות שהמנוע טוען לא כוללות את הספק - לשם ולכתובת שבמסך טוענים אותה עם הספק
+            var donation = result.Donation.Supplier != null
+                ? result.Donation
+                : await _donationRepository.GetByIdWithCategoriesAsync(result.Donation.Id) ?? result.Donation;
+
+            return new ManualAssignmentOptionsDto
+            {
+                DonationId = donation.Id,
+                SupplierName = donation.Supplier?.BusinessName,
+                PickupAddress = donation.Supplier?.Address,
+                WeightKg = Math.Round(donation.TotalWeightKg(), 1),
+                PickupDeadline = result.PickupDeadline,
+                Problem = result.Problem,
+                Volunteers = result.Volunteers.Select(o => new ManualVolunteerOptionDto
+                {
+                    VolunteerId = o.Volunteer.Id,
+                    Name = o.Volunteer.User?.Name ?? $"מתנדב #{o.Volunteer.Id}",
+                    Phone = o.Volunteer.User?.Phone,
+                    MaxCapacityKg = o.Volunteer.MaxCapacityKg,
+                    ReliabilityScore = Math.Round(o.Volunteer.ReliabilityScore, 1),
+                    DistanceKm = o.DistanceKm,
+                    HasFreshLocation = o.HasFreshLocation,
+                    AvailableBySchedule = o.AvailableBySchedule,
+                    FailedThisDonationBefore = o.FailedThisDonationBefore,
+                    CanAssign = o.CanAssign,
+                    Note = o.Note
+                }).ToList()
+            };
+        }
+
+        public async Task<AssignDonationResultDto> AssignDonationToVolunteerAsync(int donationId, int volunteerId, bool ignoreSchedule)
+        {
+            var outcome = await _engine.AssignToVolunteerAsync(donationId, volunteerId, ignoreSchedule)
+                          ?? throw new ConflictException("מנוע השידוכים רץ כרגע. נסו שוב בעוד כמה רגעים.");
+
+            return new AssignDonationResultDto
+            {
+                Matched = outcome.Matched,
+                MatchId = outcome.MatchId,
+                RouteId = outcome.RouteId,
+                Message = outcome.Message
+            };
         }
 
         // =========================================================
@@ -383,6 +522,7 @@ namespace BLL.Services
             var ngo = shown.Select(m => m.Ngo).FirstOrDefault(n => n != null);
             var awaiting = shown.Where(m => m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation).ToList();
             var deadline = awaiting.Select(m => m.ResponseDeadline).Where(d => d.HasValue).Min();
+            var nowUtc = DateTime.UtcNow;
 
             // המיקום של המתנדב נחשף לעמותה ולספקים רק בזמן שהוא בדרך (InProgress) - לא לפני היציאה ולא אחרי הסיום
             bool shareLocation = route.Status == RouteStatus.InProgress && route.Volunteer?.LocationUpdatedAt != null;
@@ -395,9 +535,12 @@ namespace BLL.Services
                 VolunteerName = route.Volunteer?.User?.Name,
                 ScheduledAt = route.ScheduledAt,
                 ResponseDeadline = deadline,
+                ResponseSecondsLeft = awaiting.Count > 0 && deadline.HasValue
+                    ? (int)Math.Max(0, Math.Floor((deadline.Value - nowUtc).TotalSeconds))
+                    : null,
                 // תיקון 13: אחרי שהזמן עבר כבר לא ממתינים לתגובה - גם אם הג'וב שמסמן "לא ענה בזמן" עוד לא רץ
                 // (כך המתנדב לא רואה כפתור "אישור" אחרי 5 הדקות)
-                AwaitingResponse = awaiting.Count > 0 && (deadline == null || deadline.Value > DateTime.UtcNow),
+                AwaitingResponse = awaiting.Count > 0 && (deadline == null || deadline.Value > nowUtc),
                 TotalWeightKg = route.TotalWeightKg,
                 EstimatedTotalDurationMinutes = route.EstimatedTotalDurationMinutes,
                 EstimatedTotalDistanceKm = route.EstimatedTotalDistanceKm,

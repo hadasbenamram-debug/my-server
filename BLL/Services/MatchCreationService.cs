@@ -72,10 +72,6 @@ namespace BLL.Services
             if (plan == null || plan.Stops.Count == 0) throw new ArgumentException("המסלול ריק.", nameof(plan));
 
             var policy = _policy.Current;
-            var now = DateTime.UtcNow;
-
-            // תוקן: ResponseDeadline לא מולא אף פעם, ולכן ה-Timeout לא הופעל. עכשיו הוא נקבע לכל שידוך.
-            var deadline = now.AddMinutes(Math.Max(1, policy.ResponseTimeoutMinutes));
 
             // Polyline של המסלול המלא (אופציונלי - רק אם Google זמין). מחוץ לטרנזקציה.
             EncodedRoute? encoded = null;
@@ -93,6 +89,12 @@ namespace BLL.Services
                     _logger.LogWarning(ex, "Could not get route polyline from Google.");
                 }
             }
+
+            // תוקן: ResponseDeadline לא מולא אף פעם, ולכן ה-Timeout לא הופעל. עכשיו הוא נקבע לכל שידוך.
+            // תיקון 38: 5 הדקות נספרות מרגע ההקצאה למתנדב הזה - ולא מלפני הפנייה ל-Google (שיכולה לקחת כמה שניות),
+            // כך שכל מתנדב, גם הבא בתור, מקבל חלון מלא וחדש משלו
+            var now = DateTime.UtcNow;
+            var deadline = now.AddMinutes(Math.Max(1, policy.ResponseTimeoutMinutes));
 
             VolunteerRoute? route = null;
             var createdMatches = new List<Match>();
@@ -206,22 +208,27 @@ namespace BLL.Services
             var link = FrontendLinks.TryBuild(_configuration,
                 $"app/respond?token={WebUtility.UrlEncode(linkToken)}");
 
-            var stopsHtml = string.Join("", plan.Stops.Select((s, i) =>
-                $"<li>תחנה {i + 1}: תרומה #{s.DonationId}, הגעה משוערת {LocalClock.ToLocal(s.EstimatedArrival ?? plan.StartTime):HH:mm}</li>"));
+            // תיקון 37: מייל מעוצב (EmailTemplate) - פרטי המסלול בטבלה, וכפתור לאישור / דחייה
+            var stops = plan.Stops.Select((s, i) =>
+                $"תרומה #{s.DonationId} · הגעה משוערת <b>{LocalClock.ToLocal(s.EstimatedArrival ?? plan.StartTime):HH:mm}</b>");
 
+            var rows = new List<(string Label, string ValueHtml)>();
             // יציאה מאוחרת מהרגיל (תחילת המשמרת / פתיחת העמותה) - כתוב במפורש מתי לצאת
-            var departureHtml = PlannedDepartureText(plan, deadline).Length > 0
-                ? $"שעת יציאה מתוכננת: <b>{LocalClock.ToLocal(plan.StartTime):HH:mm}</b><br/>"
-                : "";
+            if (PlannedDepartureText(plan, deadline).Length > 0)
+                rows.Add(("יציאה מתוכננת", $"<b>{LocalClock.ToLocal(plan.StartTime):HH:mm}</b>"));
+            rows.Add(("תחנות איסוף", EmailTemplate.NumberedList(stops)));
+            rows.Add(("יעד", $"{EmailTemplate.Encode(ngo.NgoName)}<br/>{EmailTemplate.Encode(ngo.Address)}"));
+            rows.Add(("משקל כולל", $"{plan.TotalWeightKg:0.#} ק\"ג"));
+            rows.Add(("הגעה לעמותה", $"בערך ב-{LocalClock.ToLocal(plan.NgoArrival):HH:mm}"));
+            rows.Add(("לאשר עד", $"<b>{LocalClock.ToLocal(deadline):HH:mm}</b>"));
 
             var body =
-                $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>נמצא עבורך מסלול איסוף חדש:<br/>" +
-                departureHtml +
-                $"<ul>{stopsHtml}</ul>" +
-                $"יעד: {WebUtility.HtmlEncode(ngo.NgoName)} - {WebUtility.HtmlEncode(ngo.Address)}<br/>" +
-                $"משקל כולל: {plan.TotalWeightKg:0.#} ק\"ג, הגעה משוערת לעמותה: {LocalClock.ToLocal(plan.NgoArrival):HH:mm}<br/><br/>" +
-                $"יש לאשר או לדחות עד <b>{LocalClock.ToLocal(deadline):HH:mm}</b>." +
-                (link == null ? "" : $"<br/><a href='{link}'>לאישור או דחייה של המסלול</a>");
+                EmailTemplate.Greeting(user.Name) +
+                EmailTemplate.Paragraph("נמצא עבורך מסלול איסוף חדש - מזון טוב שמחכה להגיע למי שזקוק לו:") +
+                EmailTemplate.Details(rows) +
+                (link == null ? "" : EmailTemplate.Button(link, "לאישור או דחייה של המסלול")) +
+                EmailTemplate.Note($"אם הבקשה לא תאושר עד {LocalClock.ToLocal(deadline):HH:mm}, היא תעבור למתנדב אחר. הקישור אישי - נא לא להעביר אותו.") +
+                EmailTemplate.Signature();
 
             await _notifications.QueueEmailAsync(user.Id, user.Email, "בקשת התנדבות חדשה - לתת באהבה", body,
                 summary: $"בקשת התנדבות למסלול #{route.Id}");

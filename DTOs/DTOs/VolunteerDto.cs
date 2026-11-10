@@ -22,10 +22,11 @@ namespace FoodRescue.DTOs
         public double CurrentLongitude { get; set; }
 
         // תוקן: היה עד 20 תווים בלי ספרת ביקורת, בזמן שהמסד מקבל עד 15
-        [Required(ErrorMessage = "יש להזין מספר תעודת זהות.")]
+        // תיקון 32: לא חובה כשתעודת הזהות כבר שמורה בחשבון (למשל ספק שהוא עוסק מורשה) - השרת ממלא אותה בעצמו.
+        // אם אין ת"ז בחשבון ולא נשלחה - השרת מחזיר "יש להזין מספר תעודת זהות" (VolunteerService.AddRoleAsync).
         [StringLength(15, ErrorMessage = "מספר תעודת הזהות ארוך מדי.")]
         [IsraeliId]
-        public string IdNumber { get; set; } = string.Empty;
+        public string? IdNumber { get; set; }
 
         [DataType(DataType.Date)]
         [MinimumAge(17, ErrorMessage = "מתנדב נהג חייב להיות בן 17 לפחות.")]

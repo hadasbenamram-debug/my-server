@@ -31,6 +31,7 @@ namespace BLL.Services
         private readonly ILogger<SupplierService> _logger;
         private readonly IPasswordHasher<User> _passwordHasher;
         private readonly IRegistrationNoticeService _registrationNotices;
+        private readonly IVolunteerRepository? _volunteerRepository;
 
         public SupplierService(
             ISupplierRepository supplierRepository,
@@ -43,10 +44,13 @@ namespace BLL.Services
             IMapper mapper,
             ILogger<SupplierService> logger,
             IPasswordHasher<User> passwordHasher,
-            IRegistrationNoticeService registrationNotices)
+            IRegistrationNoticeService registrationNotices,
+            // תיקון 32: לתעודת הזהות שכבר שמורה בחשבון (מתנדב שהוא עוסק מורשה / פטור)
+            IVolunteerRepository? volunteerRepository = null)
         {
             _passwordHasher = passwordHasher;
             _registrationNotices = registrationNotices;
+            _volunteerRepository = volunteerRepository;
             _supplierRepository = supplierRepository;
             _userRepository = userRepository;
             _approvals = approvals;
@@ -109,6 +113,17 @@ namespace BLL.Services
             if (dto.LicenseFile == null || dto.LicenseFile.Length == 0)
                 throw new ArgumentException("חובה לצרף קובץ רישיון עסק.");
 
+            // תיקון 32: עוסק מורשה / פטור - מספר העוסק הוא תעודת הזהות שכבר שמורה בחשבון, ולא מזינים אותו שוב
+            string? taxId = dto.TaxId?.Trim();
+            if (dto.UseAccountIdNumber)
+            {
+                var volunteer = _volunteerRepository == null ? null : await _volunteerRepository.GetByUserIdAsync(userId);
+                taxId = AccountIdNumber.Find(volunteer, null)
+                        ?? throw new ArgumentException("לא נמצאה תעודת זהות שמורה בחשבון. יש להזין ח.פ / מספר עוסק.");
+            }
+            if (string.IsNullOrWhiteSpace(taxId) || taxId.Length < 5 || taxId.Length > 20)
+                throw new ArgumentException("יש להזין ח.פ / מספר עוסק (5-20 תווים).");
+
             // המיקום המדויק לפי הכתובת (Google Maps). לפני שמירת הקובץ, כדי שכתובת שגויה לא תשאיר קובץ יתום.
             var location = await _geocoding.GeocodeAsync(dto.Address);
 
@@ -117,6 +132,7 @@ namespace BLL.Services
 
             var supplierEntity = _mapper.Map<Supplier>(dto);
             supplierEntity.UserId = userId;
+            supplierEntity.TaxId = taxId;
             supplierEntity.Latitude = location.Latitude;
             supplierEntity.Longitude = location.Longitude;
             supplierEntity.BusinessLicenseFilePath = licenseFileName;
@@ -215,9 +231,13 @@ namespace BLL.Services
                         user.Id,
                         user.Email,
                         "פרטי ההתחברות שלך למערכת הצלת מזון",
-                        $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות שלך כספק למערכת התקבלה בהצלחה ועברה לאישור מנהל המערכת.<br/>" +
-                        $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>" +
-                        "אפשר יהיה להתחבר אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
+                        // תיקון 37: מייל מעוצב (EmailTemplate)
+                        EmailTemplate.Greeting(user.Name) +
+                        EmailTemplate.Paragraph("בקשת ההצטרפות שלך כספק התקבלה בהצלחה ועברה לאישור מנהל המערכת. תודה שבחרת לתרום באהבה!") +
+                        EmailTemplate.Paragraph("הסיסמה הזמנית שלך:") +
+                        EmailTemplate.Code(tempPassword) +
+                        EmailTemplate.Note("אפשר יהיה להתחבר אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.") +
+                        EmailTemplate.Signature(),
                         summary: "נשלחו פרטי התחברות");
                 });
             }

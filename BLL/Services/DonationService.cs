@@ -198,7 +198,8 @@ namespace BLL.Services
             var supplier = await _supplierRepository.GetByUserIdAsync(userId)
                            ?? throw new ForbiddenException("רק משתמש עם פרופיל ספק יכול ליצור תרומה.");
 
-            return await CreateForAsync(supplier, dto, userId);
+            // תיקון 33: ספק לא קובע אזור - האזור נקבע לפי הכתובת של העסק
+            return await CreateForAsync(supplier, dto, userId, allowRegionOverride: false);
         }
 
         // מנהל יוצר תרומה בשם ספק שבחר. מזהה הספק מגיע מהנתיב של נקודת קצה שמוגבלת למנהלים.
@@ -207,10 +208,10 @@ namespace BLL.Services
             var supplier = await _supplierRepository.GetByIdAsync(supplierId)
                            ?? throw new NotFoundException("הספק לא נמצא.");
 
-            return await CreateForAsync(supplier, dto, adminUserId);
+            return await CreateForAsync(supplier, dto, adminUserId, allowRegionOverride: true);
         }
 
-        private async Task<DonationResponseDto> CreateForAsync(Supplier supplier, CreateDonationDto dto, int userId)
+        private async Task<DonationResponseDto> CreateForAsync(Supplier supplier, CreateDonationDto dto, int userId, bool allowRegionOverride)
         {
             if (dto.Categories == null || !dto.Categories.Any())
                 throw new ArgumentException("יש לספק לפחות שורת קטגוריה אחת עבור התרומה.");
@@ -224,9 +225,8 @@ namespace BLL.Services
 
             await ValidateCategoriesAsync(dto.Categories);
 
-            // בדיקה לפני השמירה: אזור שלא קיים היה מפיל את ה-INSERT על מפתח זר (500).
-            if (!await _regionRepository.ExistsAsync(dto.RegionId))
-                throw new ArgumentException("האזור שנבחר אינו קיים.");
+            // תיקון 33: מקום האיסוף = הכתובת של העסק מההרשמה, והאזור נקבע לפי המיקום שלה (הספק לא בוחר אותו)
+            int regionId = await ResolveRegionIdAsync(supplier, allowRegionOverride ? dto.RegionId : null);
 
             // תוקן: בעבר נכתב כאן UtcNow.AddHours(3), כך ששעת היצירה נשמרה 3 שעות קדימה,
             // בזמן ששאר המערכת עובדת ב-UTC (וההמרה לשעון מקומי נעשית ב-LocalClock).
@@ -261,6 +261,7 @@ namespace BLL.Services
             donationEntity.Latitude = supplier.Latitude;
             donationEntity.Longitude = supplier.Longitude;
             donationEntity.GooglePlaceId = string.IsNullOrWhiteSpace(supplier.GooglePlaceId) ? "N/A" : supplier.GooglePlaceId;
+            donationEntity.RegionId = regionId;
             donationEntity.SupplierId = supplier.Id;
             donationEntity.CreatedAt = now;
             donationEntity.LatestPickupTime = pickupTime;
@@ -273,6 +274,23 @@ namespace BLL.Services
 
             var createdDonation = await _donationRepository.GetByIdWithCategoriesAsync(donationEntity.Id);
             return _mapper.Map<DonationResponseDto>(createdDonation);
+        }
+
+        // תיקון 33: אזור האיסוף לפי המיקום של העסק (שנקבע בהרשמה לפי הכתובת, דרך Google Maps).
+        // requestedRegionId - רק כשמנהל יוצר תרומה בשם ספק וקבע אזור במפורש.
+        private async Task<int> ResolveRegionIdAsync(Supplier supplier, int? requestedRegionId)
+        {
+            if (requestedRegionId is > 0)
+            {
+                // בדיקה לפני השמירה: אזור שלא קיים היה מפיל את ה-INSERT על מפתח זר (500).
+                if (!await _regionRepository.ExistsAsync(requestedRegionId.Value))
+                    throw new ArgumentException("האזור שנבחר אינו קיים.");
+                return requestedRegionId.Value;
+            }
+
+            var region = RegionLocator.Locate(await _regionRepository.GetAllAsync(), supplier.Latitude, supplier.Longitude)
+                         ?? throw new ArgumentException("לא הוגדרו אזורי פעילות במערכת, ולכן לא ניתן ליצור תרומה. יש לפנות למנהל המערכת.");
+            return region.Id;
         }
 
         // =========================================================

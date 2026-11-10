@@ -42,6 +42,12 @@ namespace DAL.Interfaces
         // תיקון 17: סך המשקל (ק"ג) של התרומות שהגיעו לעמותות (Delivered / Completed)
         Task<double> SumDeliveredWeightKgAsync();
 
+        // תיקון 31: כמה תרומות הגיעו לעמותות (Delivered / Completed) - לנתוני "ההשפעה שלנו" בדף הבית
+        Task<int> CountDeliveredAsync();
+
+        // תיקון 31: סך המשקל (ק"ג) של התרומות שנמסרו לעמותה מהרגע fromUtc (למשל מתחילת החודש)
+        Task<double> SumDeliveredWeightKgSinceAsync(DateTime fromUtc);
+
         // מחזיר false אם התרומה עודכנה במקביל ע"י בקשה אחרת (RowVersion)
         Task<bool> TryUpdateAsync(Donation donation);
 

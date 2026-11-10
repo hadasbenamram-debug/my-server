@@ -69,6 +69,10 @@ namespace FoodRescue.DTOs
         public string? VolunteerName { get; set; }
         public DateTime ScheduledAt { get; set; }
         public DateTime? ResponseDeadline { get; set; }
+
+        // תיקון 38: כמה שניות נשארו לאישור, לפי השעון של השרת (השעון במכשיר של המתנדב יכול להקדים / לאחר)
+        public int? ResponseSecondsLeft { get; set; }
+
         public bool AwaitingResponse { get; set; }
         public double TotalWeightKg { get; set; }
         public double? EstimatedTotalDurationMinutes { get; set; }
@@ -119,5 +123,9 @@ namespace FoodRescue.DTOs
     {
         [StringLength(300)]
         public string? Reason { get; set; }
+
+        // תיקון 36: true (ברירת מחדל) = התרומות חוזרות מיד לשיבוץ אוטומטי.
+        // false = המנהל מטפל בעצמו (משבץ למתנדב שהוא בוחר); אם לא ישבץ - הריצה הבאה של המנוע תטפל בהן.
+        public bool AutoReassign { get; set; } = true;
     }
 }

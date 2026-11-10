@@ -158,9 +158,13 @@ namespace BLL.Services
                     user.Id,
                     user.Email,
                     "פרטי ההתחברות שלך למערכת הצלת מזון",
-                    $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות של העמותה שלך התקבלה בהצלחה ועברה לאישור מנהל המערכת.<br/>" +
-                    $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>" +
-                    "אפשר יהיה להתחבר אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
+                    // תיקון 37: מייל מעוצב (EmailTemplate)
+                    EmailTemplate.Greeting(user.Name) +
+                    EmailTemplate.Paragraph("בקשת ההצטרפות של העמותה שלך התקבלה בהצלחה ועברה לאישור מנהל המערכת. שמחים שאתם איתנו!") +
+                    EmailTemplate.Paragraph("הסיסמה הזמנית שלך:") +
+                    EmailTemplate.Code(tempPassword) +
+                    EmailTemplate.Note("אפשר יהיה להתחבר אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.") +
+                    EmailTemplate.Signature(),
                     summary: "נשלחו פרטי התחברות");
             });
 

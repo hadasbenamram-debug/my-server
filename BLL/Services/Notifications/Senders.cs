@@ -76,15 +76,21 @@ namespace BLL.Notifications
                 EnableSsl = true
             };
 
+            // תיקון 37: כל מייל נשלח בעיצוב של האתר (EmailTemplate), ובנוסף גרסת טקסט רגיל (multipart/alternative)
+            var siteUrl = _configuration["App:FrontendBaseUrl"];
+            var html = EmailTemplate.Wrap(subject, htmlBody, siteUrl);
+            var plainText = EmailTemplate.PlainText(subject, htmlBody, siteUrl);
+
             using var mailMessage = new MailMessage
             {
-                From = new MailAddress(senderEmail),
+                From = new MailAddress(senderEmail, EmailTemplate.BrandName, Encoding.UTF8),
                 Subject = subject,
-                Body = htmlBody,
-                IsBodyHtml = true,
+                Body = plainText,
+                IsBodyHtml = false,
                 BodyEncoding = Encoding.UTF8,
                 SubjectEncoding = Encoding.UTF8
             };
+            mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(html, Encoding.UTF8, "text/html"));
             mailMessage.To.Add(toEmail);
             mailMessage.Headers.Add("Message-ID", messageId);
 

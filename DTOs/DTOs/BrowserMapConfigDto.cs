@@ -14,5 +14,9 @@
 
         public string Language { get; set; } = "he";
         public string Region { get; set; } = "IL";
+
+        // תיקון 35: למה המפה האינטראקטיבית כבויה (כש-Enabled=false), כדי שהלקוח יציג הסבר במקום מעבר שקט לתמונה:
+        // "NotConfigured" - לא הוגדר GoogleMaps:BrowserApiKey; "SameAsServerKey" - הוגדר בטעות מפתח השרת. null = פעילה.
+        public string? DisabledReason { get; set; }
     }
 }

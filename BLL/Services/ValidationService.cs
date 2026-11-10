@@ -1,3 +1,4 @@
+using BLL.Algorithms;
 using FoodRescue.DTOs.Validation;
 using System;
 using System.Collections.Generic;
@@ -34,7 +35,8 @@ namespace BLL.Services
         public (bool Passed, string Details) ValidateVolunteer(string? idNumber, string? licenseNumber, DateTime? licenseExpiry, DateTime dateOfBirth)
         {
             var problems = new List<string>();
-            var today = DateTime.UtcNow.Date;
+            // תיקון 39: "היום" לפי שעון ישראל - אותו כלל כמו באישור המנהל ובמנוע (DriverLicensePolicy). בעבר לפי UTC.
+            var today = DriverLicensePolicy.TodayLocal(DateTime.UtcNow);
 
             if (!IsraeliId.IsValid(idNumber))
                 problems.Add("מספר תעודת זהות שגוי (ספרת ביקורת לא תקינה).");

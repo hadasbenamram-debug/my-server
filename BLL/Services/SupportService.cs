@@ -46,16 +46,16 @@ namespace BLL.Services
             var subject = dto.Subject.Trim();
             var message = WebUtility.HtmlEncode(dto.Message.Trim()).Replace("\n", "<br/>");
 
-            var adminBody = $@"
-<div dir=""rtl"" style=""font-family:Arial,sans-serif"">
-  <h2>פנייה חדשה מטופס צור קשר</h2>
-  <p><b>שם:</b> {name}</p>
-  <p><b>אימייל:</b> {email}</p>
-  {(string.IsNullOrEmpty(phone) ? "" : $"<p><b>טלפון:</b> {phone}</p>")}
-  <p><b>נושא:</b> {WebUtility.HtmlEncode(subject)}</p>
-  <hr/>
-  <p>{message}</p>
-</div>";
+            // תיקון 37: מייל מעוצב (EmailTemplate) - פרטי הפונה בטבלה, וההודעה בתיבה מודגשת
+            var adminBody =
+                EmailTemplate.Paragraph("התקבלה פנייה חדשה מטופס צור קשר באתר:") +
+                EmailTemplate.Details(
+                    ("שם", name),
+                    ("אימייל", $"<a href=\"mailto:{email}\">{email}</a>"),
+                    ("טלפון", phone),
+                    ("נושא", WebUtility.HtmlEncode(subject))) +
+                EmailTemplate.Quote(message) +
+                EmailTemplate.Note("כדי לענות לפונה - משיבים למייל שלו (הכתובת שבטבלה).");
 
             // תוקן: פנייה מאורח (userId == null) נרשמת בלי משתמש, ולא על משתמש 1.
             // המיילים נכנסים לתור ונשלחים ברקע עם ניסיונות חוזרים.
@@ -66,12 +66,11 @@ namespace BLL.Services
             // 2. אישור קבלה לפונה - אם נכשל, לא מכשילים את כל הפנייה
             try
             {
-                var confirmBody = $@"
-<div dir=""rtl"" style=""font-family:Arial,sans-serif"">
-  <p>שלום {name},</p>
-  <p>קיבלנו את פנייתך בנושא ""{WebUtility.HtmlEncode(subject)}"" ונחזור אליך בהקדם.</p>
-  <p>תודה,<br/>צוות לתת באהבה</p>
-</div>";
+                var confirmBody =
+                    EmailTemplate.Greeting(dto.Name.Trim()) +
+                    EmailTemplate.Paragraph($"קיבלנו את פנייתך בנושא <b>&quot;{WebUtility.HtmlEncode(subject)}&quot;</b>, ונחזור אליך בהקדם.") +
+                    EmailTemplate.Paragraph("בינתיים - תודה שאת/ה חלק מהקהילה שמצילה מזון ומביאה אותו למי שזקוק לו.") +
+                    EmailTemplate.Signature();
                 await _notifications.QueueEmailAsync(userId, dto.Email.Trim(), "קיבלנו את פנייתך", confirmBody,
                     summary: "אישור קבלת פנייה");
             }

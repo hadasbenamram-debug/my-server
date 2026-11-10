@@ -2,6 +2,7 @@
 using BLL.Configuration;
 using BLL.Integrations.GoogleMaps;
 using BLL.Services;
+using DAL;
 using DAL.Classes;
 using DAL.Interfaces;
 using Hangfire;
@@ -144,7 +145,8 @@ namespace BLL.Algorithms
         public Task RunScheduledAsync() => RunBatchAsync("Scheduled");
 
         // שיבוץ מחדש מיידי של תרומה (אחרי דחייה / אי-מענה / No-Show). אם המנוע תפוס - Hangfire ינסה שוב.
-        [AutomaticRetry(Attempts = 5, DelaysInSeconds = new[] { 30, 60, 120, 300, 600 })]
+        // תיקון 38: ניסיון חוזר מהיר (המנוע כבר מחכה עד 30 שניות לנעילה) - הבקשה עוברת למתנדב הבא בלי עיכוב מיותר
+        [AutomaticRetry(Attempts = 6, DelaysInSeconds = new[] { 5, 10, 20, 60, 120, 300 })]
         public async Task ReassignDonationAsync(int donationId)
         {
             var outcome = await MatchDonationAsync(donationId, "Reassign");
@@ -310,6 +312,249 @@ namespace BLL.Algorithms
             _logger.LogInformation("Matching engine ({Trigger}) for donation {DonationId}: {Message}", trigger, donationId, outcome.Message);
             return outcome;
         }
+
+        // =========================================================
+        // תיקון 36: שיבוץ ידני למתנדב שהמנהל בוחר (למשל אחרי אי-הגעה)
+        // המנהל רואה את המתנדבים המתאימים (מרחק, קיבולת, משמרת, אמינות, טלפון) ובוחר אחד. ההצעה נבנית ונשלחת
+        // באותה דרך כמו בשיבוץ האוטומטי (מסלול + עמותה + זמנים), עם אותם אילוצים קשים. רק מערכת השעות של
+        // המתנדב אפשר לעקוף - כשהמנהל תיאם איתו (IgnoreSchedule).
+        // =========================================================
+
+        public sealed record ManualVolunteerOption(
+            Volunteer Volunteer,
+            double? DistanceKm,
+            bool HasFreshLocation,
+            bool AvailableBySchedule,
+            bool FailedThisDonationBefore,
+            bool CanAssign,
+            string? Note);
+
+        // Donation = null - התרומה לא קיימת. Problem - למה אי אפשר לשבץ אותה עכשיו (null = אפשר)
+        public sealed record ManualCandidatesResult(
+            Donation? Donation,
+            DateTime? PickupDeadline,
+            string? Problem,
+            IReadOnlyList<ManualVolunteerOption> Volunteers);
+
+        private const int ManualCandidatesLimit = 30;
+
+        // כשהמנהל תיאם עם המתנדב: חלון זמינות "מלאכותי" מעכשיו - המסלול חייב להסתיים בתוך הזמן הזה
+        private static readonly TimeSpan ManualOverrideWindow = TimeSpan.FromHours(12);
+
+        public async Task<ManualCandidatesResult> GetManualCandidatesAsync(int donationId)
+        {
+            var ctx = await BuildContextAsync();
+            var donation = ctx.Donations.FirstOrDefault(d => d.Id == donationId);
+            if (donation == null)
+            {
+                var existing = await _donationRepository.GetByIdWithCategoriesAsync(donationId);
+                return new ManualCandidatesResult(existing,
+                    existing == null ? null : NgoAvailabilityHelper.GetPickupDateTime(existing),
+                    existing == null ? "התרומה לא נמצאה." : NotAvailableReason(existing),
+                    Array.Empty<ManualVolunteerOption>());
+            }
+
+            var deadline = NgoAvailabilityHelper.GetPickupDateTime(donation);
+            string? problem = ManualProblem(donation, deadline, ctx, out var ngoOptions);
+
+            double weightKg = donation.TotalWeightKg();
+            var donationRegion = new[] { donation.RegionId };
+            var ngoRegions = ngoOptions.Select(o => o.Ngo.RegionId).Distinct().ToList();
+            var until = deadline > ctx.Now ? deadline : ctx.Now;
+
+            var options = new List<ManualVolunteerOption>(ctx.Volunteers.Count);
+            foreach (var v in ctx.Volunteers)
+            {
+                var windows = AvailabilityHelper.GetWindows(v, ctx.Now, until)
+                    .Where(w => w.EndUtc > ctx.Now && w.StartUtc <= until)
+                    .ToList();
+                bool bySchedule = windows.Any(w => ngoRegions.Any(r => AvailabilityHelper.SlotServesRoute(w.Slot, donationRegion, r)));
+
+                // המיקום הידוע: GPS עדכני, אחרת מרכז האזור של המשמרת הקרובה (או של משבצת כלשהי שלו)
+                bool fresh = HasFreshGps(v, ctx);
+                var start = fresh
+                    ? new GeoCoordinate { Latitude = v.CurrentLatitude, Longitude = v.CurrentLongitude }
+                    : RegionCenter(windows.Select(w => (int?)w.Slot.RegionId).FirstOrDefault()
+                                   ?? v.AvailabilitySlots?.Select(s => (int?)s.RegionId).FirstOrDefault(), ctx);
+                double? km = start == null
+                    ? null
+                    : Math.Round(GeoUtils.HaversineKm(start.Latitude, start.Longitude, donation.Latitude, donation.Longitude), 1);
+
+                bool busy = ctx.BusyVolunteerIds.Contains(v.Id);
+                bool capacityOk = v.MaxCapacityKg + 1e-9 >= weightKg;
+                bool failed = ctx.FailedPairs.Contains((v.Id, donation.Id));
+
+                string? note = busy ? "יש לו כבר הצעה פתוחה או מסלול פעיל"
+                             : !capacityOk ? $"קיבולת הרכב ({v.MaxCapacityKg:0.#} ק\"ג) קטנה ממשקל התרומה ({weightKg:0.#} ק\"ג)"
+                             : failed ? "כבר דחה את התרומה הזו, לא ענה בזמן או לא הגיע אליה"
+                             : !bySchedule ? "אין לו משמרת זמינות מתאימה - רק בתיאום איתו"
+                             : null;
+
+                options.Add(new ManualVolunteerOption(v, km, fresh, bySchedule, failed, !busy && capacityOk, note));
+            }
+
+            // הכי מתאימים ראשונים: אפשר לשבץ, יש משמרת, לא נכשל בתרומה הזו, קרוב, אמין
+            var ordered = options
+                .OrderByDescending(o => o.CanAssign)
+                .ThenByDescending(o => o.AvailableBySchedule)
+                .ThenBy(o => o.FailedThisDonationBefore)
+                .ThenBy(o => o.DistanceKm ?? double.MaxValue)
+                .ThenByDescending(o => o.Volunteer.ReliabilityScore)
+                .ThenBy(o => o.Volunteer.Id)
+                .Take(ManualCandidatesLimit)
+                .ToList();
+
+            return new ManualCandidatesResult(donation, deadline, problem, ordered);
+        }
+
+        // null = המנוע תפוס כרגע בריצה אחרת
+        public async Task<DonationMatchOutcome?> AssignToVolunteerAsync(int donationId, int volunteerId, bool ignoreSchedule)
+        {
+            using var engineLock = _engineLock.TryAcquire(LockResource, TimeSpan.FromSeconds(30));
+            if (engineLock == null)
+                return null;
+
+            var ctx = await BuildContextAsync();
+            var donation = ctx.Donations.FirstOrDefault(d => d.Id == donationId);
+            if (donation == null)
+            {
+                var existing = await _donationRepository.GetByIdWithCategoriesAsync(donationId);
+                return new DonationMatchOutcome(false, null, null,
+                    existing == null ? "התרומה לא נמצאה." : NotAvailableReason(existing), Array.Empty<int>());
+            }
+
+            var deadline = NgoAvailabilityHelper.GetPickupDateTime(donation);
+            var problem = ManualProblem(donation, deadline, ctx, out var ngoOptions);
+            if (problem != null)
+                return NotMatched(donation, problem);
+
+            var volunteer = ctx.Volunteers.FirstOrDefault(v => v.Id == volunteerId);
+            if (volunteer == null)
+                return NotMatched(donation, "המתנדב לא נמצא, עדיין לא אושר, סימן שאינו זמין, או שרישיון הנהיגה שלו אינו בתוקף.");
+            if (ctx.BusyVolunteerIds.Contains(volunteer.Id))
+                return NotMatched(donation, "למתנדב יש כבר הצעה פתוחה או מסלול פעיל. אפשר לשבץ אותו אחרי שיסיים.");
+
+            double weightKg = donation.TotalWeightKg();
+            if (volunteer.MaxCapacityKg + 1e-9 < weightKg)
+                return NotMatched(donation, $"קיבולת הרכב של המתנדב ({volunteer.MaxCapacityKg:0.#} ק\"ג) קטנה ממשקל התרומה ({weightKg:0.#} ק\"ג).");
+
+            // החלונות שבהם אפשר לתכנן: משמרות הזמינות שלו, או (בתיאום איתו) חלון מעכשיו לכל עמותה אפשרית
+            var ngosToTry = ngoOptions.Take(Math.Max(1, ctx.Policy.NgoCandidatesPerRoute)).Select(o => o.Ngo).ToList();
+            var attempts = new List<(AvailabilityWindow Window, Ngo Ngo)>();
+            if (ignoreSchedule)
+            {
+                var localNow = LocalClock.ToLocal(ctx.Now);
+                foreach (var ngo in ngosToTry)
+                {
+                    // משבצת שלא נשמרת במסד - רק כדי שהמתכנן ידע מאיזה אזור לאיזה אזור מותר לנסוע
+                    var slot = new AvailabilitySlot
+                    {
+                        VolunteerId = volunteer.Id,
+                        RegionId = donation.RegionId,
+                        ToRegionId = ngo.RegionId == donation.RegionId ? null : ngo.RegionId,
+                        Day = localNow.DayOfWeek,
+                        StartTime = TimeSpan.Zero,
+                        EndTime = new TimeSpan(23, 59, 0)
+                    };
+                    attempts.Add((new AvailabilityWindow(slot, ctx.Now, ctx.Now.Add(ManualOverrideWindow)), ngo));
+                }
+            }
+            else
+            {
+                var windows = AvailabilityHelper.GetWindows(volunteer, ctx.EarliestDepartureUtc, deadline)
+                    .Where(w => w.EndUtc > ctx.EarliestDepartureUtc && w.StartUtc <= deadline)
+                    .ToList();
+                foreach (var ngo in ngosToTry)
+                    foreach (var window in windows.Where(w => AvailabilityHelper.SlotServesRoute(w.Slot, new[] { donation.RegionId }, ngo.RegionId)))
+                        attempts.Add((window, ngo));
+
+                if (attempts.Count == 0)
+                    return NotMatched(donation,
+                        "למתנדב אין משמרת זמינות שמתאימה לתרומה (יום, שעה ואזור). אם תיאמת איתו - סמנו \"תיאמתי עם המתנדב\" ושבצו שוב.");
+            }
+
+            RouteCandidate? best = null;
+            foreach (var (window, ngo) in attempts)
+            {
+                var start = ResolveStartLocation(new VolunteerAvailability(volunteer, window), ctx)
+                            ?? new GeoCoordinate { Latitude = donation.Latitude, Longitude = donation.Longitude };
+
+                var plan = await _orchestrator.PlanAsync(new RouteRequest
+                {
+                    Volunteer = volunteer,
+                    Anchor = donation,
+                    Pool = Array.Empty<Donation>(),      // המנהל שיבץ תרומה אחת - בלי להוסיף לה תחנות בלי שביקש
+                    Ngo = ngo,
+                    Window = window,
+                    Start = start,
+                    OfferTimeUtc = ctx.Now,
+                    EarliestDepartureUtc = ctx.EarliestDepartureUtc,
+                    // אפשר לצאת גם מאוחר יותר מהריצה הבאה - העיקר להגיע לפני שעת האיסוף האחרונה
+                    LatestDepartureUtc = deadline > ctx.LatestDepartureUtc ? deadline : ctx.LatestDepartureUtc,
+                    NgoRemainingKg = ctx.NgoRemainingKg.TryGetValue(ngo.Id, out var left) ? left : double.PositiveInfinity
+                });
+                if (plan == null || (best != null && !DonationMatchingOrchestrator.IsBetter(plan, best.Plan)))
+                    continue;
+
+                double km = GeoUtils.HaversineKm(start.Latitude, start.Longitude, donation.Latitude, donation.Longitude);
+                double score = _rankingService.Score(volunteer, donation, km, ctx.Policy.MaxSearchRadiusKm, ctx.Now);
+                best = new RouteCandidate
+                {
+                    Candidate = new VolunteerCandidate(volunteer, km, score, start, window),
+                    Plan = plan,
+                    Ngo = ngo,
+                    AnchorDonationId = donation.Id
+                };
+            }
+
+            if (best == null)
+                return NotMatched(donation,
+                    "לא נמצא מסלול שעומד בכל האילוצים: שעת האיסוף האחרונה, תפוגת המזון, שעות הקבלה והקיבולת בעמותה וכניסת השבת" +
+                    (ignoreSchedule ? "." : ", וגם משמרת הזמינות של המתנדב."));
+
+            ScoreRoutes(new[] { best });
+            var created = await TryCreateAsync(best, ctx);
+            if (created == null)
+                return NotMatched(donation, "התרומה או המתנדב שובצו במקביל בתהליך אחר. רעננו את העמוד ונסו שוב.");
+
+            _logger.LogInformation(
+                "Manual assignment: donation {DonationId} offered to volunteer {VolunteerId} by an admin (route {RouteId}, ignoreSchedule={IgnoreSchedule}).",
+                donation.Id, volunteer.Id, created.Id, ignoreSchedule);
+
+            var anchorMatch = created.Matches?.FirstOrDefault(m => m.DonationId == donation.Id);
+            var name = volunteer.User?.Name ?? $"מתנדב #{volunteer.Id}";
+            return new DonationMatchOutcome(true, created.Id, anchorMatch?.Id,
+                $"נשלחה הצעה ל{name} ({best.Ngo.NgoName}). {CreatedMessage(best, ctx)}",
+                best.Plan.Stops.Select(s => s.DonationId).ToList());
+        }
+
+        // למה אי אפשר לשבץ תרומה ממתינה עכשיו (null = אפשר). ngoOptions - העמותות שיכולות לקבל אותה.
+        private string? ManualProblem(Donation donation, DateTime deadline, RunContext ctx, out List<NgoOption> ngoOptions)
+        {
+            ngoOptions = new List<NgoOption>();
+
+            if (ShabbatClock.IsShabbat(ctx.Now, ctx.Policy))
+                return ShabbatClock.EngineMessage;
+            if (deadline <= ctx.Now)
+                return "שעת האיסוף האחרונה כבר עברה.";
+            if (deadline < ctx.EarliestDepartureUtc)
+                return "שעת האיסוף האחרונה קרובה מדי - אין זמן למתנדב לאשר את הבקשה ולהגיע.";
+
+            ngoOptions = _ngoSelectionService.RankNgos(donation, ctx.Ngos, ctx.NgoRemainingKg, ctx.EarliestDepartureUtc).ToList();
+            return ngoOptions.Count == 0
+                ? "אין עמותה מאושרת שיכולה לקבל את התרומה בזמן (שעות קבלה / קיבולת יומית בק\"ג)."
+                : null;
+        }
+
+        private static string NotAvailableReason(Donation existing) =>
+            existing.Status != DonationStatus.Pending
+                ? "התרומה אינה ממתינה לשיבוץ."
+                : "התרומה אינה זמינה לשיבוץ היום (פג תוקף / נוצרה ביום אחר / הספק לא מאושר).";
+
+        private static GeoCoordinate? RegionCenter(int? regionId, RunContext ctx) =>
+            regionId.HasValue && ctx.Regions.TryGetValue(regionId.Value, out var region)
+                ? new GeoCoordinate { Latitude = region.CenterLatitude, Longitude = region.CenterLongitude }
+                : null;
 
         // =========================================================
         // ליבת השידוך
@@ -636,11 +881,7 @@ namespace BLL.Algorithms
         private static GeoCoordinate? ResolveStartLocation(VolunteerAvailability availability, RunContext ctx)
         {
             var v = availability.Volunteer;
-            bool hasFreshGps = (v.CurrentLatitude != 0 || v.CurrentLongitude != 0) &&
-                               v.LocationUpdatedAt.HasValue &&
-                               (ctx.Now - v.LocationUpdatedAt.Value).TotalMinutes <= ctx.Policy.MaxLocationAgeMinutes;
-
-            if (hasFreshGps)
+            if (HasFreshGps(v, ctx))
                 return new GeoCoordinate { Latitude = v.CurrentLatitude, Longitude = v.CurrentLongitude };
 
             if (ctx.Regions.TryGetValue(availability.Window.Slot.RegionId, out var region))
@@ -648,6 +889,12 @@ namespace BLL.Algorithms
 
             return null;
         }
+
+        // מיקום GPS שהמתנדב שיתף לאחרונה, אם הוא עדכני (MaxLocationAgeMinutes)
+        private static bool HasFreshGps(Volunteer v, RunContext ctx) =>
+            (v.CurrentLatitude != 0 || v.CurrentLongitude != 0) &&
+            v.LocationUpdatedAt.HasValue &&
+            (ctx.Now - v.LocationUpdatedAt.Value).TotalMinutes <= ctx.Policy.MaxLocationAgeMinutes;
 
         private async Task<DonationMatchOutcome> EscalateAsync(Donation donation, List<string> failures, string reason)
         {

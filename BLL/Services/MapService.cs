@@ -69,14 +69,19 @@ namespace BLL.Services
                 MapId = string.IsNullOrEmpty(mapId) ? DefaultMapId : mapId
             };
 
+            // תיקון 35: הלקוח מקבל גם את הסיבה (DisabledReason), ומציג הסבר במקום מעבר שקט לתמונת מפה
             if (string.IsNullOrEmpty(browserKey))
+            {
+                config.DisabledReason = "NotConfigured";
                 return config;   // אין מפתח דפדפן - הלקוח מציג את תמונת המפה מהשרת
+            }
 
             // מפתח השרת לא נשלח לדפדפן בשום מצב, גם אם הוגדר בטעות גם כמפתח הדפדפן
             if (string.Equals(browserKey, serverKey, StringComparison.Ordinal))
             {
                 _logger.LogError("GoogleMaps:BrowserApiKey is the same as GoogleMaps:ApiKey. The server key is never sent to the browser - " +
                                  "create a separate key restricted to the Maps JavaScript API and to the site's addresses.");
+                config.DisabledReason = "SameAsServerKey";
                 return config;
             }
 

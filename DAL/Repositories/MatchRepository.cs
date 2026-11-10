@@ -130,7 +130,7 @@ namespace DAL.Repositories
                 .Include(m => m.Ngo)
                 .Where(m => m.Status == MatchStatus.AwaitingVolunteerConfirmation
                          && m.ResponseDeadline != null
-                         && m.ResponseDeadline < asOfUtc)
+                         && m.ResponseDeadline <= asOfUtc)   // תיקון 38: כולל הרגע עצמו, כמו בבדיקת האישור
                 .ToListAsync();
         }
 

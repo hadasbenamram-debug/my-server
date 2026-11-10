@@ -36,5 +36,10 @@ namespace DAL.Repositories
         {
             return await _context.Ngos.AnyAsync(n => n.RegionId == regionId);
         }
+
+        public async Task<int> CountByApprovalStatusAsync(ApprovalStatus status)
+        {
+            return await _context.Ngos.CountAsync(n => n.ApprovalStatus == status);
+        }
     }
 }

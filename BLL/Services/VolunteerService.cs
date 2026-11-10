@@ -40,6 +40,7 @@ namespace BLL.Services
         private readonly IPasswordHasher<User> _passwordHasher;
         private readonly IRegistrationNoticeService _registrationNotices;
         private readonly DeliveryTracker _tracker;
+        private readonly ISupplierRepository? _supplierRepository;
 
         public VolunteerService(
             IVolunteerRepository volunteerRepository,
@@ -55,11 +56,14 @@ namespace BLL.Services
             ILogger<VolunteerService> logger,
             IPasswordHasher<User> passwordHasher,
             IRegistrationNoticeService registrationNotices,
-            DeliveryTracker tracker)
+            DeliveryTracker tracker,
+            // תיקון 32: לתעודת הזהות שכבר שמורה בחשבון (מספר העוסק של ספק שהוא עוסק מורשה / פטור)
+            ISupplierRepository? supplierRepository = null)
         {
             _passwordHasher = passwordHasher;
             _registrationNotices = registrationNotices;
             _tracker = tracker;
+            _supplierRepository = supplierRepository;
             _volunteerRepository = volunteerRepository;
             _userRepository = userRepository;
             _availabilitySlotRepository = availabilitySlotRepository;
@@ -160,14 +164,22 @@ namespace BLL.Services
             if (await _volunteerRepository.GetByUserIdAsync(userId) != null)
                 return AddRoleResult.AlreadyHasRole;
 
+            // תיקון 32: בעבר ספק שהוסיף תפקיד מתנדב היה חייב להזין שוב תעודת זהות. עכשיו: אם לא נשלחה ת"ז והיא כבר
+            // שמורה בחשבון (מספר העוסק של עוסק מורשה / פטור) - לוקחים אותה מהחשבון. ת"ז שנשלחה בטופס - גוברת.
+            string? idNumber = string.IsNullOrWhiteSpace(dto.IdNumber)
+                ? AccountIdNumber.Find(null, _supplierRepository == null ? null : await _supplierRepository.GetByUserIdAsync(userId))
+                : IsraeliId.Normalize(dto.IdNumber) ?? dto.IdNumber.Trim();
+            if (string.IsNullOrWhiteSpace(idNumber))
+                throw new ArgumentException("יש להזין מספר תעודת זהות.");
+
             var volunteerEntity = _mapper.Map<Volunteer>(dto);
             volunteerEntity.UserId = userId;
-            volunteerEntity.IdNumber = IsraeliId.Normalize(dto.IdNumber) ?? dto.IdNumber;
+            volunteerEntity.IdNumber = idNumber;
             volunteerEntity.ApprovalStatus = ApprovalStatus.Pending;
             if (dto.CurrentLatitude != 0 || dto.CurrentLongitude != 0)
                 volunteerEntity.LocationUpdatedAt = DateTime.UtcNow;
 
-            var (passed, details) = _validation.ValidateVolunteer(dto.IdNumber, dto.DriverLicenseNumber, dto.DriverLicenseExpiry, dto.DateOfBirth);
+            var (passed, details) = _validation.ValidateVolunteer(idNumber, dto.DriverLicenseNumber, dto.DriverLicenseExpiry, dto.DateOfBirth);
 
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
@@ -261,9 +273,13 @@ namespace BLL.Services
                     user.Id,
                     user.Email,
                     "פרטי ההתחברות שלך למערכת הצלת מזון",
-                    $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>בקשת ההצטרפות שלך כמתנדב/ת התקבלה בהצלחה ועברה לאישור מנהל המערכת.<br/>" +
-                    $"הסיסמה הזמנית שלך היא: <b>{tempPassword}</b><br/>" +
-                    "אפשר יהיה להתחבר רק אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.",
+                    // תיקון 37: מייל מעוצב (EmailTemplate)
+                    EmailTemplate.Greeting(user.Name) +
+                    EmailTemplate.Paragraph("בקשת ההצטרפות שלך כמתנדב/ת התקבלה בהצלחה ועברה לאישור מנהל המערכת. תודה שבחרת לתת באהבה!") +
+                    EmailTemplate.Paragraph("הסיסמה הזמנית שלך:") +
+                    EmailTemplate.Code(tempPassword) +
+                    EmailTemplate.Note("אפשר יהיה להתחבר רק אחרי שהמנהל יאשר את הבקשה - נשלח אליך מייל כשזה יקרה. בכניסה הראשונה תתבקש/י לבחור סיסמה חדשה.") +
+                    EmailTemplate.Signature(),
                     summary: "נשלחו פרטי התחברות");
             });
 

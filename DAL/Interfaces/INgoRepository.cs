@@ -13,5 +13,8 @@ namespace DAL.Interfaces
         Task<List<Ngo>> GetApprovedAsync();
 
         Task<bool> AnyInRegionAsync(int regionId);
+
+        // תיקון 31: מספר העמותות לפי סטטוס אישור (לנתוני "ההשפעה שלנו" בדף הבית)
+        Task<int> CountByApprovalStatusAsync(ApprovalStatus status);
     }
 }

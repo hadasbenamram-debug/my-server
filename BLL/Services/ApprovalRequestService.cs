@@ -297,7 +297,6 @@ namespace BLL.Services
             if (string.IsNullOrWhiteSpace(user.Email))
                 return;
 
-            string name = WebUtility.HtmlEncode(user.Name);
             string subject;
             string body;
 
@@ -310,21 +309,28 @@ namespace BLL.Services
                                   ?? "";
                 string nextStep = role switch
                 {
-                    RequestedRole.Volunteer => "בלחיצה על הקישור תיכנס/י ישר למסך הגדרת הזמינות - הימים והשעות שבהם תוכל/י להתנדב.",
-                    RequestedRole.Ngo => "בלחיצה על הקישור תיכנסו ישר למסך עדכון כתובת העמותה ושעות הקבלה.",
-                    _ => "בלחיצה על הקישור תיכנסו ישר למערכת ותוכלו להזין תרומות."
+                    RequestedRole.Volunteer => "בלחיצה על הכפתור תיכנס/י ישר למסך הגדרת הזמינות - הימים והשעות שבהם תוכל/י להתנדב.",
+                    RequestedRole.Ngo => "בלחיצה על הכפתור תיכנסו ישר למסך עדכון כתובת העמותה ושעות הקבלה.",
+                    _ => "בלחיצה על הכפתור תיכנסו ישר למערכת ותוכלו להזין תרומות."
                 };
 
+                // תיקון 37: מייל מעוצב (EmailTemplate) עם כפתור כניסה
                 subject = "בקשת ההצטרפות שלך אושרה - לתת באהבה";
-                body = $"שלום {name},<br/><br/>שמחים לעדכן כי בקשת ההצטרפות שלך {RoleTitles.For(role)} <b>אושרה על ידי המנהל!</b><br/>{nextStep}<br/><br/>" +
-                       (string.IsNullOrEmpty(enterUrl) ? "" : $"<a href='{enterUrl}' target='_blank'>כניסה למערכת</a><br/>") +
-                       (loginToken == null ? "" : "<small>הקישור אישי, לשימוש אחד ותקף ל-3 ימים. אחר כך נכנסים כרגיל עם המייל והסיסמה.</small><br/>") +
-                       "<br/>תודה רבה!";
+                body = EmailTemplate.Greeting(user.Name) +
+                       EmailTemplate.Paragraph($"שמחים לעדכן שבקשת ההצטרפות שלך {RoleTitles.For(role)} <b>אושרה!</b> ברוכים הבאים למשפחת {EmailTemplate.BrandName}.") +
+                       EmailTemplate.Paragraph(nextStep) +
+                       (string.IsNullOrEmpty(enterUrl) ? "" : EmailTemplate.Button(enterUrl, "כניסה למערכת")) +
+                       (loginToken == null ? "" : EmailTemplate.Note("הקישור אישי, לשימוש אחד ותקף ל-3 ימים. אחר כך נכנסים כרגיל עם המייל והסיסמה.")) +
+                       EmailTemplate.Signature();
             }
             else
             {
                 subject = "עדכון לגבי בקשת ההצטרפות שלך - לתת באהבה";
-                body = $"שלום {name},<br/>לצערנו בקשת ההצטרפות שלך {RoleTitles.For(role)} נדחתה.<br/><b>סיבה:</b> {WebUtility.HtmlEncode(reason)}";
+                body = EmailTemplate.Greeting(user.Name) +
+                       EmailTemplate.Paragraph($"לצערנו בקשת ההצטרפות שלך {RoleTitles.For(role)} לא אושרה.") +
+                       EmailTemplate.Details(("סיבה", EmailTemplate.Encode(string.IsNullOrWhiteSpace(reason) ? "לא צוינה סיבה" : reason))) +
+                       EmailTemplate.Paragraph("אם יש שאלה, או שהפרטים השתנו - אפשר לפנות אלינו דרך טופס צור קשר באתר.") +
+                       EmailTemplate.Signature();
             }
 
             await _notifications.QueueEmailAsync(user.Id, user.Email, subject, body,

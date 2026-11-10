@@ -34,8 +34,17 @@ namespace BLL.Interfaces
         Task PickUpAsync(int id, CurrentUserDto currentUser);
         Task CompleteAsync(int id, CurrentUserDto currentUser);
 
-        // No-Show (מנהל) - שיבוץ מחדש מיידי
-        Task<int> MarkNoShowAsync(int id, string? reason);
+        // No-Show (מנהל). autoReassign=true - שיבוץ מחדש אוטומטי מיידי; false - המנהל משבץ בעצמו (תיקון 36)
+        Task<int> MarkNoShowAsync(int id, string? reason, bool autoReassign = true);
+
+        // תיקון 36: טיפול ידני באי-הגעה - מי מאחר ובכמה, ומה קרה לתרומות שסומנו No-Show
+        Task<NoShowBoardDto> GetNoShowBoardAsync();
+
+        // תיקון 36: המתנדבים שהמנהל יכול לשבץ לתרומה, המתאימים ביותר ראשונים. null אם התרומה לא קיימת.
+        Task<ManualAssignmentOptionsDto?> GetManualAssignmentOptionsAsync(int donationId);
+
+        // תיקון 36: שיבוץ ידני של תרומה למתנדב שהמנהל בחר - אותו מסלול, אותם אילוצים (חוץ ממערכת השעות, בתיאום)
+        Task<AssignDonationResultDto> AssignDonationToVolunteerAsync(int donationId, int volunteerId, bool ignoreSchedule);
 
         Task<RouteDto?> GetRouteAsync(int routeId, CurrentUserDto currentUser);
         Task<RouteDto?> GetMyActiveRouteAsync(CurrentUserDto currentUser);

@@ -145,6 +145,21 @@ namespace DAL.Repositories
                 .SumAsync(x => x.WeightKg);
         }
 
+        public async Task<int> CountDeliveredAsync()
+        {
+            return await _context.Donations
+                .CountAsync(d => d.Status == DonationStatus.Delivered || d.Status == DonationStatus.Completed);
+        }
+
+        // מועד המסירה = DeliveredAt של השידוך שהושלם (המתנדב סימן "נמסר", או שהעמותה אישרה קבלה)
+        public async Task<double> SumDeliveredWeightKgSinceAsync(DateTime fromUtc)
+        {
+            return await _context.DonationFoodCategories
+                .Where(x => (x.Donation.Status == DonationStatus.Delivered || x.Donation.Status == DonationStatus.Completed) &&
+                            x.Donation.Matches.Any(m => m.Status == MatchStatus.Completed && m.DeliveredAt >= fromUtc))
+                .SumAsync(x => x.WeightKg);
+        }
+
         public async Task<bool> TryUpdateAsync(Donation donation)
         {
             try

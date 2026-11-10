@@ -11,5 +11,8 @@ namespace DAL.Interfaces
         // ספק עם המזהה הזה *וגם* של המשתמש הזה (null = לא קיים או לא שלו)
         Task<Supplier?> GetOwnedAsync(int id, int userId);
         Task<List<Supplier>> GetAllWithUserAsync();
+
+        // תיקון 31: מספר הספקים לפי סטטוס אישור (לנתוני "ההשפעה שלנו" בדף הבית)
+        Task<int> CountByApprovalStatusAsync(ApprovalStatus status);
     }
 }

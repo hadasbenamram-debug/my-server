@@ -320,15 +320,22 @@ namespace BLL.Services
             string token = await _actionTokens.CreateLinkTokenAsync(user.Id, ActionTokenPurpose.PasswordReset, ResetTokenLifetime);
 
             var baseUrl = _configuration["App:FrontendBaseUrl"];
-            string linkHtml = string.IsNullOrWhiteSpace(baseUrl)
-                ? ""
-                : $"<br/><a href=\"{baseUrl.TrimEnd('/')}/app/reset-password?token={WebUtility.UrlEncode(token)}\">לחץ כאן לאיפוס הסיסמה</a>";
+            string? resetUrl = string.IsNullOrWhiteSpace(baseUrl)
+                ? null
+                : $"{baseUrl.TrimEnd('/')}/app/reset-password?token={WebUtility.UrlEncode(token)}";
 
+            // תיקון 37: מייל מעוצב - כפתור לבחירת סיסמה חדשה, והקוד בתיבה בולטת
             await _notifications.QueueEmailAsync(
                 user.Id,
                 user.Email,
                 "איפוס סיסמה - לתת באהבה",
-                $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>התקבלה בקשה לאיפוס הסיסמה שלך.<br/>קוד האיפוס: <b>{token}</b><br/>הקוד תקף ל-30 דקות ולשימוש אחד. אם לא ביקשת איפוס, אפשר להתעלם מהודעה זו.{linkHtml}",
+                EmailTemplate.Greeting(user.Name) +
+                EmailTemplate.Paragraph("התקבלה בקשה לאיפוס הסיסמה שלך.") +
+                (resetUrl == null ? "" : EmailTemplate.Button(resetUrl, "בחירת סיסמה חדשה")) +
+                EmailTemplate.Paragraph(resetUrl == null ? "קוד האיפוס:" : "אפשר גם להזין את קוד האיפוס במסך איפוס הסיסמה:") +
+                EmailTemplate.Code(token) +
+                EmailTemplate.Note("הקוד תקף ל-30 דקות ולשימוש אחד. אם לא ביקשת איפוס - אפשר להתעלם מההודעה, והסיסמה לא תשתנה.") +
+                EmailTemplate.Signature(),
                 summary: "נשלח קישור לאיפוס סיסמה");
         }
 
@@ -375,7 +382,11 @@ namespace BLL.Services
                 user.Id,
                 user.Email,
                 "קוד אימות - לתת באהבה",
-                $"שלום {WebUtility.HtmlEncode(user.Name)},<br/>קוד האימות שלך הוא: <b>{code}</b><br/>הקוד תקף ל-15 דקות.",
+                EmailTemplate.Greeting(user.Name) +
+                EmailTemplate.Paragraph("קוד האימות של כתובת המייל שלך:") +
+                EmailTemplate.Code(code) +
+                EmailTemplate.Note("הקוד תקף ל-15 דקות. אם לא ביקשת קוד אימות - אפשר להתעלם מההודעה.") +
+                EmailTemplate.Signature(),
                 summary: "נשלח קוד לאימות כתובת המייל");
 
             return VerificationResult.Success;
@@ -534,7 +545,7 @@ namespace BLL.Services
         public async Task<MyProfileDto?> GetMyProfileAsync(int userId)
         {
             var user = await _userRepository.GetByIdAsync(userId);
-            return user == null ? null : ToMyProfile(user, await GetHeldRolesAsync(user));
+            return user == null ? null : ToMyProfile(user, await GetHeldRolesAsync(user), await GetKnownIdNumberAsync(user.Id));
         }
 
         public async Task<MyProfileDto?> UpdateMyProfileAsync(int userId, UpdateMyProfileDto dto)
@@ -551,10 +562,16 @@ namespace BLL.Services
             user.Phone = newPhone;
             await _userRepository.UpdateAsync(user);
 
-            return ToMyProfile(user, await GetHeldRolesAsync(user));
+            return ToMyProfile(user, await GetHeldRolesAsync(user), await GetKnownIdNumberAsync(user.Id));
         }
 
-        private static MyProfileDto ToMyProfile(User user, IReadOnlyList<HeldRole> roles) => new MyProfileDto
+        // תיקון 32: ת"ז שכבר שמורה בחשבון (מתנדב, או ספק שהוא עוסק מורשה / פטור) - כדי לא לבקש אותה שוב בהוספת תפקיד
+        private async Task<string?> GetKnownIdNumberAsync(int userId) =>
+            AccountIdNumber.Find(
+                await _volunteerRepository.GetByUserIdAsync(userId),
+                await _supplierRepository.GetByUserIdAsync(userId));
+
+        private static MyProfileDto ToMyProfile(User user, IReadOnlyList<HeldRole> roles, string? knownIdNumber) => new MyProfileDto
         {
             Name = user.Name,
             Email = user.Email,
@@ -565,7 +582,9 @@ namespace BLL.Services
             MustChangePassword = user.MustChangePassword,
             // תיקון 10: כל התפקידים של החשבון והסטטוס של כל אחד (לעמוד הפרופיל). מנהל לא מוסיף תפקידים.
             Roles = roles.Select(r => new AccountRoleDto { Role = r.Role.ToString(), Status = r.Status.ToString() }).ToList(),
-            CanAddRoles = user.Role != UserRole.Admin
+            CanAddRoles = user.Role != UserRole.Admin,
+            // רק גרסה מוסתרת - המספר המלא לא יוצא מהשרת
+            KnownIdNumberMasked = knownIdNumber == null ? null : AccountIdNumber.Mask(knownIdNumber)
         };
 
         // =====================================================

@@ -25,8 +25,11 @@ namespace FoodRescue.DTOs
     // אין בו מיקום: מקום האיסוף הוא המיקום המדויק של העסק, שהשרת קבע לפי הכתובת (Google Maps).
     public class CreateDonationDto
     {
-        [Range(1, int.MaxValue, ErrorMessage = "יש לבחור אזור.")]
-        public int RegionId { get; set; }
+        // תיקון 33: הספק כבר לא בוחר אזור. מקום האיסוף הוא הכתובת של העסק מההרשמה, והאזור נקבע בשרת לפי המיקום
+        // שלה (RegionLocator). השדה נשאר רק לתאימות: ספק שולח אותו - הוא לא משפיע; מנהל שיוצר תרומה בשם ספק
+        // יכול לקבוע אזור אחר במפורש.
+        [Range(1, int.MaxValue, ErrorMessage = "האזור שנבחר אינו תקין.")]
+        public int? RegionId { get; set; }
 
         // שם קובץ התמונה שהתקבל מ-analyze-image (רק שם, בלי נתיב)
         [StringLength(100, ErrorMessage = "שם קובץ התמונה ארוך מדי.")]

@@ -47,8 +47,33 @@ namespace FoodRescue.DTOs.Validation
     {
         public NotInPastAttribute() : base("התאריך כבר עבר.") { }
 
+        // תיקון 39: "היום" לפי שעון ישראל (כמו בבדיקת הרישיון באישור המנהל ובמנוע). בעבר לפי UTC - ובין 00:00 ל-02:00/03:00
+        // רישיון שתוקפו היה עד אתמול עבר את ההרשמה, ואחר כך המנהל לא יכול היה לאשר אותו.
         public override bool IsValid(object? value) =>
-            value is not DateTime d || d.Date >= DateTime.UtcNow.Date;
+            value is not DateTime d || d.Date >= IsraelDate.Today;
+    }
+
+    // תיקון 39: התאריך של היום בשעון ישראל (Asia/Jerusalem). ב-Windows מ-.NET 6 מזהה IANA נתמך; אם בכל זאת לא נמצא -
+    // השם של Windows, ובמקרה הגרוע UTC (ההתנהגות הקודמת).
+    public static class IsraelDate
+    {
+        private static readonly TimeZoneInfo Zone = Resolve();
+
+        public static DateTime Today => TodayAt(DateTime.UtcNow);
+
+        public static DateTime TodayAt(DateTime utcNow) =>
+            TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc), Zone).Date;
+
+        private static TimeZoneInfo Resolve()
+        {
+            foreach (var id in new[] { "Asia/Jerusalem", "Israel Standard Time" })
+            {
+                try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+                catch (TimeZoneNotFoundException) { }
+                catch (InvalidTimeZoneException) { }
+            }
+            return TimeZoneInfo.Utc;
+        }
     }
 
     // גיל מינימלי לפי תאריך לידה
