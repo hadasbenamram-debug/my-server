@@ -175,6 +175,22 @@ namespace DAL.Repositories
                 .ToListAsync();
         }
 
+        // תיקון 48: השידוך האחרון לכל תרומה של הספק - שאילתה אחת לכל הרשימה (ולא שאילתה לכל תרומה)
+        public async Task<List<Match>> GetLatestForSupplierAsync(int supplierId)
+        {
+            var latestIds = _context.Matches
+                .Where(m => m.Donation.SupplierId == supplierId)
+                .GroupBy(m => m.DonationId)
+                .Select(g => g.Max(m => m.Id));
+
+            return await _context.Matches
+                .Include(m => m.Ngo)
+                .Include(m => m.Volunteer).ThenInclude(v => v.User)
+                .Where(m => latestIds.Contains(m.Id))
+                .AsNoTracking()
+                .ToListAsync();
+        }
+
         // תיקון 21: הסטטוסים שתופסים מקום בקיבולת היומית של העמותה
         private static readonly MatchStatus[] CapacityStatuses =
         {

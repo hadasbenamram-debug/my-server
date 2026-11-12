@@ -57,7 +57,7 @@ namespace BLL.Algorithms
     ///   1. Knapsack 0/1 (KnapsackSolver): אילו תרומות נוספות שוות לאסוף - בקיבולת הרכב (וגם בקיבולת שנשארה לעמותה,
     ///      תיקון 21) ובמגבלת המגוון לקטגוריה.
     ///   2. RoutePlanner (DP מדויק): מתוך התרומות שנבחרו - איזו תת-קבוצה ובאיזה סדר עומדת בכל אילוצי הזמן
-    ///      (מועדי איסוף, תפוגה, שעות העמותה, זמינות המתנדב, שבת), ומתי לצאת.
+    ///      (מועדי איסוף, "זמינה החל מ-", תפוגה, שעות העמותה, זמינות המתנדב, שבת), ומתי לצאת.
     ///   3. אם ה-Knapsack "מילא" תרומות שלא נכנסות בזמן - סבב שני: ה-Knapsack ממלא את המקום שהתפנה בתרומות אחרות,
     ///      ונבחר המסלול הטוב מבין השניים (תיקון 22: בעבר כל המסלול נפסל במקרה כזה).
     ///
@@ -309,6 +309,8 @@ namespace BLL.Algorithms
                 {
                     DonationId = d.Id,
                     PickupDeadlineUtc = NgoAvailabilityHelper.GetPickupDateTime(d),
+                    // תיקון 43: "זמינה לאיסוף החל מ-" - המתכנן לא מביא את המתנדב לפני השעה הזו
+                    EarliestPickupUtc = d.EarliestPickupTime.HasValue ? NgoAvailabilityHelper.GetEarliestPickupDateTime(d) : null,
                     ExpirationUtc = d.ExpirationTime,
                     Value = valueById.TryGetValue(d.Id, out var v) ? v : 0,
                     WeightKg = d.TotalWeightKg()
@@ -321,6 +323,7 @@ namespace BLL.Algorithms
                 AvailableUntilUtc = request.Window.EndUtc,
                 ServiceMinutes = policy.StopServiceMinutes,
                 CapacityKg = capacityKg,
+                MaxWaitMinutes = Math.Max(0, policy.MaxPickupWaitMinutes),
                 EarliestNgoOpen = (from, to) => NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, from, to),
                 // תיקון 9: כל המסלול - מההצעה ועד המסירה בעמותה - לפני כניסת השבת או אחרי צאתה
                 IsArrivalBlocked = arrival => ShabbatClock.Overlaps(request.OfferTimeUtc, arrival, policy)

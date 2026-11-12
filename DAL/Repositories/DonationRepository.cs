@@ -82,6 +82,8 @@ namespace DAL.Repositories
         {
             return await _context.Donations
                 .Include(d => d.Region)
+                // תיקון 48: גם הפריטים - כדי להציג לספק משקל ותכולה בדשבורד
+                .Include(d => d.DonationFoodCategories).ThenInclude(c => c.Category)
                 .Where(d => d.SupplierId == supplierId)
                 .OrderByDescending(d => d.CreatedAt)
                 .AsNoTracking()

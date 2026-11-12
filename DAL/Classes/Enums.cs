@@ -52,7 +52,9 @@
     {
         Email,
         Sms,
-        InApp
+        InApp,
+        // תיקון 64: שיחה קולית שמקריאה את ההודעה (קוד אימות לטלפון). נשמר כמספר (3) - לא צריך מיגרציה.
+        VoiceCall
     }
 
     public enum NotificationStatus

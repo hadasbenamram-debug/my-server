@@ -27,22 +27,25 @@ namespace BLL.Algorithms
         private readonly RouteWorkflowService _workflow;
         private readonly IMatchingPolicyProvider _policy;
         private readonly ILogger<MatchTimeoutService> _logger;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public MatchTimeoutService(
             IMatchRepository matchRepository,
             RouteWorkflowService workflow,
             IMatchingPolicyProvider policy,
-            ILogger<MatchTimeoutService> logger)
+            ILogger<MatchTimeoutService> logger,
+            TimeProvider? clock = null)
         {
             _matchRepository = matchRepository ?? throw new ArgumentNullException(nameof(matchRepository));
             _workflow = workflow ?? throw new ArgumentNullException(nameof(workflow));
             _policy = policy ?? throw new ArgumentNullException(nameof(policy));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _clock = clock ?? TimeProvider.System;
         }
 
         [DisableConcurrentExecution(timeoutInSeconds: 120)]
         [AutomaticRetry(Attempts = 0)]
-        public Task ProcessTimeoutsAsync() => ProcessTimeoutsAtAsync(DateTime.UtcNow);
+        public Task ProcessTimeoutsAsync() => ProcessTimeoutsAtAsync(_clock.GetUtcNow().UtcDateTime);
 
         // תאימות לג'ובים שתוזמנו בגרסה הקודמת (עם פרמטר זמן). הערך הישן מתעלם - משתמשים בזמן הנוכחי.
         [Obsolete("Kept only so jobs scheduled by the previous version still run.")]
@@ -77,7 +80,7 @@ namespace BLL.Algorithms
 
         [DisableConcurrentExecution(timeoutInSeconds: 300)]
         [AutomaticRetry(Attempts = 0)]
-        public Task ProcessNoShowsAsync() => ProcessNoShowsAtAsync(DateTime.UtcNow);
+        public Task ProcessNoShowsAsync() => ProcessNoShowsAtAsync(_clock.GetUtcNow().UtcDateTime);
 
         public async Task<int> ProcessNoShowsAtAsync(DateTime asOfUtc)
         {

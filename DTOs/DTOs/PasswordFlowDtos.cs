@@ -52,4 +52,11 @@ namespace FoodRescue.DTOs
         [StringLength(20)]
         public string Code { get; set; } = string.Empty;
     }
+
+    // תיקון 64: איך לשלוח את קוד האימות לטלפון - "sms" (ברירת מחדל) או "call" (שיחה קולית שמקריאה את הקוד)
+    public class SendPhoneVerificationDto
+    {
+        [RegularExpression("^(?i)(sms|call)$", ErrorMessage = "שיטת שליחה לא מוכרת.")]
+        public string? Method { get; set; }
+    }
 }

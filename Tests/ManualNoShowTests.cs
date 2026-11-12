@@ -72,9 +72,9 @@ namespace FoodRescue.Tests
             using var h = new EngineHarness();
             var (volunteer, matchId, _) = await AcceptedRouteAsync(h);
 
-            // הלוח מחשב איחור לפי השעון האמיתי: זמן ההגעה המשוער היה לפני 20 דקות
+            // תיקון 42: הלוח מחשב איחור לפי השעון של המערכת (בבדיקות - השעון הקבוע): זמן ההגעה המשוער היה לפני 20 דקות
             var match = await h.Db.Matches.SingleAsync(m => m.Id == matchId);
-            match.EstimatedArrival = DateTime.UtcNow.AddMinutes(-20);
+            match.EstimatedArrival = h.NowUtc.AddMinutes(-20);
             await h.Db.SaveChangesAsync();
             h.Fresh();
 
@@ -111,12 +111,9 @@ namespace FoodRescue.Tests
         [Fact]
         public async Task Board_ADonationFromToday_CanBeAssigned()
         {
-            // "אפשר לשבץ" נבדק מול השעון האמיתי - הבדיקה רצה על "היום" האמיתי
-            var localNow = LocalClock.ToLocal(DateTime.UtcNow);
-            // התרומה נוצרת 10 דקות לפני "עכשיו" והאיסוף עד עוד 3 שעות - שניהם באותו יום; בשבת העמותה סגורה
-            if (localNow.Hour < 1 || localNow.Hour >= 20 || localNow.DayOfWeek == DayOfWeek.Saturday) return;
-
-            using var h = new EngineHarness(new MatchingPolicyOptions { AutoNoShowGraceMinutes = 30, ObserveShabbat = false }, localNow);
+            // תיקון 42: "אפשר לשבץ" נבדק מול השעון של המערכת - השעון הקבוע של הבדיקה (יום שני 10:00).
+            // בעבר הבדיקה רצה על השעון האמיתי ו"עברה" בלי לבדוק כלום בלילה ובשבת.
+            using var h = new EngineHarness(new MatchingPolicyOptions { AutoNoShowGraceMinutes = 30, ObserveShabbat = false });
             var (_, matchId, _) = await AcceptedRouteAsync(h);
             await h.MatchService.MarkNoShowAsync(matchId, null, autoReassign: false);
             h.Fresh();

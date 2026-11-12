@@ -31,6 +31,11 @@ namespace DAL.Classes
         [Required]
         public DateTime ExpirationTime { get; set; }
         [Required] public TimeSpan LatestPickupTime { get; set; }
+
+        // תיקון 43: "זמינה לאיסוף החל מ-" - שעון מקומי ביום התרומה (למשל מסעדה שמסיימת להגיש ב-16:00).
+        // null = אפשר לאסוף מיד. המנוע לא שולח מתנדב שיגיע לפני השעה הזו (RoutePlanner).
+        public TimeSpan? EarliestPickupTime { get; set; }
+
         public double PriorityScore { get; set; }
         public double UrgencyScore { get; set; }
         public DateTime PriorityUpdatedAt { get; set; } = DateTime.UtcNow;

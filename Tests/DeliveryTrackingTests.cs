@@ -26,7 +26,7 @@ namespace FoodRescue.Tests
 
         private DeliveryTrackingService Tracking() => new(
             _h.MatchService, _h.DeliveryLogs, new EstimateOnlyDistances(_h.Policy), _h.Policy,
-            new MemoryCache(new MemoryCacheOptions()), TestDb.Mapper);
+            new MemoryCache(new MemoryCacheOptions()), TestDb.Mapper, _h.Clock);
 
         // מתנדב, תרומה, ריצת מנוע ואישור המסלול. מחזיר את המתנדב, השידוך והמסלול (עדיין Planned).
         private async Task<(Volunteer Volunteer, int MatchId, int RouteId)> AcceptedRouteAsync()
@@ -150,6 +150,29 @@ namespace FoodRescue.Tests
         }
 
         [Fact]
+        public async Task TheNotifications_WhenTheDonationIsDelivered_LinkToTheDonationScreen()
+        {
+            // תיקון 63: הדף "אישור קבלה" נמחק - העמותה מאשרת קבלה במסך התרומה, וההתראה מובילה לשם
+            var (volunteer, matchId, routeId) = await AcceptedRouteAsync();
+            await StartAsync(volunteer, routeId);
+            await _h.MatchService.PickUpAsync(matchId, As(volunteer.UserId));
+            _h.Fresh();
+            await _h.MatchService.CompleteAsync(matchId, As(volunteer.UserId));
+            _h.Fresh();
+
+            var donationId = (await _h.Db.Matches.SingleAsync()).DonationId;
+            var ngoNotification = await _h.Db.Notifications
+                .Where(n => n.UserId == _h.Ngo.UserId && n.Subject == $"תרומה #{donationId} נמסרה")
+                .SingleAsync();
+            Assert.Equal($"/app/ngo/donation/{donationId}", ngoNotification.Link);
+
+            var supplierNotification = await _h.Db.Notifications
+                .Where(n => n.UserId == _h.Supplier.UserId && n.Subject == $"תרומה #{donationId} נמסרה לעמותה")
+                .SingleAsync();
+            Assert.Equal($"/app/supplier/donation/{donationId}", supplierNotification.Link);
+        }
+
+        [Fact]
         public async Task NoShow_IsWrittenToTheLog()
         {
             var (_, matchId, routeId) = await AcceptedRouteAsync();
@@ -228,7 +251,7 @@ namespace FoodRescue.Tests
             _h.Db.DeliveryLogs.Add(new DeliveryLog
             {
                 VolunteerRouteId = routeId, Type = DeliveryLogType.Note, StatusDescription = "בדיקה",
-                Latitude = 31.5, Longitude = 34.5, Timestamp = DateTime.UtcNow.AddMinutes(-5)
+                Latitude = 31.5, Longitude = 34.5, Timestamp = _h.NowUtc.AddMinutes(-5)
             });
             await _h.Db.SaveChangesAsync();
             _h.Fresh();
@@ -283,16 +306,16 @@ namespace FoodRescue.Tests
         public async Task Cleanup_DeletesOldLocations_ButKeepsTheRouteEvents()
         {
             var (_, _, routeId) = await AcceptedRouteAsync();
-            var old = DateTime.UtcNow.AddDays(-(MaintenanceJobs.LocationRetentionDays + 5));
+            var old = _h.NowUtc.AddDays(-(MaintenanceJobs.LocationRetentionDays + 5));
             _h.Db.DeliveryLogs.AddRange(
                 new DeliveryLog { VolunteerRouteId = routeId, Type = DeliveryLogType.Location, StatusDescription = "עדכון מיקום", Latitude = 32, Longitude = 34.8, Timestamp = old },
                 new DeliveryLog { VolunteerRouteId = routeId, Type = DeliveryLogType.PickedUp, StatusDescription = "נאסף", Timestamp = old },
-                new DeliveryLog { VolunteerRouteId = routeId, Type = DeliveryLogType.Location, StatusDescription = "עדכון מיקום", Latitude = 32, Longitude = 34.8, Timestamp = DateTime.UtcNow });
+                new DeliveryLog { VolunteerRouteId = routeId, Type = DeliveryLogType.Location, StatusDescription = "עדכון מיקום", Latitude = 32, Longitude = 34.8, Timestamp = _h.NowUtc });
             await _h.Db.SaveChangesAsync();
             _h.Fresh();
 
             var jobs = new MaintenanceJobs(_h.Donations, _h.ActionTokenRepo, new LoginAttemptRepository(_h.Db), _h.Workflow, _h.UnitOfWork,
-                TestDb.Log<MaintenanceJobs>(), _h.DeliveryLogs);
+                TestDb.Log<MaintenanceJobs>(), _h.DeliveryLogs, _h.Clock);
             await jobs.CleanupAsync();
             _h.Fresh();
 

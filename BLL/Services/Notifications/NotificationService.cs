@@ -18,6 +18,9 @@ namespace BLL.Notifications
         // SMS: אותו מנגנון כמו מייל
         Task QueueSmsAsync(int? userId, string phoneNumber, string text, string? summary = null);
 
+        // תיקון 64: שיחה קולית שמקריאה את הטקסט (אותו ספק כמו ה-SMS, אותו תור ברקע)
+        Task QueueVoiceCallAsync(int? userId, string phoneNumber, string spokenText, string? summary = null);
+
         // התראה במרכז ההתראות + דחיפה בזמן אמת (SignalR)
         Task NotifyUserAsync(int userId, string subject, string? content, string? link = null, string type = "info");
 
@@ -69,6 +72,17 @@ namespace BLL.Notifications
             }
 
             return QueueAsync(NotificationChannel.Sms, userId, phoneNumber, null, text, summary);
+        }
+
+        public Task QueueVoiceCallAsync(int? userId, string phoneNumber, string spokenText, string? summary = null)
+        {
+            if (_sms?.VoiceMode == SmsMode.NotConfigured)
+            {
+                _logger.LogWarning("Voice calls are not configured (Sms:Provider / Sms:VoiceFrom); the call '{Summary}' was not queued.", summary);
+                return Task.CompletedTask;
+            }
+
+            return QueueAsync(NotificationChannel.VoiceCall, userId, phoneNumber, null, spokenText, summary);
         }
 
         private async Task QueueAsync(NotificationChannel channel, int? userId, string recipient, string? subject, string body, string? summary)

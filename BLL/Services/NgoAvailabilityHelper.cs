@@ -105,6 +105,20 @@ namespace BLL.Algorithms
         }
 
         /// <summary>
+        /// תיקון 43: הרגע המוקדם ביותר שבו אפשר לאסוף (UTC) - "זמינה לאיסוף החל מ-" ביום היצירה (שעון מקומי),
+        /// ולא לפני רגע היצירה. בלי שעה כזו - רגע היצירה (אפשר לאסוף מיד).
+        /// </summary>
+        public static DateTime GetEarliestPickupDateTime(Donation donation)
+        {
+            if (!donation.EarliestPickupTime.HasValue)
+                return donation.CreatedAt;
+
+            var localCreated = LocalClock.ToLocal(donation.CreatedAt);
+            var readyUtc = LocalClock.ToUtc(localCreated.Date + donation.EarliestPickupTime.Value);
+            return readyUtc > donation.CreatedAt ? readyUtc : donation.CreatedAt;
+        }
+
+        /// <summary>
         /// האם קיים תרחיש איסוף שבו התרומה מגיעה לעמותה בזמן שהיא פתוחה ולפני התפוגה.
         /// תיקון: הקוד המקורי בדק רק את התרחיש הגרוע ביותר (איסוף ברגע האחרון האפשרי) ולכן פסל עמותה
         /// שסגורה בשעת האיסוף האחרונה גם אם ניתן לאסוף מוקדם יותר ולהגיע אליה בזמן.
@@ -118,7 +132,9 @@ namespace BLL.Algorithms
             double distanceKm = GeoUtils.HaversineKm(ngo.Latitude, ngo.Longitude, donation.Latitude, donation.Longitude);
             var travel = TimeSpan.FromMinutes(GeoUtils.EstimateDriveMinutes(distanceKm, p.AverageSpeedKmH, p.RoadDetourFactor));
 
-            var earliestPickup = now > donation.CreatedAt ? now : donation.CreatedAt;
+            // תיקון 43: לא לפני "זמינה לאיסוף החל מ-"
+            var readyAt = GetEarliestPickupDateTime(donation);
+            var earliestPickup = now > readyAt ? now : readyAt;
             var latestPickup = GetPickupDateTime(donation);
             if (earliestPickup > latestPickup) return false;
 

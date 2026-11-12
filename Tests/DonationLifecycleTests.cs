@@ -14,6 +14,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
 using MatchStatus = DAL.Classes.MatchStatus;
+// גם ב-Moq יש מחלקה בשם Match - כאן Match תמיד השידוך מה-DAL
+using Match = DAL.Classes.Match;
 
 namespace FoodRescue.Tests
 {
@@ -28,18 +30,14 @@ namespace FoodRescue.Tests
             _h.Donations, _h.Suppliers, _h.Ngos, _h.Matches, _h.Caller,
             new Mock<IImageService>().Object, new Mock<IImageAnalysisService>().Object,
             new FoodCategoryRepository(_h.Db), new RegionRepository(_h.Db),
-            _h.ActionTokens, _h.Workflow, _h.UnitOfWork, _h.Policy, TestDb.Mapper);
+            _h.ActionTokens, _h.Workflow, _h.UnitOfWork, _h.Policy, TestDb.Mapper, _h.Clock);
 
         private CurrentUserDto SupplierUser => new() { UserId = _h.Supplier.UserId };
         private CurrentUserDto Admin => new() { UserId = _h.AdminUser.Id, IsAdmin = true };
 
-        // שעת איסוף עתידית לפי השעון האמיתי (השירות משווה ל-DateTime.UtcNow). null אם קרוב מדי לחצות.
-        private static TimeSpan? PickupLaterToday()
-        {
-            var local = LocalClock.ToLocal(DateTime.UtcNow);
-            if (local.TimeOfDay > new TimeSpan(23, 0, 0)) return null;
-            return new TimeSpan(local.Hour + 1 > 23 ? 23 : local.Hour + 1, 30, 0);
-        }
+        // תיקון 42: שעת איסוף עתידית לפי השעון של המערכת - השעון הקבוע של הבדיקה (יום שני 10:00).
+        // בעבר לפי השעון האמיתי, ואחרי 23:00 הבדיקות "עברו" בלי לבדוק כלום.
+        private TimeSpan PickupLaterToday() => _h.LocalNow.TimeOfDay + new TimeSpan(3, 30, 0);
 
         private CreateDonationDto NewDonationDto(TimeSpan pickup) => new()
         {
@@ -53,15 +51,12 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;   // אין שעת איסוף אפשרית היום
 
-            var before = DateTime.UtcNow;
-            var created = await Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId);
-            var after = DateTime.UtcNow;
+            var created = await Donations().CreateAsync(NewDonationDto(pickup), _h.Supplier.UserId);
 
             _h.Fresh();
             var saved = await _h.Db.Donations.SingleAsync();
-            Assert.InRange(saved.CreatedAt, before.AddSeconds(-1), after.AddSeconds(1));
+            Assert.Equal(_h.NowUtc, saved.CreatedAt);   // תיקון 42: אותו שעון של כל המערכת
             Assert.Equal(DonationStatus.Pending, saved.Status);
             Assert.Equal(LocalClock.ToLocal(saved.CreatedAt).Date, LocalClock.ToLocal(saved.ExpirationTime).Date);
 
@@ -77,7 +72,6 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;   // אין שעת איסוף אפשרית היום
 
             var supplier = await _h.Db.Suppliers.SingleAsync(s => s.Id == _h.Supplier.Id);
             supplier.Latitude = 32.0615;
@@ -86,7 +80,7 @@ namespace FoodRescue.Tests
             await _h.Db.SaveChangesAsync();
             _h.Fresh();
 
-            await Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId);
+            await Donations().CreateAsync(NewDonationDto(pickup), _h.Supplier.UserId);
 
             _h.Fresh();
             var saved = await _h.Db.Donations.SingleAsync();
@@ -100,7 +94,6 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             var supplier = await _h.Db.Suppliers.SingleAsync(s => s.Id == _h.Supplier.Id);
             supplier.Latitude = 0;
@@ -108,7 +101,7 @@ namespace FoodRescue.Tests
             await _h.Db.SaveChangesAsync();
             _h.Fresh();
 
-            await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId));
+            await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(NewDonationDto(pickup), _h.Supplier.UserId));
             Assert.False(await _h.Db.Donations.AnyAsync());
         }
 
@@ -116,11 +109,162 @@ namespace FoodRescue.Tests
         public async Task Create_WithPickupTimeInThePast_IsRejected()
         {
             await _h.SeedBasicsAsync();
-            var local = LocalClock.ToLocal(DateTime.UtcNow);
-            if (local.TimeOfDay < TimeSpan.FromMinutes(5)) return;
-
+            // השעון הקבוע: 10:00 - חצות כבר עברה
             await Assert.ThrowsAsync<ArgumentException>(() =>
                 Donations().CreateAsync(NewDonationDto(TimeSpan.Zero), _h.Supplier.UserId));
+        }
+
+        // תיקון 43: "זמינה לאיסוף החל מ-" נשמרת ונבדקת מול שעת האיסוף האחרונה; שעה שכבר עברה לא מגבילה כלום
+        [Fact]
+        public async Task Create_WithEarliestPickupTime_SavesIt_AndValidatesTheWindow()
+        {
+            await _h.SeedBasicsAsync();
+            var latest = _h.LocalNow.TimeOfDay + TimeSpan.FromHours(6);   // 16:00 (השעון הקבוע: 10:00)
+            var from = _h.LocalNow.TimeOfDay + TimeSpan.FromHours(4);     // 14:00
+
+            var dto = NewDonationDto(latest);
+            dto.EarliestPickupTime = from;
+            var created = await Donations().CreateAsync(dto, _h.Supplier.UserId);
+
+            Assert.Equal<TimeSpan?>(from, created.EarliestPickupTime);
+            _h.Fresh();
+            Assert.Equal<TimeSpan?>(from, (await _h.Db.Donations.SingleAsync()).EarliestPickupTime);
+
+            // פחות מ-30 דקות לפני שעת האיסוף האחרונה - אין למתנדב חלון אמיתי
+            var tooShort = NewDonationDto(latest);
+            tooShort.EarliestPickupTime = latest - TimeSpan.FromMinutes(20);
+            await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(tooShort, _h.Supplier.UserId));
+
+            // שעה שכבר עברה = אפשר לאסוף מיד, ולכן לא נשמרת
+            var past = NewDonationDto(latest);
+            past.EarliestPickupTime = _h.LocalNow.TimeOfDay - TimeSpan.FromHours(1);
+            var immediate = await Donations().CreateAsync(past, _h.Supplier.UserId);
+            Assert.Null(immediate.EarliestPickupTime);
+        }
+
+        // תיקון 44: מתנדב פותח תרומה לפי המספר שלה - פרטי השידוך (מי המתנדב, איזו עמותה) רק של שידוך שלו
+        [Fact]
+        public async Task Volunteer_SeesWhoHandlesADonation_OnlyWhenItIsTheirOwnMatch()
+        {
+            await _h.SeedBasicsAsync();
+            var assigned = await _h.AddVolunteerAsync("assigned@test");
+            var other = await _h.AddVolunteerAsync("other@test");
+            var matched = await _h.AddDonationAsync();
+            var open = await _h.AddDonationAsync();
+
+            matched.Status = DonationStatus.Matched;
+            _h.Db.Matches.Add(new Match
+            {
+                DonationId = matched.Id, NgoId = _h.Ngo.Id, VolunteerId = assigned.Id, Status = MatchStatus.Confirmed,
+                IsActive = true, AssignedAt = _h.NowUtc.AddMinutes(-5)
+            });
+            await _h.Db.SaveChangesAsync();
+            _h.Fresh();
+
+            var assignedUser = new CurrentUserDto { UserId = assigned.UserId };
+            var otherUser = new CurrentUserDto { UserId = other.UserId };
+
+            // המתנדב של השידוך - רואה את הכול
+            var own = await Donations().GetByIdAsync(matched.Id, assignedUser);
+            Assert.NotNull(own);
+            Assert.Equal(assigned.Id, own!.VolunteerId);
+            Assert.Equal(_h.Ngo.Id, own.NgoId);
+
+            // מתנדב אחר - תרומה ששובצה למישהו אחר "לא קיימת" בשבילו
+            Assert.Null(await Donations().GetByIdAsync(matched.Id, otherUser));
+
+            // תרומה שעדיין ממתינה לשיבוץ - גלויה (כמו ברשימת התרומות הזמינות), בלי פרטי שידוך
+            var available = await Donations().GetByIdAsync(open.Id, otherUser);
+            Assert.NotNull(available);
+            Assert.Null(available!.VolunteerId);
+            Assert.Null(available.VolunteerName);
+            Assert.Null(available.MatchId);
+
+            // הספק והמנהל - כמו קודם
+            Assert.Equal(assigned.Id, (await Donations().GetByIdAsync(matched.Id, SupplierUser))!.VolunteerId);
+            Assert.Equal(assigned.Id, (await Donations().GetByIdAsync(matched.Id, Admin))!.VolunteerId);
+        }
+
+        // תיקון 60: מסך התרומה של העמותה / המתנדב - מועדי השלבים לציר "מעקב תרומה"
+        [Fact]
+        public async Task DonationScreen_GetsTheStageTimes_ForTheTrackingTimeline()
+        {
+            await _h.SeedBasicsAsync();
+            var volunteer = await _h.AddVolunteerAsync("timeline@test");
+            var donation = await _h.AddDonationAsync();
+            donation.Status = DonationStatus.Matched;
+            var assignedAt = _h.NowUtc.AddMinutes(-50);
+            var confirmedAt = _h.NowUtc.AddMinutes(-45);
+            var pickedUpAt = _h.NowUtc.AddMinutes(-10);
+            _h.Db.Matches.Add(new Match
+            {
+                DonationId = donation.Id, NgoId = _h.Ngo.Id, VolunteerId = volunteer.Id, Status = MatchStatus.InTransit,
+                IsActive = true, AssignedAt = assignedAt, RespondedAt = confirmedAt, PickedUpAt = pickedUpAt
+            });
+            await _h.Db.SaveChangesAsync();
+            _h.Fresh();
+
+            var dto = await Donations().GetByIdAsync(donation.Id, new CurrentUserDto { UserId = volunteer.UserId });
+
+            Assert.Equal(assignedAt, dto!.MatchAssignedAt);
+            Assert.Equal(confirmedAt, dto.VolunteerConfirmedAt);
+            Assert.Equal(pickedUpAt, dto.PickedUpAt);
+            Assert.Null(dto.DeliveredAt);   // עוד לא נמסר
+        }
+
+        // מתנדב שדחה - "ענה" אבל לא אישר: אין "המתנדב אישר" בציר
+        [Fact]
+        public async Task DonationScreen_DeclinedMatch_HasNoConfirmationTime()
+        {
+            await _h.SeedBasicsAsync();
+            var volunteer = await _h.AddVolunteerAsync("declined@test");
+            var donation = await _h.AddDonationAsync();
+            _h.Db.Matches.Add(new Match
+            {
+                DonationId = donation.Id, NgoId = _h.Ngo.Id, VolunteerId = volunteer.Id, Status = MatchStatus.Declined,
+                IsActive = false, AssignedAt = _h.NowUtc.AddMinutes(-20), RespondedAt = _h.NowUtc.AddMinutes(-15)
+            });
+            await _h.Db.SaveChangesAsync();
+            _h.Fresh();
+
+            var dto = await Donations().GetByIdAsync(donation.Id, Admin);
+
+            Assert.NotNull(dto!.MatchAssignedAt);
+            Assert.Null(dto.VolunteerConfirmedAt);
+        }
+
+        // תיקון 48: ברשימה של הספק (הדשבורד) - משקל, תכולה, ומי מטפל בכל תרומה (השידוך האחרון שלה)
+        [Fact]
+        public async Task SupplierList_ShowsWeight_AndWhoHandlesEachDonation()
+        {
+            await _h.SeedBasicsAsync();
+            var volunteer = await _h.AddVolunteerAsync("vol@test");
+            var matched = await _h.AddDonationAsync(weightKg: 7.5);
+            var waiting = await _h.AddDonationAsync(weightKg: 2);
+
+            matched.Status = DonationStatus.Matched;
+            _h.Db.Matches.Add(new Match
+            {
+                DonationId = matched.Id, NgoId = _h.Ngo.Id, VolunteerId = volunteer.Id, Status = MatchStatus.Confirmed,
+                IsActive = true, AssignedAt = _h.NowUtc.AddMinutes(-5), EstimatedArrival = _h.NowUtc.AddMinutes(20)
+            });
+            await _h.Db.SaveChangesAsync();
+            _h.Fresh();
+
+            var list = await Donations().GetMySupplierDonationsAsync(_h.Supplier.UserId);
+
+            var handled = list.Single(d => d.Id == matched.Id);
+            Assert.Equal(7.5, handled.TotalWeightKg, 3);
+            Assert.Equal("מאפים", handled.Categories.Single().CategoryName);
+            Assert.Equal("Confirmed", handled.MatchStatus);
+            Assert.Equal(_h.Ngo.NgoName, handled.NgoName);
+            Assert.Equal("vol", handled.VolunteerName);   // NewUser: השם הוא החלק שלפני ה-@
+            Assert.Equal<DateTime?>(_h.NowUtc.AddMinutes(20), handled.EstimatedArrival);
+
+            var open = list.Single(d => d.Id == waiting.Id);
+            Assert.Equal(2, open.TotalWeightKg, 3);
+            Assert.Null(open.MatchStatus);
+            Assert.Null(open.VolunteerName);
         }
 
         // חדש: הספק עורך ומבטל תרומות שלו
@@ -129,13 +273,12 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
-            var created = await Donations().CreateAsync(NewDonationDto(pickup.Value), _h.Supplier.UserId);
+            var created = await Donations().CreateAsync(NewDonationDto(pickup), _h.Supplier.UserId);
             _h.Fresh();
 
             var updated = await Donations().UpdateAsync(created.Id, new UpdateDonationDto
             {
-                LatestPickupTime = pickup.Value,
+                LatestPickupTime = pickup,
                 Categories = new List<DonationCategoryLineDto> { new() { CategoryId = _h.Category.Id, Quantity = 1, WeightKg = 2 } }
             }, SupplierUser);
 
@@ -150,12 +293,11 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             var fileName = Guid.NewGuid().ToString("N") + ".jpg";
             await _h.ActionTokens.RegisterOwnedValueAsync(_h.Supplier.UserId, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
 
-            var dto = NewDonationDto(pickup.Value);
+            var dto = NewDonationDto(pickup);
             dto.Image = fileName;
             var created = await Donations().CreateAsync(dto, _h.Supplier.UserId);
 
@@ -171,11 +313,10 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             var fileName = Guid.NewGuid().ToString("N") + ".jpg";
             await _h.ActionTokens.RegisterOwnedValueAsync(_h.Supplier.UserId, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
-            var dto = NewDonationDto(pickup.Value);
+            var dto = NewDonationDto(pickup);
             dto.Image = fileName;
 
             var first = await Donations().CreateAsync(dto, _h.Supplier.UserId);
@@ -191,12 +332,11 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             var fileName = Guid.NewGuid().ToString("N") + ".jpg";
             await _h.ActionTokens.RegisterOwnedValueAsync(_h.Supplier.UserId, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
 
-            var dto = NewDonationDto(pickup.Value);
+            var dto = NewDonationDto(pickup);
             dto.Image = "/images/" + fileName;
             await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(dto, _h.Supplier.UserId));
         }
@@ -206,12 +346,11 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             var fileName = Guid.NewGuid().ToString("N") + ".jpg";
             await _h.ActionTokens.RegisterOwnedValueAsync(_h.AdminUser.Id, ActionTokenPurpose.ImageUpload, fileName, TimeSpan.FromMinutes(30));
 
-            var dto = NewDonationDto(pickup.Value);
+            var dto = NewDonationDto(pickup);
             dto.Image = fileName;
             await Assert.ThrowsAsync<ArgumentException>(() => Donations().CreateAsync(dto, _h.Supplier.UserId));
         }
@@ -222,13 +361,12 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
-            var created = await Donations().CreateForSupplierAsync(_h.Supplier.Id, NewDonationDto(pickup.Value), _h.AdminUser.Id);
+            var created = await Donations().CreateForSupplierAsync(_h.Supplier.Id, NewDonationDto(pickup), _h.AdminUser.Id);
 
             Assert.Equal(_h.Supplier.Id, created.SupplierId);
             await Assert.ThrowsAsync<NotFoundException>(() =>
-                Donations().CreateForSupplierAsync(999999, NewDonationDto(pickup.Value), _h.AdminUser.Id));
+                Donations().CreateForSupplierAsync(999999, NewDonationDto(pickup), _h.AdminUser.Id));
         }
 
         [Fact]
@@ -236,10 +374,9 @@ namespace FoodRescue.Tests
         {
             await _h.SeedBasicsAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             await Assert.ThrowsAsync<ForbiddenException>(() =>
-                Donations().CreateAsync(NewDonationDto(pickup.Value), _h.AdminUser.Id));
+                Donations().CreateAsync(NewDonationDto(pickup), _h.AdminUser.Id));
         }
 
         [Fact]
@@ -306,13 +443,13 @@ namespace FoodRescue.Tests
             await _h.SeedBasicsAsync();
             var expired = await _h.AddDonationAsync();
             var fresh = await _h.AddDonationAsync();
-            expired.ExpirationTime = DateTime.UtcNow.AddMinutes(-5);
-            fresh.ExpirationTime = DateTime.UtcNow.AddHours(5);
+            expired.ExpirationTime = _h.NowUtc.AddMinutes(-5);
+            fresh.ExpirationTime = _h.NowUtc.AddHours(5);
             await _h.Db.SaveChangesAsync();
             _h.Fresh();
 
             var jobs = new MaintenanceJobs(_h.Donations, _h.ActionTokenRepo, new LoginAttemptRepository(_h.Db), _h.Workflow, _h.UnitOfWork,
-                TestDb.Log<MaintenanceJobs>(), _h.DeliveryLogs);
+                TestDb.Log<MaintenanceJobs>(), _h.DeliveryLogs, _h.Clock);
             Assert.Equal(1, await jobs.ExpireDonationsAsync());
 
             _h.Fresh();

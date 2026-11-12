@@ -61,15 +61,11 @@ namespace FoodRescue.Tests
             _h.Donations, _h.Suppliers, _h.Ngos, _h.Matches, _h.Caller,
             new Mock<IImageService>().Object, new Mock<IImageAnalysisService>().Object,
             new FoodCategoryRepository(_h.Db), new RegionRepository(_h.Db),
-            _h.ActionTokens, _h.Workflow, _h.UnitOfWork, _h.Policy, TestDb.Mapper);
+            _h.ActionTokens, _h.Workflow, _h.UnitOfWork, _h.Policy, TestDb.Mapper, _h.Clock);
 
-        // שעת איסוף עתידית לפי השעון האמיתי (השירות משווה ל-DateTime.UtcNow). null אם קרוב מדי לחצות.
-        private static TimeSpan? PickupLaterToday()
-        {
-            var local = LocalClock.ToLocal(DateTime.UtcNow);
-            if (local.TimeOfDay > new TimeSpan(23, 0, 0)) return null;
-            return new TimeSpan(local.Hour + 1 > 23 ? 23 : local.Hour + 1, 30, 0);
-        }
+        // תיקון 42: שעת איסוף עתידית לפי השעון של המערכת - השעון הקבוע של הבדיקה (יום שני 10:00).
+        // בעבר לפי השעון האמיתי, ואחרי 23:00 הבדיקות "עברו" בלי לבדוק כלום.
+        private TimeSpan PickupLaterToday() => _h.LocalNow.TimeOfDay + new TimeSpan(3, 30, 0);
 
         private CreateDonationDto Dto(TimeSpan pickup, int? regionId = null) => new()
         {
@@ -91,11 +87,10 @@ namespace FoodRescue.Tests
             await _h.SeedBasicsAsync();     // הספק בתל אביב, האזור "מרכז"
             var far = await AddFarRegionAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
             // גם בלי אזור, וגם עם אזור "שגוי" (לקוח ישן) - האזור נקבע לפי המיקום של העסק
-            var withoutRegion = await Donations().CreateAsync(Dto(pickup.Value), _h.Supplier.UserId);
-            var withWrongRegion = await Donations().CreateAsync(Dto(pickup.Value, far.Id), _h.Supplier.UserId);
+            var withoutRegion = await Donations().CreateAsync(Dto(pickup), _h.Supplier.UserId);
+            var withWrongRegion = await Donations().CreateAsync(Dto(pickup, far.Id), _h.Supplier.UserId);
 
             _h.Fresh();
             var saved = await _h.Db.Donations.OrderBy(d => d.Id).ToListAsync();
@@ -111,13 +106,12 @@ namespace FoodRescue.Tests
             await _h.SeedBasicsAsync();
             var far = await AddFarRegionAsync();
             var pickup = PickupLaterToday();
-            if (pickup == null) return;
 
-            var created = await Donations().CreateForSupplierAsync(_h.Supplier.Id, Dto(pickup.Value, far.Id), _h.AdminUser.Id);
+            var created = await Donations().CreateForSupplierAsync(_h.Supplier.Id, Dto(pickup, far.Id), _h.AdminUser.Id);
 
             Assert.Equal(far.Id, created.RegionId);
             await Assert.ThrowsAsync<ArgumentException>(() =>
-                Donations().CreateForSupplierAsync(_h.Supplier.Id, Dto(pickup.Value, 999), _h.AdminUser.Id));
+                Donations().CreateForSupplierAsync(_h.Supplier.Id, Dto(pickup, 999), _h.AdminUser.Id));
         }
     }
 }

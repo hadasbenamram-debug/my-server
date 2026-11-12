@@ -17,6 +17,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ApprovalStatus = DAL.Classes.ApprovalStatus;
+using DalMatchStatus = DAL.Classes.MatchStatus;
 
 namespace BLL.Services
 {
@@ -40,6 +41,7 @@ namespace BLL.Services
         private readonly IUnitOfWork _unitOfWork;
         private readonly IMatchingPolicyProvider _policy;
         private readonly IMapper _mapper;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public DonationService(
             IDonationRepository donationRepository,
@@ -55,7 +57,8 @@ namespace BLL.Services
             RouteWorkflowService workflow,
             IUnitOfWork unitOfWork,
             IMatchingPolicyProvider policy,
-            IMapper mapper)
+            IMapper mapper,
+            TimeProvider? clock = null)
         {
             _donationRepository = donationRepository;
             _supplierRepository = supplierRepository;
@@ -71,6 +74,7 @@ namespace BLL.Services
             _unitOfWork = unitOfWork;
             _policy = policy;
             _mapper = mapper;
+            _clock = clock ?? TimeProvider.System;
         }
 
         // =========================================================
@@ -127,7 +131,23 @@ namespace BLL.Services
                            ?? throw new NotFoundException("לא נמצא פרופיל ספק עבור משתמש זה.");
 
             var donations = await _donationRepository.GetBySupplierIdWithRegionAsync(supplier.Id);
-            return _mapper.Map<List<SupplierDonationSummaryDto>>(donations);
+            var summaries = _mapper.Map<List<SupplierDonationSummaryDto>>(donations);
+
+            // תיקון 48: מי מטפל בכל תרומה עכשיו (השידוך האחרון שלה) - כדי שהספק יראה בדשבורד מי מגיע ומתי
+            var latest = (await _matchRepository.GetLatestForSupplierAsync(supplier.Id)).ToDictionary(m => m.DonationId);
+            foreach (var summary in summaries)
+            {
+                if (!latest.TryGetValue(summary.Id, out var match))
+                    continue;
+
+                summary.MatchStatus = match.Status.ToString();
+                summary.NgoName = match.Ngo?.NgoName;
+                summary.VolunteerName = match.Volunteer?.User?.Name;
+                summary.EstimatedArrival = match.EstimatedArrival;
+                summary.VolunteerRouteId = match.VolunteerRouteId;
+            }
+
+            return summaries;
         }
 
         public async Task<IEnumerable<DonationResponseDto>> GetMyNgoDonationsAsync(CurrentUserDto currentUser)
@@ -166,14 +186,18 @@ namespace BLL.Services
             var match = await _matchRepository.GetCurrentForDonationAsync(donationId);
 
             // בדיקת בעלות: מחזירים null (= "לא נמצא") כדי לא לחשוף שהתרומה קיימת.
-            bool allowed = caller.IsAdmin ||
-                           caller.OwnsDonation(donation) ||
-                           caller.IsApprovedVolunteer ||
-                           (match != null && caller.IsMatchNgo(match));
-            if (!allowed)
+            // תיקון 44: בעבר כל מתנדב מאושר יכול היה לפתוח כל תרומה לפי המספר שלה - ולראות מי המתנדב שמטפל בה,
+            // לאיזו עמותה היא נוסעת ומתי. עכשיו מתנדב רואה את פרטי השידוך רק של שידוך שלו (הצעה, מסלול פעיל או
+            // היסטוריה), ותרומה של מישהו אחר - רק כל עוד היא ממתינה לשיבוץ (כמו ברשימת התרומות הזמינות), בלי פרטי שידוך.
+            bool seesMatch = caller.IsAdmin ||
+                             caller.OwnsDonation(donation) ||
+                             (match != null && (caller.IsMatchNgo(match) || caller.OwnsMatchAsVolunteer(match)));
+            bool openForVolunteers = caller.IsApprovedVolunteer && donation.Status == DonationStatus.Pending;
+            if (!seesMatch && !openForVolunteers)
                 return null;
 
-            return WithMatch(_mapper.Map<DonationResponseDto>(donation), match);
+            var dto = _mapper.Map<DonationResponseDto>(donation);
+            return seesMatch ? WithMatch(dto, match) : dto;
         }
 
         public async Task<IEnumerable<DonationResponseDto>> GetAvailableAsync(CurrentUserDto currentUser)
@@ -183,7 +207,7 @@ namespace BLL.Services
             if (!caller.IsAdmin && !caller.IsApprovedVolunteer)
                 throw new ForbiddenException("רק מנהל או מתנדב מאושר יכולים לצפות בתרומות הזמינות.");
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             var donations = await _donationRepository.GetAvailableDonationsAsync(now, LocalDayStartUtc(now));
             return _mapper.Map<List<DonationResponseDto>>(donations);
         }
@@ -230,8 +254,8 @@ namespace BLL.Services
 
             // תוקן: בעבר נכתב כאן UtcNow.AddHours(3), כך ששעת היצירה נשמרה 3 שעות קדימה,
             // בזמן ששאר המערכת עובדת ב-UTC (וההמרה לשעון מקומי נעשית ב-LocalClock).
-            var now = DateTime.UtcNow;
-            var (pickupTime, expiration) = ValidateTimes(dto.LatestPickupTime, dto.ExpirationTime, now);
+            var now = _clock.GetUtcNow().UtcDateTime;
+            var (pickupTime, earliestPickup, expiration) = ValidateTimes(dto.LatestPickupTime, dto.EarliestPickupTime, dto.ExpirationTime, now);
 
             var donationEntity = _mapper.Map<Donation>(dto);
 
@@ -265,6 +289,7 @@ namespace BLL.Services
             donationEntity.SupplierId = supplier.Id;
             donationEntity.CreatedAt = now;
             donationEntity.LatestPickupTime = pickupTime;
+            donationEntity.EarliestPickupTime = earliestPickup;   // תיקון 43
             donationEntity.ExpirationTime = expiration;
             donationEntity.Status = DonationStatus.Pending;
             ApplyPriority(donationEntity, now);
@@ -289,7 +314,7 @@ namespace BLL.Services
             }
 
             var region = RegionLocator.Locate(await _regionRepository.GetAllAsync(), supplier.Latitude, supplier.Longitude)
-                         ?? throw new ArgumentException("לא הוגדרו אזורי פעילות במערכת, ולכן לא ניתן ליצור תרומה. יש לפנות למנהל המערכת.");
+                       ?? throw new ArgumentException("לא הוגדרו אזורי פעילות במערכת, ולכן לא ניתן ליצור תרומה. יש לפנות למנהל המערכת.");
             return region.Id;
         }
 
@@ -306,12 +331,14 @@ namespace BLL.Services
 
             await ValidateCategoriesAsync(dto.Categories);
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
 
             // היום של התרומה הוא יום היצירה שלה (תרומה מיועדת לאותו יום בלבד)
-            var (pickupTime, expiration) = ValidateTimes(dto.LatestPickupTime, dto.ExpirationTime, now, donation.CreatedAt);
+            var (pickupTime, earliestPickup, expiration) =
+                ValidateTimes(dto.LatestPickupTime, dto.EarliestPickupTime, dto.ExpirationTime, now, donation.CreatedAt);
 
             donation.LatestPickupTime = pickupTime;
+            donation.EarliestPickupTime = earliestPickup;   // תיקון 43
             donation.ExpirationTime = expiration;
 
             // עדכון השורות במקום (אותו מפתח DonationId+CategoryId), מחיקת שורות שהוסרו והוספת חדשות
@@ -420,9 +447,14 @@ namespace BLL.Services
                 throw new ArgumentException("אחת הקטגוריות שנבחרו אינה קיימת.");
         }
 
+        // תיקון 43: הפער המינימלי בין "זמינה לאיסוף החל מ-" לבין שעת האיסוף האחרונה - כדי שיהיה למתנדב חלון אמיתי
+        private static readonly TimeSpan MinPickupWindow = TimeSpan.FromMinutes(30);
+
         // שעת האיסוף האחרונה היא "שעון קיר" ביום התרומה; תאריך התפוגה - אם לא נשלח: סוף היום המקומי.
-        private static (TimeSpan PickupTime, DateTime ExpirationUtc) ValidateTimes(
-            TimeSpan latestPickupTime, DateTime? expirationTime, DateTime nowUtc, DateTime? createdAtUtc = null)
+        // תיקון 43: "זמינה לאיסוף החל מ-" (לא חובה) - באותו יום, לפחות 30 דקות לפני שעת האיסוף האחרונה ולפני התפוגה.
+        // שעה שכבר עברה לא מגבילה כלום (אפשר לאסוף מיד), ולכן היא לא נשמרת.
+        private static (TimeSpan PickupTime, TimeSpan? EarliestPickupTime, DateTime ExpirationUtc) ValidateTimes(
+            TimeSpan latestPickupTime, TimeSpan? earliestPickupTime, DateTime? expirationTime, DateTime nowUtc, DateTime? createdAtUtc = null)
         {
             if (latestPickupTime < TimeSpan.Zero || latestPickupTime >= TimeSpan.FromDays(1))
                 throw new ArgumentException("שעת האיסוף האחרונה אינה תקינה.");
@@ -439,7 +471,24 @@ namespace BLL.Services
             if (expirationUtc <= nowUtc)
                 throw new ArgumentException("תאריך התפוגה כבר עבר.");
 
-            return (latestPickupTime, expirationUtc);
+            TimeSpan? earliest = null;
+            if (earliestPickupTime.HasValue)
+            {
+                var from = earliestPickupTime.Value;
+                if (from < TimeSpan.Zero || from >= TimeSpan.FromDays(1))
+                    throw new ArgumentException("השעה \"זמינה לאיסוף החל מ-\" אינה תקינה.");
+                if (from + MinPickupWindow > latestPickupTime)
+                    throw new ArgumentException("השעה \"זמינה לאיסוף החל מ-\" צריכה להיות לפחות 30 דקות לפני שעת האיסוף האחרונה.");
+
+                var fromUtc = LocalClock.ToUtc(donationDay + from);
+                if (fromUtc >= expirationUtc)
+                    throw new ArgumentException("המזון פג תוקף לפני השעה שבה הוא זמין לאיסוף.");
+
+                if (fromUtc > nowUtc)
+                    earliest = from;
+            }
+
+            return (latestPickupTime, earliest, expirationUtc);
         }
 
         // ערך עם Z / היסט - כבר מוגדר. ערך בלי אזור זמן - מתפרש כשעון מקומי (Asia/Jerusalem).
@@ -485,6 +534,13 @@ namespace BLL.Services
             dto.VolunteerName = match.Volunteer?.User?.Name;
             dto.EstimatedArrival = match.EstimatedArrival;
             dto.VolunteerRouteId = match.VolunteerRouteId;
+            // תיקון 60: מועדי השלבים לציר "מעקב תרומה". RespondedAt נרשם גם בדחייה - לכן רק כשהמתנדב אישר
+            dto.MatchAssignedAt = match.AssignedAt;
+            dto.VolunteerConfirmedAt = match.Status is DalMatchStatus.Confirmed or DalMatchStatus.InPickup or DalMatchStatus.InTransit or DalMatchStatus.Completed
+                ? match.RespondedAt
+                : null;
+            dto.PickedUpAt = match.PickedUpAt;
+            dto.DeliveredAt = match.DeliveredAt;
             return dto;
         }
     }

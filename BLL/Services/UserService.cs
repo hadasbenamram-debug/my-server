@@ -43,6 +43,8 @@ namespace BLL.Services
         private readonly IPasswordHasher<User> _passwordHasher;
         private readonly IRegistrationNoticeService _registrationNotices;
         private readonly ISmsSender _sms;
+        // תיקון 65: Twilio Verify (אם מוגדר) - Twilio יוצרת, שולחת ובודקת את קוד האימות לטלפון
+        private readonly IPhoneVerifier? _phoneVerifier;
 
         // hash קבוע לבדיקה מול מייל שלא קיים, כדי שזמן התגובה יהיה דומה (לא חושף אילו מיילים רשומים)
         private static readonly Lazy<string> DummyHash =
@@ -62,8 +64,10 @@ namespace BLL.Services
             IMapper mapper,
             IPasswordHasher<User> passwordHasher,
             IRegistrationNoticeService registrationNotices,
-            ISmsSender sms)
+            ISmsSender sms,
+            IPhoneVerifier? phoneVerifier = null)
         {
+            _phoneVerifier = phoneVerifier;
             _passwordHasher = passwordHasher;
             _registrationNotices = registrationNotices;
             _sms = sms;
@@ -279,6 +283,13 @@ namespace BLL.Services
                 await _actionTokens.RevokeAsync(user.Id, ActionTokenPurpose.PasswordReset);
             }
 
+            // תיקון 51: הקישור נשלח רק למייל של המשתמש - מי שפתח אותו הוכיח שהמייל שלו
+            if (!user.IsEmailVerified)
+            {
+                user.IsEmailVerified = true;
+                await _userRepository.UpdateAsync(user);
+            }
+
             await _actionTokens.ConsumeAsync(token);
             await _lockout.RecordAsync(user.Email, ipAddress, user.Id, success: true);
 
@@ -352,6 +363,7 @@ namespace BLL.Services
             user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
             user.MustChangePassword = false;
             user.SecurityStamp = NewStamp();          // כל הטוקנים שהונפקו לפני האיפוס מפסיקים לעבוד
+            user.IsEmailVerified = true;              // תיקון 51: קוד האיפוס נשלח רק למייל - המייל אומת
             await _userRepository.UpdateAsync(user);
 
             await _actionTokens.ConsumeAsync(token);
@@ -407,7 +419,7 @@ namespace BLL.Services
             return VerificationResult.Success;
         }
 
-        public async Task<VerificationResult> SendPhoneVerificationAsync(int userId)
+        public async Task<VerificationResult> SendPhoneVerificationAsync(int userId, PhoneVerificationMethod method = PhoneVerificationMethod.Sms)
         {
             var user = await _userRepository.GetByIdAsync(userId);
             if (user == null)
@@ -419,12 +431,30 @@ namespace BLL.Services
             if (string.IsNullOrWhiteSpace(user.Phone))
                 return VerificationResult.SendFailed;
 
+            var byCall = method == PhoneVerificationMethod.VoiceCall;
+
+            // תיקון 65: Twilio Verify מוגדר - Twilio יוצרת את הקוד ושולחת אותו בעצמה (מסרון או שיחה קולית)
+            if (_phoneVerifier is { IsConfigured: true } verifier)
+            {
+                if (await InCooldownAsync(user.Id, ActionTokenPurpose.PhoneVerification))
+                    return VerificationResult.Cooldown;
+
+                var started = await verifier.StartAsync(user.Phone, byCall);
+                if (started != PhoneVerifyStart.Sent)
+                    return started == PhoneVerifyStart.CannotReceiveSms ? VerificationResult.CannotReceiveSms : VerificationResult.SendFailed;
+
+                // רישום השליחה, כדי שההגבלה של דקה בין שליחות תחול גם כאן (הקוד עצמו נשאר אצל Twilio ולא נבדק מולנו)
+                await _actionTokens.CreateCodeAsync(user.Id, ActionTokenPurpose.PhoneVerification, VerificationCodeLifetime);
+                return VerificationResult.Success;
+            }
+
             // תוקן: בלי ספק SMS (ברירת המחדל הייתה Sms:Provider = "Log") הקוד לא נשלח לטלפון, אבל המשתמש קיבל
             // "קוד אימות נשלח במסרון". עכשיו: בלי ספק מוגדר - הודעה ברורה שה-SMS לא זמין, ושום דבר לא נכנס לתור.
-            var mode = _sms.Mode;
+            // תיקון 64: גם בשיחה קולית - אם אין ספק שיכול להתקשר, אומרים את זה ולא "התקשרנו"
+            var mode = byCall ? _sms.VoiceMode : _sms.Mode;
             if (mode == SmsMode.NotConfigured)
             {
-                _logger.LogWarning("Phone verification requested but SMS is not configured (Sms:Provider).");
+                _logger.LogWarning("Phone verification requested ({Method}) but it is not configured (Sms:Provider).", method);
                 return VerificationResult.SmsNotConfigured;
             }
 
@@ -433,20 +463,55 @@ namespace BLL.Services
 
             string code = await _actionTokens.CreateCodeAsync(user.Id, ActionTokenPurpose.PhoneVerification, VerificationCodeLifetime);
 
-            await _notifications.QueueSmsAsync(
-                user.Id,
-                user.Phone,
-                $"לתת באהבה: קוד האימות שלך הוא {code}. תקף ל-15 דקות.",
-                summary: "נשלח קוד לאימות מספר הטלפון");
+            if (byCall)
+                await _notifications.QueueVoiceCallAsync(
+                    user.Id,
+                    user.Phone,
+                    VoiceVerificationScript(code),
+                    summary: "שיחה קולית עם קוד לאימות מספר הטלפון");
+            else
+                await _notifications.QueueSmsAsync(
+                    user.Id,
+                    user.Phone,
+                    $"לתת באהבה: קוד האימות שלך הוא {code}. תקף ל-15 דקות.",
+                    summary: "נשלח קוד לאימות מספר הטלפון");
 
             return mode == SmsMode.DevelopmentLog ? VerificationResult.SentToLogOnly : VerificationResult.Success;
         }
+
+        // תיקון 64: מה שמוקרא בשיחה. הספרות מופרדות בפסיקים כדי שיוקראו אחת-אחת ("שלוש, שבע..." ולא "שלוש מאות...").
+        // הספק מקריא את ההודעה פעמיים.
+        public static string VoiceVerificationScript(string code) =>
+            $"שלום, כאן לתת באהבה. קוד האימות שלך הוא: {string.Join<char>(", ", code)}. הקוד תקף לרבע שעה.";
 
         public async Task<VerificationResult> VerifyPhoneAsync(int userId, string code)
         {
             var user = await _userRepository.GetByIdAsync(userId);
             if (user == null)
                 return VerificationResult.UserNotFound;
+
+            // תיקון 65: עם Twilio Verify - Twilio בודקת את הקוד שהיא שלחה
+            if (_phoneVerifier is { IsConfigured: true } verifier)
+            {
+                if (string.IsNullOrWhiteSpace(user.Phone))
+                    return VerificationResult.InvalidCode;
+
+                var verdict = await verifier.CheckAsync(user.Phone, (code ?? string.Empty).Trim());
+                if (verdict != PhoneVerifyCheck.Approved)
+                {
+                    return verdict switch
+                    {
+                        PhoneVerifyCheck.TooManyAttempts => VerificationResult.TooManyAttempts,
+                        PhoneVerifyCheck.Failed => VerificationResult.SendFailed,
+                        _ => VerificationResult.InvalidCode
+                    };
+                }
+
+                await _actionTokens.RevokeAsync(user.Id, ActionTokenPurpose.PhoneVerification);
+                user.IsPhoneVerified = true;
+                await _userRepository.UpdateAsync(user);
+                return VerificationResult.Success;
+            }
 
             var check = await _actionTokens.VerifyCodeAsync(user.Id, ActionTokenPurpose.PhoneVerification, code, MaxVerificationAttempts);
             if (check != CodeCheckResult.Valid)
@@ -487,6 +552,22 @@ namespace BLL.Services
         {
             var user = await _userRepository.GetByIdAsync(id);
             return user == null ? null : _mapper.Map<UserDto>(user);
+        }
+
+        // תיקון 51: מנהל מסמן אימות ידני (למשל אחרי שיחה עם המשתמש, או כשאין ספק SMS לשליחת קוד לטלפון)
+        public async Task<UserDto?> SetVerificationAsync(int userId, UpdateVerificationDto dto)
+        {
+            var user = await _userRepository.GetByIdAsync(userId);
+            if (user == null)
+                return null;
+
+            if (dto.IsEmailVerified.HasValue)
+                user.IsEmailVerified = dto.IsEmailVerified.Value;
+            if (dto.IsPhoneVerified.HasValue)
+                user.IsPhoneVerified = dto.IsPhoneVerified.Value;
+
+            await _userRepository.UpdateAsync(user);
+            return _mapper.Map<UserDto>(user);
         }
 
         // =====================================================

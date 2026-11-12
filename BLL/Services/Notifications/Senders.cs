@@ -10,6 +10,7 @@ using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 
 namespace BLL.Notifications
 {
@@ -34,6 +35,14 @@ namespace BLL.Notifications
         SmsMode Mode { get; }
 
         Task<string?> SendAsync(string phoneNumber, string text);
+
+        // תיקון 64: שיחה קולית - הספק מתקשר למספר ומקריא את הטקסט בקול (Text-to-Speech) בעברית.
+        // אותו ספק ואותם פרטים כמו ה-SMS. מתאים גם לטלפון שלא מקבל מסרונים.
+        // מימושי ברירת מחדל - למחלקות (למשל בבדיקות) שלא מבצעות שיחות.
+        SmsMode VoiceMode => SmsMode.NotConfigured;
+
+        Task<string?> CallAsync(string phoneNumber, string spokenText) =>
+            throw new NotSupportedException("Voice calls are not supported by this sender.");
     }
 
     public sealed class SmtpEmailSender : IEmailSender
@@ -103,6 +112,11 @@ namespace BLL.Notifications
     //   "019"    - ספק ישראלי (019sms.co.il): Sms:Username, Sms:ApiToken, Sms:Source (שם שולח מאושר, עד 11 תווים באנגלית/ספרות)
     //   "Twilio" - Sms:AccountSid, Sms:AuthToken, Sms:From
     //   "Log"    - פיתוח בלבד: לא נשלח, ההודעה נכתבת ביומן השרת
+    // תיקון 64 - שיחה קולית (CallAsync) דרך אותו ספק:
+    //   "019"    - אותו API עם אובייקט tts (type 4 = שיחה קולית בלבד). השיחה יוצאת ממספר מערכת של 019.
+    //   "Twilio" - Calls API עם TwiML (<Say> בעברית, קול של Google). צריך מספר טלפון של Twilio:
+    //              Sms:VoiceFrom (או Sms:From אם הוא מספר ולא שם שולח באותיות).
+    //   Sms:VoiceGender - "Male" (ברירת מחדל) או "Female".
     // תוקן: בעבר ברירת המחדל הייתה "Log" גם כשלא בפיתוח, וההודעה סומנה "נשלחה" בלי שנשלחה בפועל.
     public sealed class SmsSender : ISmsSender
     {
@@ -122,6 +136,17 @@ namespace BLL.Notifications
         }
 
         public SmsMode Mode => ResolveMode(_configuration, _environment);
+
+        public SmsMode VoiceMode => ResolveVoiceMode(_configuration, _environment);
+
+        // תיקון 64: שיחה קולית אפשרית כשה-SMS מוגדר, ובטוויליו - רק עם מספר טלפון ממנו מתקשרים (לא שם שולח באותיות)
+        public static SmsMode ResolveVoiceMode(IConfiguration configuration, IHostEnvironment environment)
+        {
+            var mode = ResolveMode(configuration, environment);
+            if (mode == SmsMode.Twilio && !IsPhoneNumber(TwilioVoiceFrom(configuration)))
+                return SmsMode.NotConfigured;
+            return mode;
+        }
 
         public static SmsMode ResolveMode(IConfiguration configuration, IHostEnvironment environment)
         {
@@ -163,6 +188,105 @@ namespace BLL.Notifications
             }
         }
 
+        // תיקון 64: שיחה קולית שמקריאה את הטקסט
+        public async Task<string?> CallAsync(string phoneNumber, string spokenText)
+        {
+            switch (VoiceMode)
+            {
+                case SmsMode.Twilio:
+                    return await CallTwilioAsync(phoneNumber, spokenText);
+
+                case SmsMode.Israel019:
+                    return await Call019Async(phoneNumber, spokenText);
+
+                case SmsMode.DevelopmentLog:
+                    _logger.LogWarning("Development: voice provider is not configured (Sms:Provider), the call was NOT made. To {Phone}: {Text}",
+                        Mask(phoneNumber), spokenText);
+                    return "dev-log-only";
+
+                default:
+                    throw new InvalidOperationException(
+                        "Voice calls are not configured. Set Sms:Provider to \"019\", or to \"Twilio\" with a Twilio phone number in Sms:VoiceFrom.");
+            }
+        }
+
+        private bool IsFemaleVoice =>
+            string.Equals(_configuration["Sms:VoiceGender"]?.Trim(), "Female", StringComparison.OrdinalIgnoreCase);
+
+        private static string? TwilioVoiceFrom(IConfiguration configuration)
+        {
+            var voiceFrom = configuration["Sms:VoiceFrom"];
+            return string.IsNullOrWhiteSpace(voiceFrom) ? configuration["Sms:From"] : voiceFrom;
+        }
+
+        // מספר טלפון (+972..., 05...) ולא שם שולח באותיות (Alphanumeric Sender ID) - ממנו אי אפשר להתקשר
+        private static bool IsPhoneNumber(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            var digits = 0;
+            foreach (var c in value.Trim())
+            {
+                if (char.IsAsciiDigit(c)) digits++;
+                else if (c != '+' && c != '-' && c != ' ' && c != '(' && c != ')') return false;
+            }
+            return digits >= 7;
+        }
+
+        // Twilio: POST .../Calls.json עם Twiml - ההוראות לשיחה נשלחות ישר בבקשה (בלי כתובת שטוויליו צריך לגשת אליה).
+        // הטקסט מוקרא פעמיים, עם הפסקה קצרה בהתחלה (עד שמרימים) ובין הפעמים.
+        private async Task<string?> CallTwilioAsync(string phoneNumber, string spokenText)
+        {
+            var sid = _configuration["Sms:AccountSid"]!;
+            var token = _configuration["Sms:AuthToken"]!;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"https://api.twilio.com/2010-04-01/Accounts/{Uri.EscapeDataString(sid)}/Calls.json");
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Basic", Convert.ToBase64String(Encoding.ASCII.GetBytes($"{sid}:{token}")));
+            request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["To"] = ToE164(phoneNumber),
+                ["From"] = ToE164(TwilioVoiceFrom(_configuration)!),
+                ["Twiml"] = BuildTwiml(spokenText, IsFemaleVoice)
+            });
+
+            using var response = await _httpClient.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Twilio voice call returned HTTP {(int)response.StatusCode}.");
+
+            using var json = JsonDocument.Parse(body);
+            return json.RootElement.TryGetProperty("sid", out var sidProp) ? sidProp.GetString() : null;
+        }
+
+        // TwiML בעברית: <Say language="he-IL" voice="Google.he-IL-Wavenet-B"> (הטקסט עובר escape של XML)
+        public static string BuildTwiml(string spokenText, bool female = false)
+        {
+            var voice = female ? "Google.he-IL-Wavenet-A" : "Google.he-IL-Wavenet-B";
+            XElement Say() => new("Say", new XAttribute("language", "he-IL"), new XAttribute("voice", voice), spokenText);
+            XElement Pause() => new("Pause", new XAttribute("length", "1"));
+            return new XElement("Response", Pause(), Say(), Pause(), Say()).ToString(SaveOptions.DisableFormatting);
+        }
+
+        // 019: אותו API כמו SMS, ועוד אובייקט tts (docs.019sms.co.il/sms/send-sms.html - "Send SMS with TTS"):
+        // type 4 = שיחה קולית בלבד לכל המספרים, repeat 2 = ההודעה מוקראת פעמיים, voice ymMale / ymFemale.
+        private async Task<string?> Call019Async(string phoneNumber, string spokenText)
+        {
+            var payload = new
+            {
+                sms = new
+                {
+                    user = new { username = _configuration["Sms:Username"] },
+                    source = _configuration["Sms:Source"],
+                    destinations = new { phone = new[] { new Dictionary<string, string> { ["_"] = ToIsraeliLocal(phoneNumber) } } },
+                    message = spokenText,
+                    tts = new { type = 4, rate = 0, repeat = 2, voice = IsFemaleVoice ? "ymFemale" : "ymMale" }
+                }
+            };
+
+            return await Post019Async(payload, "019 voice call");
+        }
+
         private async Task<string?> SendTwilioAsync(string phoneNumber, string text)
         {
             var sid = _configuration["Sms:AccountSid"]!;
@@ -193,7 +317,6 @@ namespace BLL.Notifications
         // status 0 = ההודעה תישלח; כל ערך אחר = שגיאה (למשל 3 טוקן שגוי, 4 אין יתרה, 515 שם שולח לא מאושר).
         private async Task<string?> Send019Async(string phoneNumber, string text)
         {
-            var url = _configuration["Sms:Url"];
             var payload = new
             {
                 sms = new
@@ -205,14 +328,21 @@ namespace BLL.Notifications
                 }
             };
 
+            return await Post019Async(payload, "019 SMS");
+        }
+
+        // תיקון 64: השליחה עצמה ובדיקת התשובה - משותפת ל-SMS ולשיחה הקולית
+        private async Task<string?> Post019Async(object payload, string what)
+        {
+            var url = _configuration["Sms:Url"];
             using var request = new HttpRequestMessage(HttpMethod.Post, string.IsNullOrWhiteSpace(url) ? Default019Url : url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _configuration["Sms:ApiToken"]);
-            request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            request.Content = new StringContent(JsonSerializer.Serialize(payload, payload.GetType()), Encoding.UTF8, "application/json");
 
             using var response = await _httpClient.SendAsync(request);
             var body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException($"019 SMS returned HTTP {(int)response.StatusCode}.");
+                throw new InvalidOperationException($"{what} returned HTTP {(int)response.StatusCode}.");
 
             using var json = JsonDocument.Parse(body);
             var root = json.RootElement;
@@ -226,7 +356,7 @@ namespace BLL.Notifications
             if (status != 0)
             {
                 var message = root.TryGetProperty("message", out var m) ? m.ToString() : "";
-                throw new InvalidOperationException($"019 SMS returned status {status}: {message}");
+                throw new InvalidOperationException($"{what} returned status {status}: {message}");
             }
 
             return root.TryGetProperty("shipment_id", out var shipment) ? shipment.ToString() : null;

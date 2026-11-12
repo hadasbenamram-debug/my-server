@@ -166,6 +166,7 @@ namespace FoodRescue.Tests
     /// <summary>
     /// כל שכבות המנוע והמסלול על מסד בזיכרון: Repositories אמיתיים, שירותים אמיתיים,
     /// בלי Google, בלי SMTP ובלי Hangfire. שעון קבוע: יום שני 19/10/2026 10:00 שעון ישראל (או שעה אחרת שנבחרה בבנאי).
+    /// תיקון 42: אותו שעון עובר לכל השירותים (מנוע, יצירת שידוכים, מסלול, תרומות, מעקב, Timeouts) - אין "שני שעונים".
     /// </summary>
     public sealed class EngineHarness : IDisposable
     {
@@ -235,14 +236,14 @@ namespace FoodRescue.Tests
 
             ActionTokens = new ActionTokenService(ActionTokenRepo);
             NotificationService = new NotificationService(Notifications, Users, Protector, Jobs, Realtime, TestDb.Log<NotificationService>());
-            Tracker = new DeliveryTracker(DeliveryLogs, Routes, NotificationService, TestDb.Mapper, TestDb.Log<DeliveryTracker>());
+            Tracker = new DeliveryTracker(DeliveryLogs, Routes, NotificationService, TestDb.Mapper, TestDb.Log<DeliveryTracker>(), Clock);
             Reliability = new VolunteerReliabilityService(Volunteers, feedbacks, Matches, Policy);
 
             MatchCreation = new MatchCreationService(Matches, Donations, Routes, Users, UnitOfWork, ActionTokens,
-                NotificationService, Jobs, Policy, config, TestDb.Log<MatchCreationService>());
+                NotificationService, Jobs, Policy, config, TestDb.Log<MatchCreationService>(), clock: Clock);
 
             Workflow = new RouteWorkflowService(Matches, Routes, Volunteers, ActionTokens, NotificationService, UnitOfWork,
-                Jobs, Reliability, TestDb.Log<RouteWorkflowService>(), Tracker);
+                Jobs, Reliability, TestDb.Log<RouteWorkflowService>(), Tracker, Clock);
 
             var distances = new EstimateOnlyDistances(Policy);
             var routeOptimization = new RouteOptimizationService(distances, Policy);
@@ -265,8 +266,8 @@ namespace FoodRescue.Tests
 
             Caller = new CallerProfileService(Volunteers, Ngos, Suppliers);
             MatchService = new MatchService(Matches, Donations, Routes, Engine, Workflow, RunState, Caller, ActionTokens,
-                Policy, TestDb.Mapper, TestDb.Log<MatchService>());
-            Timeouts = new MatchTimeoutService(Matches, Workflow, Policy, TestDb.Log<MatchTimeoutService>());
+                Policy, TestDb.Mapper, TestDb.Log<MatchService>(), Clock);
+            Timeouts = new MatchTimeoutService(Matches, Workflow, Policy, TestDb.Log<MatchTimeoutService>(), Clock);
         }
 
         // UserService אמיתי על אותו מסד (התחברות, טוקנים, תפקידים)

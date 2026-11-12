@@ -47,6 +47,9 @@ namespace FoodRescue.Tests
                     foreach (var stop in order)
                     {
                         t += input.Minutes[from, stop + 1];
+                        // תיקון 43: הגענו לפני "זמינה החל מ-" - מחכים
+                        var ready = input.Stops[stop].EarliestPickupUtc;
+                        if (ready.HasValue && T0.AddMinutes(t) < ready.Value) t = (ready.Value - T0).TotalMinutes;
                         if (T0.AddMinutes(t) > input.Stops[stop].PickupDeadlineUtc.AddTicks(1)) { ok = false; break; }
                         t += input.ServiceMinutes;
                         from = stop + 1;
@@ -83,15 +86,28 @@ namespace FoodRescue.Tests
             }
         }
 
-        private static PlannerInput RandomRoute(Random rnd, int m)
+        // withEarliestPickup (תיקון 43): חצי מהתחנות מוכנות רק משעה מסוימת, ואפשר לדחות את היציאה עד 55 דקות
+        private static PlannerInput RandomRoute(Random rnd, int m, bool withEarliestPickup = false)
         {
-            var stops = Enumerable.Range(0, m).Select(i => new PlannerStop
+            var stops = Enumerable.Range(0, m).Select(i =>
             {
-                DonationId = i + 1,
-                PickupDeadlineUtc = T0.AddMinutes(rnd.Next(5, 120)),
-                ExpirationUtc = T0.AddMinutes(rnd.Next(30, 240)),
-                Value = rnd.Next(1, 10),
-                WeightKg = rnd.Next(1, 10)
+                var deadline = T0.AddMinutes(rnd.Next(5, 120));
+                DateTime? ready = null;
+                if (withEarliestPickup && rnd.Next(2) == 0)
+                {
+                    var from = T0.AddMinutes(rnd.Next(-20, 100));
+                    ready = from > deadline.AddMinutes(-5) ? deadline.AddMinutes(-5) : from;
+                }
+
+                return new PlannerStop
+                {
+                    DonationId = i + 1,
+                    PickupDeadlineUtc = deadline,
+                    EarliestPickupUtc = ready,
+                    ExpirationUtc = T0.AddMinutes(rnd.Next(30, 240)),
+                    Value = rnd.Next(1, 10),
+                    WeightKg = rnd.Next(1, 10)
+                };
             }).ToList();
 
             int size = m + 2;
@@ -108,7 +124,7 @@ namespace FoodRescue.Tests
                 Minutes = minutes,
                 Km = km,
                 EarliestDepartureUtc = T0,
-                LatestDepartureUtc = T0,
+                LatestDepartureUtc = withEarliestPickup ? T0.AddMinutes(rnd.Next(0, 56)) : T0,
                 AvailableUntilUtc = T0.AddMinutes(rnd.Next(20, 200)),
                 ServiceMinutes = rnd.Next(0, 6),
                 CapacityKg = rnd.Next(5, 40)
@@ -138,6 +154,31 @@ namespace FoodRescue.Tests
             }
         }
 
+        // תיקון 43: תחנות שמוכנות רק משעה מסוימת ("זמינה החל מ-") ויציאה שאפשר לדחות. כשמותר לחכות, הגעה מוקדמת
+        // אף פעם לא מזיקה - וה-DP נשאר מדויק: אותו ערך ואותה הגעה לעמותה כמו המעבר על כל הקבוצות וכל הסדרים.
+        [Fact]
+        public void RoutePlanner_WithEarliestPickupTimes_FindsTheSameOptimumAsBruteForce_On3000RandomRoutes()
+        {
+            var rnd = new Random(20261110);
+            for (int iteration = 0; iteration < 3000; iteration++)
+            {
+                var input = RandomRoute(rnd, rnd.Next(1, 7), withEarliestPickup: true);
+                var expected = BruteForceRoute(input);
+                var actual = RoutePlanner.Plan(input);
+
+                if (expected == null)
+                {
+                    Assert.Null(actual);
+                    continue;
+                }
+
+                Assert.NotNull(actual);
+                Assert.Equal(expected.Value, actual!.Value, 6);
+                Assert.Equal(expected.Arrival, (actual.NgoArrivalUtc - T0).TotalMinutes, 4);
+                AssertRouteIsFeasible(input, actual);
+            }
+        }
+
         // בדיקה עצמאית של המסלול שהוחזר: מחשבים מחדש את הזמנים לפי הסדר ובודקים כל אילוץ
         private static void AssertRouteIsFeasible(PlannerInput input, PlannerResult route)
         {
@@ -145,12 +186,23 @@ namespace FoodRescue.Tests
             Assert.Equal(route.Order.Count, route.Order.Distinct().Count());
             Assert.True(route.Order.Sum(i => input.Stops[i].WeightKg) <= input.CapacityKg + 1e-9);
 
+            Assert.True(route.DepartureUtc >= input.EarliestDepartureUtc.AddSeconds(-1));
+            Assert.True(route.DepartureUtc <= input.LatestDepartureUtc.AddSeconds(1));
+
             var t = route.DepartureUtc;
+            double waited = 0;
             int from = 0;
             for (int k = 0; k < route.Order.Count; k++)
             {
                 int stop = route.Order[k];
                 t = t.AddMinutes(input.Minutes[from, stop + 1]);
+                // תיקון 43: לא אוספים לפני "זמינה החל מ-" - מחכים
+                var ready = input.Stops[stop].EarliestPickupUtc;
+                if (ready.HasValue && t < ready.Value)
+                {
+                    waited += (ready.Value - t).TotalMinutes;
+                    t = ready.Value;
+                }
                 Assert.True(Math.Abs((t - route.ArrivalsUtc[k]).TotalSeconds) < 1);
                 Assert.True(t <= input.Stops[stop].PickupDeadlineUtc.AddSeconds(1));
                 t = t.AddMinutes(input.ServiceMinutes);
@@ -158,8 +210,12 @@ namespace FoodRescue.Tests
             }
             t = t.AddMinutes(input.Minutes[from, input.Stops.Count + 1]);
 
+            Assert.Equal(waited, route.WaitMinutes, 3);
+            Assert.True(waited <= input.MaxWaitMinutes + 1e-6);
+
             Assert.True(Math.Abs((t - route.NgoArrivalUtc).TotalSeconds) < 1);
-            Assert.True(route.NgoArrivalUtc <= input.AvailableUntilUtc.AddSeconds(1));
+            if (input.AvailableUntilUtc != DateTime.MaxValue)
+                Assert.True(route.NgoArrivalUtc <= input.AvailableUntilUtc.AddSeconds(1));
             Assert.All(route.Order, i => Assert.True(route.NgoArrivalUtc <= input.Stops[i].ExpirationUtc.AddSeconds(1)));
         }
 
@@ -269,6 +325,102 @@ namespace FoodRescue.Tests
             };
 
             Assert.Null(RoutePlanner.Plan(input));
+        }
+
+        [Fact]
+        public void RoutePlanner_DonationAvailableOnlyLater_LeavesLaterInsteadOfWaiting()
+        {
+            // תיקון 43: נסיעה 10 דק' לתחנה שמוכנה רק ב-+40 (מועד אחרון +90), 5 דק' שירות, 10 דק' לעמותה.
+            // אפשר לצאת עד +60. במקום לצאת עכשיו ולחכות חצי שעה - יוצאים ב-+30 ומגיעים בדיוק כשהתרומה מוכנה.
+            var input = new PlannerInput
+            {
+                Stops = new[]
+                {
+                    new PlannerStop
+                    {
+                        DonationId = 1, PickupDeadlineUtc = T0.AddMinutes(90), EarliestPickupUtc = T0.AddMinutes(40),
+                        ExpirationUtc = T0.AddHours(5), Value = 1, WeightKg = 1
+                    }
+                },
+                AnchorIndex = 0,
+                Minutes = new double[,] { { 0, 10, 0 }, { 0, 0, 10 }, { 0, 0, 0 } },
+                Km = new double[3, 3],
+                EarliestDepartureUtc = T0,
+                LatestDepartureUtc = T0.AddHours(1),
+                ServiceMinutes = 5,
+                MaxWaitMinutes = 20
+            };
+
+            var route = RoutePlanner.Plan(input);
+
+            Assert.NotNull(route);
+            Assert.Equal(T0.AddMinutes(30), route!.DepartureUtc);
+            Assert.Equal(T0.AddMinutes(40), route.ArrivalsUtc[0]);       // לא לפני "זמינה החל מ-"
+            Assert.Equal(0, route.WaitMinutes, 6);
+            Assert.Equal(T0.AddMinutes(55), route.NgoArrivalUtc);
+            AssertRouteIsFeasible(input, route);
+
+            // אם אי אפשר לצאת אחרי +5: הגעה ב-+15 ו-25 דקות המתנה - יותר ממה שמותר (20), ולכן אין מסלול
+            var cannotWait = new PlannerInput
+            {
+                Stops = input.Stops,
+                AnchorIndex = 0,
+                Minutes = input.Minutes,
+                Km = input.Km,
+                EarliestDepartureUtc = T0,
+                LatestDepartureUtc = T0.AddMinutes(5),
+                ServiceMinutes = 5,
+                MaxWaitMinutes = 20
+            };
+            Assert.Null(RoutePlanner.Plan(cannotWait));
+        }
+
+        [Fact]
+        public void RoutePlanner_DoesNotCombineAnEarlyStopWithALateOne_WhenTheWaitIsTooLong()
+        {
+            // תיקון 43: העוגן A חייב להיאסף עד +20 (נסיעה 10 דק'). B מוכנה רק ב-+60 (נסיעה A→B 10 דק').
+            // יחד: איסוף A ב-+15 לכל המאוחר (יציאה עד +5), הגעה ל-B ב-+30 - ו-30 דקות המתנה.
+            PlannerInput Input(double maxWait) => new()
+            {
+                Stops = new[]
+                {
+                    new PlannerStop { DonationId = 1, PickupDeadlineUtc = T0.AddMinutes(20), ExpirationUtc = T0.AddHours(5), Value = 5, WeightKg = 1 },
+                    new PlannerStop
+                    {
+                        DonationId = 2, PickupDeadlineUtc = T0.AddMinutes(120), EarliestPickupUtc = T0.AddMinutes(60),
+                        ExpirationUtc = T0.AddHours(5), Value = 3, WeightKg = 1
+                    }
+                },
+                AnchorIndex = 0,
+                Minutes = new double[,]
+                {
+                    { 0, 10, 10, 0 },
+                    { 0, 0, 10, 10 },
+                    { 0, 10, 0, 10 },
+                    { 0, 0, 0, 0 }
+                },
+                Km = new double[4, 4],
+                EarliestDepartureUtc = T0,
+                LatestDepartureUtc = T0.AddMinutes(5),
+                ServiceMinutes = 5,
+                MaxWaitMinutes = maxWait
+            };
+
+            // עד 20 דקות המתנה: רק העוגן
+            var shortWait = RoutePlanner.Plan(Input(20));
+            Assert.NotNull(shortWait);
+            Assert.Equal(new[] { 0 }, shortWait!.Order);
+            Assert.Equal(5, shortWait.Value);
+
+            // עד 30 דקות: שתיהן - יציאה ב-+5, איסוף A ב-+15, הגעה ל-B ב-+30, איסוף ב-+60 ועמותה ב-+75
+            var longWait = RoutePlanner.Plan(Input(30));
+            Assert.NotNull(longWait);
+            Assert.Equal(new[] { 0, 1 }, longWait!.Order);
+            Assert.Equal(T0.AddMinutes(5), longWait.DepartureUtc);
+            Assert.Equal(T0.AddMinutes(60), longWait.ArrivalsUtc[1]);
+            Assert.Equal(30, longWait.WaitMinutes, 6);
+            Assert.Equal(T0.AddMinutes(75), longWait.NgoArrivalUtc);
+            AssertRouteIsFeasible(Input(30), longWait);
         }
 
         // =====================================================================

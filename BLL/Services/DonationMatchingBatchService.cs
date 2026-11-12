@@ -625,6 +625,16 @@ namespace BLL.Algorithms
                 return result;
             }
 
+            // תיקון 43: התרומה עוד לא מוכנה ("זמינה לאיסוף החל מ-" אחרי אופק התכנון) - היא תשובץ בריצה שלפני
+            // השעה הזו, עם מידע עדכני על המתנדבים. אין סיבה להסלים למנהל.
+            if (!IsReadyThisRun(donation, ctx))
+            {
+                var readyAt = LocalClock.ToLocal(NgoAvailabilityHelper.GetEarliestPickupDateTime(donation));
+                result.Reason = $"התרומה זמינה לאיסוף רק מ-{readyAt:HH:mm}. היא תשובץ בריצה שלפני השעה הזו.";
+                result.Escalate = false;
+                return result;
+            }
+
             // ---------- עמותות (תיקונים 20-21): כל מי שיכולה לקבל, לא רק אחת ----------
             var ngoOptions = _ngoSelectionService.RankNgos(donation, ctx.Ngos, ctx.NgoRemainingKg, ctx.EarliestDepartureUtc);
             if (ngoOptions.Count == 0)
@@ -687,7 +697,7 @@ namespace BLL.Algorithms
             // ---------- תרומות נוספות אפשריות סביב העוגן (KD-Tree) ----------
             var cluster = ctx.DonationIndex
                 .WithinRadius(donation.Latitude, donation.Longitude, policy.ClusterRadiusKm)
-                .Where(d => d.Id != donation.Id && !ctx.AssignedDonationIds.Contains(d.Id))
+                .Where(d => d.Id != donation.Id && !ctx.AssignedDonationIds.Contains(d.Id) && IsReadyThisRun(d, ctx))
                 .ToList();
 
             // ---------- Backtracking: מסלול לכל מתנדב לפי הדירוג, עם חלופה כשנכשל ----------
@@ -795,6 +805,10 @@ namespace BLL.Algorithms
 
             return await EscalateAsync(donation, failures, reason);
         }
+
+        // תיקון 43: אפשר לתכנן את התרומה בריצה הזו - היא מוכנה ("זמינה לאיסוף החל מ-") עד היציאה המאוחרת ביותר
+        private static bool IsReadyThisRun(Donation donation, RunContext ctx) =>
+            NgoAvailabilityHelper.GetEarliestPickupDateTime(donation) <= ctx.LatestDepartureUtc;
 
         // אין מסלול לתרומה כרגע. מסלימים למנהל רק אם גם בהמשך היום אין מי שיכול לקחת אותה.
         private static DonationCandidates NoRoute(DonationCandidates result, string reason, List<NgoOption> ngoOptions, RunContext ctx)

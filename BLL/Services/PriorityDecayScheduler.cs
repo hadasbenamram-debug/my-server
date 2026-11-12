@@ -17,18 +17,20 @@ namespace BLL.Algorithms
 
         private readonly IDonationRepository _donationRepository;
         private readonly IMatchingPolicyProvider _policy;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
-        public PriorityDecayScheduler(IDonationRepository donationRepository, IMatchingPolicyProvider policy)
+        public PriorityDecayScheduler(IDonationRepository donationRepository, IMatchingPolicyProvider policy, TimeProvider? clock = null)
         {
             _donationRepository = donationRepository;
             _policy = policy;
+            _clock = clock ?? TimeProvider.System;
         }
 
         [DisableConcurrentExecution(timeoutInSeconds: 300)]
         [AutomaticRetry(Attempts = 0)]
         public async Task ProcessPriorityDecay()
         {
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             var dayStartUtc = LocalClock.ToUtc(LocalClock.ToLocal(now).Date);
             var activeDonations = await _donationRepository.GetAvailableDonationsAsync(now, dayStartUtc);
             var timeConstant = _policy.Current.UrgencyTimeConstantMinutes;

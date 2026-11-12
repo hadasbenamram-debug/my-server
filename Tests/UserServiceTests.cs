@@ -245,6 +245,43 @@ namespace FoodRescue.Tests
             Assert.Equal(LinkLoginStatus.InvalidLink, (await Create().LinkLoginAsync(new LinkLoginDto { Token = "nope" })).Status);
         }
 
+        // תיקון 51: מי שפתח את קישור הכניסה שנשלח רק למייל שלו - המייל אומת
+        [Fact]
+        public async Task LinkLogin_MarksTheEmailAsVerified()
+        {
+            var user = await AddUserAsync(role: UserRole.Volunteer);
+            user.IsEmailVerified = false;
+            await Db.SaveChangesAsync();
+            var link = await _h.ActionTokens.CreateLinkTokenAsync(user.Id, ActionTokenPurpose.LoginLink, TimeSpan.FromDays(3),
+                (int)DAL.Classes.RequestedRole.Volunteer);
+
+            Assert.Equal(LinkLoginStatus.Success, (await Create().LinkLoginAsync(new LinkLoginDto { Token = link })).Status);
+
+            _h.Fresh();
+            Assert.True((await Db.Users.SingleAsync(u => u.Id == user.Id)).IsEmailVerified);
+        }
+
+        // תיקון 51: מנהל מסמן ידנית אימות (למשל אחרי שיחה עם המשתמש) או מבטל אותו; שדה שלא נשלח לא משתנה
+        [Fact]
+        public async Task Admin_CanMarkTheEmailAndPhoneAsVerified_OrUndoIt()
+        {
+            var user = await AddUserAsync();
+            user.IsEmailVerified = false;
+            user.IsPhoneVerified = false;
+            await Db.SaveChangesAsync();
+
+            var dto = await Create().SetVerificationAsync(user.Id, new UpdateVerificationDto { IsPhoneVerified = true });
+            Assert.True(dto!.IsPhoneVerified);
+            Assert.False(dto.IsEmailVerified);
+
+            _h.Fresh();
+            Assert.True((await Db.Users.SingleAsync(u => u.Id == user.Id)).IsPhoneVerified);
+
+            var undone = await Create().SetVerificationAsync(user.Id, new UpdateVerificationDto { IsPhoneVerified = false });
+            Assert.False(undone!.IsPhoneVerified);
+            Assert.Null(await Create().SetVerificationAsync(99999, new UpdateVerificationDto { IsEmailVerified = true }));
+        }
+
         [Fact]
         public async Task ResetPassword_UnknownToken_ReturnsFalse()
         {
@@ -256,6 +293,8 @@ namespace FoodRescue.Tests
         public async Task ResetPassword_IsSingleUse_AndRotatesSecurityStamp()
         {
             var user = await AddUserAsync();
+            user.IsEmailVerified = false;
+            await Db.SaveChangesAsync();
             var oldStamp = user.SecurityStamp;
 
             await Create().ForgotPasswordAsync(new ForgotPasswordDto { Email = "a@b.com" });
@@ -275,6 +314,7 @@ namespace FoodRescue.Tests
             _h.Fresh();
             var updated = await Db.Users.SingleAsync(u => u.Id == user.Id);
             Assert.NotEqual(oldStamp, updated.SecurityStamp);
+            Assert.True(updated.IsEmailVerified);   // תיקון 51: הקוד הגיע למייל - המייל אומת
             Assert.NotEqual(Microsoft.AspNetCore.Identity.PasswordVerificationResult.Failed,
                 new PasswordHasherWithLegacySupport().VerifyHashedPassword(updated, updated.PasswordHash, "brand-new-pass1"));
         }

@@ -18,4 +18,12 @@ namespace FoodRescue.DTOs
         public bool IsPhoneVerified { get; set; }
         public DateTime CreatedAt { get; set; }
     }
+
+    // תיקון 51: מנהל מסמן ידנית שהמייל / הטלפון של משתמש אומתו (למשל אחרי שיחה איתו), או מבטל אימות.
+    // שדה שלא נשלח (null) לא משתנה.
+    public class UpdateVerificationDto
+    {
+        public bool? IsEmailVerified { get; set; }
+        public bool? IsPhoneVerified { get; set; }
+    }
 }

@@ -41,6 +41,7 @@ namespace BLL.Services
         private readonly IRegistrationNoticeService _registrationNotices;
         private readonly DeliveryTracker _tracker;
         private readonly ISupplierRepository? _supplierRepository;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public VolunteerService(
             IVolunteerRepository volunteerRepository,
@@ -58,7 +59,8 @@ namespace BLL.Services
             IRegistrationNoticeService registrationNotices,
             DeliveryTracker tracker,
             // תיקון 32: לתעודת הזהות שכבר שמורה בחשבון (מספר העוסק של ספק שהוא עוסק מורשה / פטור)
-            ISupplierRepository? supplierRepository = null)
+            ISupplierRepository? supplierRepository = null,
+            TimeProvider? clock = null)
         {
             _passwordHasher = passwordHasher;
             _registrationNotices = registrationNotices;
@@ -75,6 +77,7 @@ namespace BLL.Services
             _notifications = notifications;
             _mapper = mapper;
             _logger = logger;
+            _clock = clock ?? TimeProvider.System;
         }
 
         // =========================================================
@@ -144,7 +147,7 @@ namespace BLL.Services
 
             _mapper.Map(dto, volunteer);
             if (locationChanged && (dto.CurrentLatitude != 0 || dto.CurrentLongitude != 0))
-                volunteer.LocationUpdatedAt = DateTime.UtcNow;
+                volunteer.LocationUpdatedAt = _clock.GetUtcNow().UtcDateTime;
 
             await _volunteerRepository.UpdateAsync(volunteer);
         }
@@ -177,7 +180,7 @@ namespace BLL.Services
             volunteerEntity.IdNumber = idNumber;
             volunteerEntity.ApprovalStatus = ApprovalStatus.Pending;
             if (dto.CurrentLatitude != 0 || dto.CurrentLongitude != 0)
-                volunteerEntity.LocationUpdatedAt = DateTime.UtcNow;
+                volunteerEntity.LocationUpdatedAt = _clock.GetUtcNow().UtcDateTime;
 
             var (passed, details) = _validation.ValidateVolunteer(idNumber, dto.DriverLicenseNumber, dto.DriverLicenseExpiry, dto.DateOfBirth);
 
@@ -310,7 +313,7 @@ namespace BLL.Services
 
             volunteer.CurrentLatitude = latitude;
             volunteer.CurrentLongitude = longitude;
-            volunteer.LocationUpdatedAt = DateTime.UtcNow;
+            volunteer.LocationUpdatedAt = _clock.GetUtcNow().UtcDateTime;
             await _volunteerRepository.UpdateAsync(volunteer);
 
             // בזמן ביצוע מסלול: נרשם ביומן המשלוח (DeliveryLogs) ונשלח בזמן אמת לעמותה ולשאר הצופים במסלול.

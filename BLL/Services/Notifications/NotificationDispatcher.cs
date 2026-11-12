@@ -62,6 +62,7 @@ namespace BLL.Notifications
                 {
                     NotificationChannel.Email => await _emailSender.SendAsync(notification.Recipient, notification.Subject ?? string.Empty, body),
                     NotificationChannel.Sms => await _smsSender.SendAsync(notification.Recipient, body),
+                    NotificationChannel.VoiceCall => await _smsSender.CallAsync(notification.Recipient, body),
                     _ => null
                 };
 
@@ -75,7 +76,10 @@ namespace BLL.Notifications
                 notification.RetryCount++;
                 notification.ErrorMessage = Truncate(ex.InnerException?.Message ?? ex.Message, 500);
 
-                if (notification.RetryCount >= MaxAttempts || ex is System.Security.Cryptography.CryptographicException)
+                // תיקון 64: שיחה קולית - ניסיון אחד בלבד. קוד אימות תקף רבע שעה, ולא מתקשרים למשתמש שוב ושוב
+                // מאוחר יותר; אם השיחה לא יצאה, הוא פשוט מבקש שיחה חדשה.
+                var maxAttempts = notification.Channel == NotificationChannel.VoiceCall ? 1 : MaxAttempts;
+                if (notification.RetryCount >= maxAttempts || ex is System.Security.Cryptography.CryptographicException)
                 {
                     notification.Status = NotificationStatus.Failed;
                     notification.ProtectedPayload = null;

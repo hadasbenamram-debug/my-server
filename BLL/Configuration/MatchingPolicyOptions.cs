@@ -64,6 +64,12 @@ namespace BLL.Configuration
         /// </summary>
         public int PlanningHorizonMinutes { get; set; } = 60;
 
+        /// <summary>
+        /// תיקון 43: תרומה "זמינה לאיסוף החל מ-" - כמה דקות (בסך הכול) מותר למתנדב לחכות בתחנות עד שהתרומה מוכנה.
+        /// בדרך כלל אין המתנה בכלל: היציאה נקבעת כך שהמתנדב מגיע כשהתרומה מוכנה (RoutePlanner).
+        /// </summary>
+        public int MaxPickupWaitMinutes { get; set; } = 20;
+
         /// <summary>תיקון 20: לכל מתנדב ותרומה נבדקות עד כמה עמותות (הקרובות ביותר שמתאימות) - ונבחר המסלול הטוב.</summary>
         public int NgoCandidatesPerRoute { get; set; } = 3;
 

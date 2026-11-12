@@ -240,6 +240,8 @@ builder.Services.AddHttpClient<IStaticMapService, GoogleStaticMapService>(client
 builder.Services.AddSingleton<IPayloadProtector, AesGcmPayloadProtector>();
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 builder.Services.AddHttpClient<ISmsSender, SmsSender>(client => client.Timeout = TimeSpan.FromSeconds(15));
+// תיקון 65: אימות טלפון דרך Twilio Verify (פעיל רק כשמוגדר Sms:VerifyServiceSid)
+builder.Services.AddHttpClient<IPhoneVerifier, TwilioVerifyClient>(client => client.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IUserNotificationService, UserNotificationService>();
 builder.Services.AddScoped<NotificationDispatcher>();

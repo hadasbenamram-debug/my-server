@@ -49,6 +49,9 @@ namespace DAL.Interfaces
         // השידוכים של העמותה (האחרון לכל תרומה), כולל התרומה והמתנדב
         Task<List<Match>> GetLatestForNgoAsync(int ngoId);
 
+        // תיקון 48: השידוך האחרון של כל תרומה של הספק, כולל העמותה והמתנדב (לדשבורד ולרשימות של הספק)
+        Task<List<Match>> GetLatestForSupplierAsync(int supplierId);
+
         // תיקון 21: כמה ק"ג כבר הופנו לכל עמותה ביום מסוים: NgoId -> ק"ג. נספרים רק שידוכים חיים (ממתינים / אושרו /
         // באיסוף / בדרך) ושהושלמו - הצעה שנדחתה / לא נענתה / No-Show / בוטלה לא "תופסת" מקום בקיבולת העמותה.
         Task<Dictionary<int, double>> SumWeightKgByNgoOnDateAsync(IEnumerable<int> ngoIds, DateTime dayStartUtc, DateTime dayEndUtc);

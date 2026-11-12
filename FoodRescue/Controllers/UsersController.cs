@@ -30,6 +30,12 @@ namespace FoodRescue.Controllers
         public async Task<ActionResult<UserDto>> GetUser(int id) =>
             Ok(await _userService.GetByIdAsync(id) ?? throw new NotFoundException("המשתמש לא נמצא."));
 
+        // תיקון 51: PUT api/users/{id}/verification - מנהל מסמן ידנית שהמייל / הטלפון אומתו (או מבטל אימות)
+        [HttpPut("{id:int}/verification")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<UserDto>> SetVerification(int id, [FromBody] UpdateVerificationDto dto) =>
+            Ok(await _userService.SetVerificationAsync(id, dto) ?? throw new NotFoundException("המשתמש לא נמצא."));
+
         // GET api/users/me - הפרופיל של המשתמש המחובר (כל תפקיד)
         [HttpGet("me")]
         public async Task<ActionResult<MyProfileDto>> GetMe() =>

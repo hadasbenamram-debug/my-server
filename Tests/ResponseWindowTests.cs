@@ -92,7 +92,7 @@ namespace FoodRescue.Tests
             var offer = await ActiveOfferAsync(h);
 
             // 5:01 - הג'וב שמסמן "לא ענה בזמן" עוד לא רץ, והדף אצל המתנדב לא רוענן
-            offer.ResponseDeadline = DateTime.UtcNow.AddSeconds(-1);
+            offer.ResponseDeadline = h.NowUtc.AddSeconds(-1);
             await h.Db.SaveChangesAsync();
             h.Fresh();
 
@@ -107,7 +107,7 @@ namespace FoodRescue.Tests
             Assert.Equal(1, h.Jobs.Count<DonationMatchingBatchService>(nameof(DonationMatchingBatchService.ReassignDonationAsync)));
 
             // הג'וב שרץ אחר כך לא מעביר את התרומה פעם שנייה
-            Assert.Equal(0, await h.Timeouts.ProcessTimeoutsAtAsync(DateTime.UtcNow));
+            Assert.Equal(0, await h.Timeouts.ProcessTimeoutsAtAsync(h.NowUtc));
             Assert.Equal(1, h.Jobs.Count<DonationMatchingBatchService>(nameof(DonationMatchingBatchService.ReassignDonationAsync)));
         }
 

@@ -22,6 +22,10 @@ namespace BLL.Services
         // מסך המעקב החי אחרי מסלול (עמותה / ספק / מנהל)
         public static string TrackingPath(int routeId) => $"/app/track/{routeId}";
 
+        // תיקון 63: מסך התרומה (פרטים / מעקב / שיחה) - לעמותה יש בו גם את "אישור קבלה"
+        public static string NgoDonationPath(int donationId) => $"/app/ngo/donation/{donationId}";
+        public static string SupplierDonationPath(int donationId) => $"/app/supplier/donation/{donationId}";
+
         // המסך הראשון של כל תפקיד אחרי האישור (גם בהתראה וגם בקישור הכניסה מהמייל)
         public static string RoleHomePath(DAL.Classes.RequestedRole role) => role switch
         {

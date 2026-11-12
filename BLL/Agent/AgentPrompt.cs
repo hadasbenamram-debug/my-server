@@ -33,15 +33,17 @@ namespace BLL.Agent
             - יצירת תרומה: במסך [יצירת תרומה](/app/supplier/create-donation). אפשר לצלם את המזון, וה-AI ממלא את הקטגוריות והמשקל.
             - תרומה אפשר לערוך רק כל עוד היא ממתינה לשיבוץ, ולבטל עד שהיא נאספת - במסך [תרומות פתוחות](/app/supplier/open-donations).
             - אחרי השיבוץ אפשר לראות את המתנדב בדרך במעקב חי: /app/track/{TrackingRouteId} (המספר מגיע מ-GetDonationDetails).
-            - מסכים נוספים: [דשבורד ספק](/app/supplier/dashboard), [היסטוריית ספק](/app/supplier/history), [תגובות](/app/supplier/comments).
+            - לכל תרומה יש מסך משלה: /app/supplier/donation/{DonationId} - פרטי התרומה, מעקב, ושיחה (תגובות) עם העמותה והמתנדב.
+            - מסכים נוספים: [דשבורד ספק](/app/supplier/dashboard), [היסטוריית ספק](/app/supplier/history).
             """;
 
         private const string Ngo = """
             המשתמש הוא עמותה שמקבלת תרומות מזון.
             - המנוע שולח לעמותה תרומות רק בשעות הקבלה שלה ולפי הקיבולת היומית. שינוי שעות: [שעות פעילות](/app/ngo/hours).
-            - מה בדרך: [תרומות נכנסות](/app/ngo/incoming). מעקב חי אחרי מתנדב בדרך: /app/track/{TrackingRouteId}.
-            - כשהמשלוח מגיע מאשרים קבלה ב[אישור קבלה](/app/ngo/confirm), ואחר כך אפשר לדרג את המתנדב.
-            - מסכים נוספים: [דשבורד עמותה](/app/ngo/dashboard), [היסטוריית עמותה](/app/ngo/history), [תגובות](/app/ngo/comments).
+            - מה בדרך: רשימת "בדרך אליכם" ב[דשבורד עמותה](/app/ngo/dashboard). מעקב חי אחרי מתנדב בדרך: /app/track/{TrackingRouteId}.
+            - לכל תרומה יש מסך משלה: /app/ngo/donation/{DonationId} - פרטי התרומה, מעקב, ושיחה (תגובות) עם המתנדב והספק.
+            - כשהמשלוח מגיע מאשרים קבלה בכפתור "אישור קבלה" - במסך התרומה או ב[דשבורד עמותה](/app/ngo/dashboard), ואחר כך אפשר לדרג את המתנדב.
+            - מסכים נוספים: [דשבורד עמותה](/app/ngo/dashboard), [היסטוריית עמותה](/app/ngo/history).
             """;
 
         private const string Volunteer = """
@@ -49,17 +51,19 @@ namespace BLL.Agent
             - המערכת שולחת לו הצעה למסלול (כמה תחנות איסוף, ואז עמותה אחת) לפי הזמינות השבועית שהגדיר ב[זמינות שבועית](/app/volunteer/availability).
             - את ההצעה צריך לאשר או לדחות תוך {0} דקות ב[בקשה נכנסת](/app/volunteer/incoming-request), אחרת היא עוברת למתנדב אחר.
             - אחרי האישור: יוצאים לדרך, מסמנים איסוף בכל תחנה ומסירה בעמותה - במסך [מסלול פעיל](/app/volunteer/active-route).
-            - מסכים נוספים: [דשבורד מתנדב](/app/volunteer/dashboard), [היסטוריית שיבוצים](/app/volunteer/history), [דירוגים](/app/volunteer/ratings), [תגובות](/app/volunteer/comments).
+            - מסכים נוספים: [דשבורד מתנדב](/app/volunteer/dashboard), [היסטוריית שיבוצים](/app/volunteer/history), [דירוגים](/app/volunteer/ratings).
+            - לכל תרומה יש מסך משלה: /app/volunteer/donation/{{DonationId}} - פרטי התרומה, מעקב, ושיחה (תגובות) עם העמותה והספק.
             """;
 
         private const string Admin = """
             המשתמש הוא מנהל המערכת.
             - מנוע השידוכים רץ לפי לוח זמנים (Cron), ואפשר להפעיל אותו ידנית ב[מנוע שיבוץ](/app/admin/matching).
               כשתרומות לא שובצו - הסבר לפי LastRunProblems מ-GetSystemOverview.
-            - כל המתנדבים שבדרך עכשיו על מפה אחת, בשידור חי: [מפת מסלולים חיה](/app/admin/live-map).
-              רשימת המסלולים הפעילים: [מוניטור פעילות בשטח](/app/admin/live-monitor). מעקב חי אחרי מסלול אחד: /app/track/{RouteId}.
+            - כל המתנדבים שבדרך עכשיו על מפה אחת, בשידור חי, עם רשימת המסלולים הפעילים וזמני הגעה: [חדר בקרה חי](/app/admin/live-map).
+              שם גם השיבוצים שעוד לא יצאו לדרך (ממתינים לאישור המתנדב או לתחילת המסלול). מעקב חי אחרי מסלול אחד: /app/track/{RouteId}.
+            - כל המשתמשים במסך אחד, עם לשוניות - כולם, מתנדבים, ספקים ועמותות: [משתמשים](/app/admin/users).
             - מסכים: [דשבורד ניהול](/app/admin/dashboard), [אישור משתמשים](/app/admin/approvals), [ניהול תרומות](/app/admin/donations),
-              [ניהול מסלולים](/app/admin/routes), [טיפול באי-הגעה](/app/admin/noshow), [דוחות מערכת](/app/admin/reports), [הגדרות מערכת](/app/admin/settings).
+              [טיפול באי-הגעה](/app/admin/noshow), [דוחות מערכת](/app/admin/reports), [הגדרות מערכת](/app/admin/settings).
             """;
 
         private const string General = """

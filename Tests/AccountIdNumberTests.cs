@@ -72,7 +72,7 @@ namespace FoodRescue.Tests
             _h.Volunteers, _h.Users, new AvailabilitySlotRepository(Db), new RegionRepository(Db), _h.Routes,
             Approvals(), new ValidationService(), _h.UnitOfWork, _h.NotificationService,
             TestDb.Mapper, TestDb.Log<VolunteerService>(), new PasswordHasherWithLegacySupport(), Notices(), _h.Tracker,
-            _h.Suppliers);
+            _h.Suppliers, clock: _h.Clock);
 
         private static CreateVolunteerDto VolunteerForm(string? idNumber) => new()
         {

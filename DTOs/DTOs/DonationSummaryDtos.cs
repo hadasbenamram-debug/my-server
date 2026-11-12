@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace FoodRescue.DTOs
 {
@@ -13,7 +14,18 @@ namespace FoodRescue.DTOs
         public DateTime CreatedAt { get; set; }
         public DateTime ExpirationTime { get; set; }
         public TimeSpan LatestPickupTime { get; set; }
+        public TimeSpan? EarliestPickupTime { get; set; }   // תיקון 43: "זמינה לאיסוף החל מ-" (null = מיד)
         public string? Image { get; set; }   // שם קובץ התמונה בלבד
+
+        // תיקון 48: פרטים לדשבורד של הספק - מה נתרם, ומי מטפל בתרומה עכשיו (השידוך האחרון שלה)
+        public double TotalWeightKg { get; set; }
+        public List<DonationCategoryLineDto> Categories { get; set; } = new List<DonationCategoryLineDto>();
+        public DateTime? ReceivedAt { get; set; }
+        public string? MatchStatus { get; set; }
+        public string? NgoName { get; set; }
+        public string? VolunteerName { get; set; }
+        public DateTime? EstimatedArrival { get; set; }
+        public int? VolunteerRouteId { get; set; }
     }
 
     // שורה ברשימת כל התרומות למנהל (GET api/Donations)

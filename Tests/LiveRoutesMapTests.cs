@@ -26,7 +26,7 @@ namespace FoodRescue.Tests
 
         private DeliveryTrackingService Tracking() => new(
             _h.MatchService, _h.DeliveryLogs, new EstimateOnlyDistances(_h.Policy), _h.Policy,
-            new MemoryCache(new MemoryCacheOptions()), TestDb.Mapper);
+            new MemoryCache(new MemoryCacheOptions()), TestDb.Mapper, _h.Clock);
 
         // מתנדב, תרומה, ריצת מנוע ואישור המסלול (עדיין Planned - לא יצא לדרך)
         private async Task<(Volunteer Volunteer, int RouteId)> AcceptedRouteAsync()

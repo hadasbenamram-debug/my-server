@@ -62,6 +62,10 @@ namespace BLL.Algorithms
             double weightKg = donation.TotalWeightKg();
             var options = new List<NgoOption>();
 
+            // תיקון 43: האיסוף לא לפני "זמינה לאיסוף החל מ-"
+            var readyAt = NgoAvailabilityHelper.GetEarliestPickupDateTime(donation);
+            var pickupFrom = readyAt > earliestPickupUtc ? readyAt : earliestPickupUtc;
+
             foreach (var ngo in candidateNgos ?? Enumerable.Empty<Ngo>())
             {
                 double remaining = remainingKg != null && remainingKg.TryGetValue(ngo.Id, out var left) ? left : double.PositiveInfinity;
@@ -74,7 +78,7 @@ namespace BLL.Algorithms
                 // תנאי הכרחי בלבד (חסם תחתון לנסיעה): העמותה פתוחה מתישהו בין ההגעה המוקדמת האפשרית לבין התפוגה.
                 // הבדיקה המדויקת - במסלול עצמו (RoutePlanner).
                 double distanceKm = GeoUtils.HaversineKm(donation.Latitude, donation.Longitude, ngo.Latitude, ngo.Longitude);
-                var earliestArrival = earliestPickupUtc.AddMinutes(GeoUtils.LowerBoundDriveMinutes(distanceKm, policy.MaxRoadSpeedKmH));
+                var earliestArrival = pickupFrom.AddMinutes(GeoUtils.LowerBoundDriveMinutes(distanceKm, policy.MaxRoadSpeedKmH));
                 var openArrival = NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, earliestArrival, donation.ExpirationTime);
                 if (!openArrival.HasValue)
                 {

@@ -38,6 +38,10 @@ namespace FoodRescue.DTOs
         // שעת האיסוף האחרונה היום (שעון מקומי)
         public TimeSpan LatestPickupTime { get; set; }
 
+        // תיקון 43: "זמינה לאיסוף החל מ-" היום (שעון מקומי). לא נשלח = אפשר לאסוף מיד.
+        // חייבת להיות לפחות 30 דקות לפני שעת האיסוף האחרונה.
+        public TimeSpan? EarliestPickupTime { get; set; }
+
         // תאריך התפוגה (המוקדם מבין המוצרים). אם לא נשלח - סוף היום המקומי.
         // ערך בלי אזור זמן מתפרש כשעון מקומי.
         public DateTime? ExpirationTime { get; set; }
@@ -50,6 +54,9 @@ namespace FoodRescue.DTOs
     public class UpdateDonationDto
     {
         public TimeSpan LatestPickupTime { get; set; }
+
+        // תיקון 43: "זמינה לאיסוף החל מ-" (null = אפשר לאסוף מיד)
+        public TimeSpan? EarliestPickupTime { get; set; }
 
         public DateTime? ExpirationTime { get; set; }
 
@@ -79,6 +86,7 @@ namespace FoodRescue.DTOs
         public string? GooglePlaceId { get; set; }
         public string? Image { get; set; }   // שם הקובץ בלבד. כתובת התמונה: /images/ + Image
         public TimeSpan LatestPickupTime { get; set; }
+        public TimeSpan? EarliestPickupTime { get; set; }   // תיקון 43: "זמינה לאיסוף החל מ-" (null = מיד)
         public DateTime ExpirationTime { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? ReceivedAt { get; set; }
@@ -96,5 +104,11 @@ namespace FoodRescue.DTOs
 
         // המסלול של השידוך - למעקב החי (api/tracking/routes/{id}). null = עוד אין מסלול
         public int? VolunteerRouteId { get; set; }
+
+        // תיקון 60: מועדי השלבים של השידוך - לציר "מעקב תרומה" (null = השלב עוד לא קרה)
+        public DateTime? MatchAssignedAt { get; set; }
+        public DateTime? VolunteerConfirmedAt { get; set; }
+        public DateTime? PickedUpAt { get; set; }
+        public DateTime? DeliveredAt { get; set; }
     }
 }

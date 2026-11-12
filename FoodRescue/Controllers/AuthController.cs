@@ -3,6 +3,7 @@ using FoodRescue.DTOs;
 using FoodRescue.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.Tasks;
 
@@ -141,11 +142,29 @@ namespace FoodRescue.Controllers
             VerifyResult(await _userService.VerifyEmailAsync(RequireUserId(), model.Code), "כתובת האימייל אומתה בהצלחה!");
 
         // חדש: אימות מספר טלפון ב-SMS
+        // תיקון 64: או בשיחה קולית - { "method": "call" }. בלי גוף בקשה = מסרון, כמו קודם.
         [HttpPost("send-phone-verification")]
         [Authorize]
-        public async Task<IActionResult> SendPhoneVerification() =>
-            SendResult(await _userService.SendPhoneVerificationAsync(RequireUserId()),
-                "קוד אימות נשלח במסרון למספר הטלפון שלך.", "מספר הטלפון כבר מאומת.");
+        public async Task<IActionResult> SendPhoneVerification(
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] SendPhoneVerificationDto? model = null)
+        {
+            var byCall = string.Equals(model?.Method, "call", System.StringComparison.OrdinalIgnoreCase);
+            var result = await _userService.SendPhoneVerificationAsync(RequireUserId(),
+                byCall ? PhoneVerificationMethod.VoiceCall : PhoneVerificationMethod.Sms);
+
+            if (!byCall)
+                return SendResult(result, "קוד אימות נשלח במסרון למספר הטלפון שלך.", "מספר הטלפון כבר מאומת.");
+
+            return result switch
+            {
+                VerificationResult.SentToLogOnly => Message(
+                    "סביבת פיתוח: לא הוגדר ספק שיחות, ולכן השיחה לא בוצעה בפועל. הקוד נכתב ביומן (Console) של השרת."),
+                VerificationResult.SmsNotConfigured => StatusCode(503, Error(503,
+                    "שיחות קוליות עדיין לא הוגדרו במערכת, ולכן אי אפשר להקריא את הקוד בטלפון. אפשר לנסות במסרון, או לפנות למנהל המערכת.",
+                    "VoiceNotConfigured")),
+                _ => SendResult(result, "תכף נתקשר אליך ונקריא את הקוד. הטלפון יצלצל בעוד כמה שניות.", "מספר הטלפון כבר מאומת.")
+            };
+        }
 
         [HttpPost("verify-phone")]
         [Authorize]
@@ -163,6 +182,9 @@ namespace FoodRescue.Controllers
             VerificationResult.Cooldown => StatusCode(429, Error(429, "נשלח קוד לאחרונה. נסו שוב בעוד דקה.")),
             VerificationResult.SmsNotConfigured => StatusCode(503, Error(503,
                 "שליחת מסרונים (SMS) עדיין לא הוגדרה במערכת, ולכן אי אפשר לשלוח קוד לטלפון. נא לפנות למנהל המערכת.", "SmsNotConfigured")),
+            // תיקון 65: Twilio החזירה שהמספר לא מקבל מסרונים
+            VerificationResult.CannotReceiveSms => BadRequest(Error(400,
+                "המספר הזה לא יכול לקבל מסרונים (למשל קו נייח). אפשר לבחור \"קוד בשיחה קולית\".", "CannotReceiveSms")),
             _ => StatusCode(503, Error(503, "לא ניתן לשלוח את הקוד כרגע. נסו שוב מאוחר יותר."))
         };
 
@@ -171,6 +193,8 @@ namespace FoodRescue.Controllers
             VerificationResult.Success => Message(success),
             VerificationResult.UserNotFound => Unauthorized(),
             VerificationResult.TooManyAttempts => BadRequest(Error(400, "בוצעו יותר מדי ניסיונות שגויים. יש לבקש קוד חדש.")),
+            // תיקון 65: Twilio Verify לא זמינה כרגע - לא אומרים "הקוד שגוי" כשלא באמת נבדק
+            VerificationResult.SendFailed => StatusCode(503, Error(503, "לא ניתן לבדוק את הקוד כרגע. נסו שוב בעוד רגע.")),
             _ => BadRequest(Error(400, "הקוד שגוי או שפג תוקפו."))
         };
 

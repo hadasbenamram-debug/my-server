@@ -31,7 +31,16 @@ namespace BLL.Interfaces
         // SMS: אין ספק SMS מוגדר בשרת - הקוד לא נשלח (בעבר הוחזר "נשלח" למרות שלא נשלח כלום)
         SmsNotConfigured,
         // SMS בסביבת פיתוח בלי ספק: לא נשלח בפועל, הקוד נכתב ביומן השרת
-        SentToLogOnly
+        SentToLogOnly,
+        // תיקון 65: המספר לא יכול לקבל מסרונים (למשל קו נייח) - אפשר לבקש שיחה קולית
+        CannotReceiveSms
+    }
+
+    // תיקון 64: איך שולחים את קוד האימות לטלפון - במסרון, או בשיחה קולית שמקריאה אותו
+    public enum PhoneVerificationMethod
+    {
+        Sms,
+        VoiceCall
     }
 
     public enum ChangePasswordResult
@@ -98,7 +107,7 @@ namespace BLL.Interfaces
         Task<VerificationResult> SendEmailVerificationAsync(int userId);
         Task<VerificationResult> VerifyEmailAsync(int userId, string code);
 
-        Task<VerificationResult> SendPhoneVerificationAsync(int userId);
+        Task<VerificationResult> SendPhoneVerificationAsync(int userId, PhoneVerificationMethod method = PhoneVerificationMethod.Sms);
         Task<VerificationResult> VerifyPhoneAsync(int userId, string code);
 
         /// <summary>Changes the password; all previously issued tokens stop working and a new one is returned.</summary>
@@ -115,5 +124,8 @@ namespace BLL.Interfaces
 
         Task<PagedResponse<UserDto>> GetPageAsync(PageRequest page);
         Task<UserDto?> GetByIdAsync(int id);
+
+        // תיקון 51: מנהל מסמן ידנית אימות מייל / טלפון (null = המשתמש לא נמצא)
+        Task<UserDto?> SetVerificationAsync(int userId, UpdateVerificationDto dto);
     }
 }

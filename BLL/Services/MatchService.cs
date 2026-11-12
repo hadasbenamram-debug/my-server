@@ -31,6 +31,8 @@ namespace BLL.Services
         private readonly IMatchingPolicyProvider _policy;
         private readonly IMapper _mapper;
         private readonly ILogger<MatchService> _logger;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
+        private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
         public MatchService(
             IMatchRepository matchRepository,
@@ -43,7 +45,8 @@ namespace BLL.Services
             IActionTokenService actionTokens,
             IMatchingPolicyProvider policy,
             IMapper mapper,
-            ILogger<MatchService> logger)
+            ILogger<MatchService> logger,
+            TimeProvider? clock = null)
         {
             _matchRepository = matchRepository;
             _donationRepository = donationRepository;
@@ -56,6 +59,7 @@ namespace BLL.Services
             _policy = policy;
             _mapper = mapper;
             _logger = logger;
+            _clock = clock ?? TimeProvider.System;
         }
 
         // =========================================================
@@ -219,7 +223,7 @@ namespace BLL.Services
 
             await _workflow.StartRouteAsync(routeId, caller.Volunteer.Id);
             var route = await _routeRepository.GetWithDetailsAsync(routeId) ?? throw new NotFoundException("המסלול לא נמצא.");
-            return ToRouteDto(route);
+            return ToRouteDto(route, Now);
         }
 
         public async Task PickUpAsync(int id, CurrentUserDto currentUser)
@@ -255,7 +259,7 @@ namespace BLL.Services
 
         public async Task<NoShowBoardDto> GetNoShowBoardAsync()
         {
-            var now = DateTime.UtcNow;
+            var now = Now;
             var localToday = LocalClock.ToLocal(now).Date;
 
             // מסלולים שאושרו ויש בהם תחנה שעוד לא נאספה (Confirmed / InPickup) - מועמדים ל-No-Show
@@ -399,7 +403,7 @@ namespace BLL.Services
                            (caller.Volunteer != null && route.VolunteerId == caller.Volunteer.Id) ||
                            route.Matches.Any(m => caller.IsMatchNgo(m) || caller.OwnsDonation(m.Donation));
 
-            return allowed ? ToRouteDto(route) : null;
+            return allowed ? ToRouteDto(route, Now) : null;
         }
 
         public async Task<RouteDto?> GetMyActiveRouteAsync(CurrentUserDto currentUser)
@@ -409,7 +413,7 @@ namespace BLL.Services
                 return null;
 
             var route = await _routeRepository.GetActiveForVolunteerAsync(caller.Volunteer.Id);
-            return route == null ? null : ToRouteDto(route);
+            return route == null ? null : ToRouteDto(route, Now);
         }
 
         // המפה החיה של המנהל: כל המסלולים שמתנדבים נמצאים בהם עכשיו בדרך
@@ -420,7 +424,7 @@ namespace BLL.Services
                 throw new ForbiddenException("רק מנהל יכול לצפות בכל המסלולים.");
 
             var routes = await _routeRepository.GetInProgressWithDetailsAsync();
-            return routes.Select(r => ToRouteDto(r)).ToList();
+            return routes.Select(r => ToRouteDto(r, Now)).ToList();
         }
 
         // =========================================================
@@ -430,7 +434,7 @@ namespace BLL.Services
         public async Task<RouteDto?> GetRouteByLinkAsync(string token)
         {
             var route = await LoadRouteForLinkAsync(token);
-            return route == null ? null : ToRouteDto(route);
+            return route == null ? null : ToRouteDto(route, Now);
         }
 
         // תיקון 12: קישור שפג / נוצל, או בקשה שכבר לא ממתינה - תוצאה ולא חריגה
@@ -450,7 +454,7 @@ namespace BLL.Services
                     : await _workflow.DeclineAsync(match, route.VolunteerId, MatchStatus.Declined);
 
             var fresh = await _routeRepository.GetWithDetailsAsync(route.Id) ?? route;
-            return new RespondByLinkOutcome(result, ToRouteDto(fresh), route.Volunteer.UserId);
+            return new RespondByLinkOutcome(result, ToRouteDto(fresh, Now), route.Volunteer.UserId);
         }
 
         // =========================================================
@@ -492,7 +496,7 @@ namespace BLL.Services
             {
                 var route = await _routeRepository.GetWithDetailsAsync(match.VolunteerRouteId.Value);
                 if (route != null)
-                    return ToRouteDto(route);
+                    return ToRouteDto(route, Now);
             }
 
             return new RouteDto
@@ -509,7 +513,7 @@ namespace BLL.Services
         private static bool IsParticipant(CallerProfile caller, Match match) =>
             caller.IsAdmin || caller.OwnsMatchAsVolunteer(match) || caller.IsMatchNgo(match) || caller.OwnsDonation(match.Donation);
 
-        public static RouteDto ToRouteDto(VolunteerRoute route)
+        public static RouteDto ToRouteDto(VolunteerRoute route, DateTime? nowUtc = null)
         {
             var matches = (route.Matches ?? new List<Match>())
                 .OrderBy(m => m.EstimatedArrival ?? DateTime.MaxValue)
@@ -522,7 +526,8 @@ namespace BLL.Services
             var ngo = shown.Select(m => m.Ngo).FirstOrDefault(n => n != null);
             var awaiting = shown.Where(m => m.IsActive && m.Status == MatchStatus.AwaitingVolunteerConfirmation).ToList();
             var deadline = awaiting.Select(m => m.ResponseDeadline).Where(d => d.HasValue).Min();
-            var nowUtc = DateTime.UtcNow;
+            // תיקון 42: הזמן מגיע מהשעון של השירות (אותו שעון של המנוע). בלי ערך - השעה הנוכחית.
+            var now = nowUtc ?? DateTime.UtcNow;
 
             // המיקום של המתנדב נחשף לעמותה ולספקים רק בזמן שהוא בדרך (InProgress) - לא לפני היציאה ולא אחרי הסיום
             bool shareLocation = route.Status == RouteStatus.InProgress && route.Volunteer?.LocationUpdatedAt != null;
@@ -536,11 +541,11 @@ namespace BLL.Services
                 ScheduledAt = route.ScheduledAt,
                 ResponseDeadline = deadline,
                 ResponseSecondsLeft = awaiting.Count > 0 && deadline.HasValue
-                    ? (int)Math.Max(0, Math.Floor((deadline.Value - nowUtc).TotalSeconds))
+                    ? (int)Math.Max(0, Math.Floor((deadline.Value - now).TotalSeconds))
                     : null,
                 // תיקון 13: אחרי שהזמן עבר כבר לא ממתינים לתגובה - גם אם הג'וב שמסמן "לא ענה בזמן" עוד לא רץ
                 // (כך המתנדב לא רואה כפתור "אישור" אחרי 5 הדקות)
-                AwaitingResponse = awaiting.Count > 0 && (deadline == null || deadline.Value > nowUtc),
+                AwaitingResponse = awaiting.Count > 0 && (deadline == null || deadline.Value > now),
                 TotalWeightKg = route.TotalWeightKg,
                 EstimatedTotalDurationMinutes = route.EstimatedTotalDurationMinutes,
                 EstimatedTotalDistanceKm = route.EstimatedTotalDistanceKm,
@@ -572,6 +577,7 @@ namespace BLL.Services
             Longitude = m.Donation?.Longitude ?? 0,
             EstimatedArrival = m.EstimatedArrival,
             LatestPickupTime = m.Donation?.LatestPickupTime ?? TimeSpan.Zero,
+            EarliestPickupTime = m.Donation?.EarliestPickupTime,   // תיקון 43
             WeightKg = m.Donation?.TotalWeightKg() ?? 0,
             PickedUpAt = m.PickedUpAt,
             DeliveredAt = m.DeliveredAt,

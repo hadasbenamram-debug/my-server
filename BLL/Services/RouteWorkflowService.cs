@@ -42,6 +42,7 @@ namespace BLL.Services
         private readonly VolunteerReliabilityService _reliability;
         private readonly ILogger<RouteWorkflowService> _logger;
         private readonly DeliveryTracker _tracker;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public RouteWorkflowService(
             IMatchRepository matchRepository,
@@ -53,7 +54,8 @@ namespace BLL.Services
             IBackgroundJobClient jobs,
             VolunteerReliabilityService reliability,
             ILogger<RouteWorkflowService> logger,
-            DeliveryTracker tracker)
+            DeliveryTracker tracker,
+            TimeProvider? clock = null)
         {
             _matchRepository = matchRepository;
             _routeRepository = routeRepository;
@@ -65,6 +67,7 @@ namespace BLL.Services
             _reliability = reliability;
             _logger = logger;
             _tracker = tracker;
+            _clock = clock ?? TimeProvider.System;
         }
 
         public static bool IsActiveStatus(MatchStatus status) => ActiveStatuses.Contains(status);
@@ -90,7 +93,7 @@ namespace BLL.Services
             if (group.Count == 0)
                 return RouteResponseResult.NotAwaiting;
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             // תיקון 38: ברגע שהזמן הגיע (ולא רק אחריו) - כבר מאוחר. השרת קובע לפי השעון שלו, גם אם הדף אצל המתנדב
             // לא רוענן והכפתור עוד מוצג.
             if (IsPastDeadline(group, now))
@@ -119,7 +122,7 @@ namespace BLL.Services
             bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 // תיקון 38: בדיקה חוזרת ממש לפני השמירה - אישור שהתחיל ב-4:59.9 ונשמר אחרי 5:00 לא נקלט
-                now = DateTime.UtcNow;
+                now = _clock.GetUtcNow().UtcDateTime;
                 if (IsPastDeadline(group, now))
                 {
                     lateAtSave = true;
@@ -179,7 +182,7 @@ namespace BLL.Services
             if (group.Count == 0)
                 return RouteResponseResult.NotAwaiting;
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
 
             // תיקון 14: אם בדיוק באותו רגע המתנדב אישר (או שהבקשה כבר טופלה בתהליך אחר) - לא דורסים,
             // ולא שולחים את התרומה למתנדב נוסף
@@ -238,7 +241,7 @@ namespace BLL.Services
             if (matches.Any(m => m.Status == MatchStatus.AwaitingVolunteerConfirmation))
                 throw new ArgumentException("יש לאשר את המסלול לפני היציאה לדרך.");
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 foreach (var m in matches.Where(m => m.Status == MatchStatus.Confirmed))
@@ -270,7 +273,7 @@ namespace BLL.Services
             if (!match.IsActive || (match.Status != MatchStatus.Confirmed && match.Status != MatchStatus.InPickup))
                 throw new ArgumentException("אפשר לסמן איסוף רק לשיבוץ שאושר ועדיין לא נאסף.");
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
                 match.Status = MatchStatus.InTransit;
@@ -307,7 +310,7 @@ namespace BLL.Services
             if (match.Status != MatchStatus.Confirmed && match.Status != MatchStatus.InPickup && match.Status != MatchStatus.InTransit)
                 throw new ArgumentException("לא ניתן לסמן מסירה לשיבוץ במצב הנוכחי.");
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             var group = await GetGroupAsync(match);
 
             bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
@@ -330,16 +333,18 @@ namespace BLL.Services
                 $"תרומה #{match.DonationId} נמסרה" + (match.Ngo == null ? " לעמותה" : $" ל{match.Ngo.NgoName}"),
                 match.Id, match.Volunteer);
 
+            // תיקון 63: ההתראות מובילות למסך התרומה (הדף "אישור קבלה" נמחק - העמותה מאשרת שם)
             if (match.Ngo != null)
             {
                 await _notifications.NotifyUserAsync(match.Ngo.UserId,
                     $"תרומה #{match.DonationId} נמסרה",
                     "נא לאשר את קבלת התרומה.",
-                    link: "/app/ngo/confirm", type: "request");
+                    link: FrontendLinks.NgoDonationPath(match.DonationId), type: "request");
             }
 
             if (match.Donation?.Supplier != null)
-                await _notifications.NotifyUserAsync(match.Donation.Supplier.UserId, $"תרומה #{match.DonationId} נמסרה לעמותה", null, type: "success");
+                await _notifications.NotifyUserAsync(match.Donation.Supplier.UserId, $"תרומה #{match.DonationId} נמסרה לעמותה", null,
+                    link: FrontendLinks.SupplierDonationPath(match.DonationId), type: "success");
 
             await PublishStatusAsync(new[] { match });
         }
@@ -361,7 +366,7 @@ namespace BLL.Services
             if (!pickedUp)
                 throw new ArgumentException("אפשר לאשר קבלה רק לתרומה שנאספה.");
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             var group = await GetGroupAsync(match);
 
             bool saved = await _unitOfWork.ExecuteInTransactionAsync(async () =>
@@ -517,7 +522,7 @@ namespace BLL.Services
                 if (route != null && route.Status != RouteStatus.Completed && route.Status != RouteStatus.Cancelled)
                 {
                     route.Status = group.Any(m => m.Status == MatchStatus.Completed) ? RouteStatus.Completed : RouteStatus.Cancelled;
-                    route.CompletedAt = DateTime.UtcNow;
+                    route.CompletedAt = _clock.GetUtcNow().UtcDateTime;
                     await _routeRepository.UpdateAsync(route);
                 }
             }
@@ -575,9 +580,9 @@ namespace BLL.Services
             }
         }
 
-        private static string EtaText(IEnumerable<Match> matches)
+        private string EtaText(IEnumerable<Match> matches)
         {
-            var first = matches.Where(m => m.EstimatedArrival.HasValue).Select(m => m.EstimatedArrival!.Value).DefaultIfEmpty(DateTime.UtcNow).Min();
+            var first = matches.Where(m => m.EstimatedArrival.HasValue).Select(m => m.EstimatedArrival!.Value).DefaultIfEmpty(_clock.GetUtcNow().UtcDateTime).Min();
             return LocalClock.ToLocal(first).ToString("HH:mm");
         }
     }

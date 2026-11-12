@@ -31,7 +31,11 @@ namespace BLL.Mappings
                 .ForMember(d => d.VolunteerId, o => o.Ignore())
                 .ForMember(d => d.VolunteerName, o => o.Ignore())
                 .ForMember(d => d.EstimatedArrival, o => o.Ignore())
-                .ForMember(d => d.VolunteerRouteId, o => o.Ignore());
+                .ForMember(d => d.VolunteerRouteId, o => o.Ignore())
+                .ForMember(d => d.MatchAssignedAt, o => o.Ignore())
+                .ForMember(d => d.VolunteerConfirmedAt, o => o.Ignore())
+                .ForMember(d => d.PickedUpAt, o => o.Ignore())
+                .ForMember(d => d.DeliveredAt, o => o.Ignore());
 
             // תוקן: בעבר היה כאן ReverseMap - כלומר אפשר היה (בטעות) למפות DTO של תשובה חזרה ל-Entity.
             CreateMap<CreateDonationDto, Donation>(MemberList.Source)
@@ -58,7 +62,16 @@ namespace BLL.Mappings
             // תרומות - רשימות מקוצרות (ספק / מנהל)
             CreateMap<Donation, SupplierDonationSummaryDto>()
                 .ForMember(d => d.Status, o => o.MapFrom(s => s.Status.ToString()))
-                .ForMember(d => d.RegionName, o => o.MapFrom(s => s.Region != null ? s.Region.RegionName : "אזור כללי"));
+                .ForMember(d => d.RegionName, o => o.MapFrom(s => s.Region != null ? s.Region.RegionName : "אזור כללי"))
+                // תיקון 48: משקל ותכולה; פרטי השידוך מתמלאים בשירות (DonationService.GetMySupplierDonationsAsync)
+                .ForMember(d => d.Categories, o => o.MapFrom(s => s.DonationFoodCategories))
+                .ForMember(d => d.TotalWeightKg, o => o.MapFrom(s =>
+                    s.DonationFoodCategories != null ? s.DonationFoodCategories.Sum(c => c.WeightKg) : 0))
+                .ForMember(d => d.MatchStatus, o => o.Ignore())
+                .ForMember(d => d.NgoName, o => o.Ignore())
+                .ForMember(d => d.VolunteerName, o => o.Ignore())
+                .ForMember(d => d.EstimatedArrival, o => o.Ignore())
+                .ForMember(d => d.VolunteerRouteId, o => o.Ignore());
             CreateMap<Donation, AdminDonationSummaryDto>()
                 .ForMember(d => d.Status, o => o.MapFrom(s => s.Status.ToString()))
                 .ForMember(d => d.SupplierName, o => o.MapFrom(s => s.Supplier != null ? s.Supplier.BusinessName : "לא ידוע"));

@@ -52,6 +52,7 @@ namespace FoodRescue.DTOs
         public double Longitude { get; set; }
         public DateTime? EstimatedArrival { get; set; }
         public TimeSpan LatestPickupTime { get; set; }
+        public TimeSpan? EarliestPickupTime { get; set; }   // תיקון 43: "זמינה לאיסוף החל מ-" (null = מיד)
         public double WeightKg { get; set; }
         public List<DonationCategoryLineDto> Items { get; set; } = new();
 

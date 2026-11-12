@@ -265,7 +265,7 @@ namespace FoodRescue.Tests
             h.Fresh();
             var match = await h.Db.Matches.SingleAsync();
             var volunteer = await h.Db.Volunteers.SingleAsync(x => x.Id == v.Id);
-            volunteer.DriverLicenseExpiry = DateTime.UtcNow.AddDays(-2);
+            volunteer.DriverLicenseExpiry = h.NowUtc.AddDays(-2);   // לפי השעון של המערכת (תיקון 42)
             await h.Db.SaveChangesAsync();
             var volunteerUser = await h.Db.Users.SingleAsync(u => u.Id == v.UserId);
 
@@ -475,6 +475,55 @@ namespace FoodRescue.Tests
 
             h.Fresh();
             Assert.Equal(MatchStatus.NoShow, (await h.Db.Matches.SingleAsync()).Status);
+        }
+
+        // ---------------- תיקון 43: "זמינה לאיסוף החל מ-" ----------------
+
+        // מוכנה רק ב-12:00 (השעון הקבוע: 10:00, אופק התכנון: שעה) - לא נשלחת הצעה עכשיו, וגם לא מקפיצים מנהל
+        [Fact]
+        public async Task DonationAvailableOnlyLater_IsNotOfferedYet_AndTheAdminIsNotAlerted()
+        {
+            var (h, _, _) = await SetupAsync();
+            using var __ = h;
+            var donation = await h.Db.Donations.SingleAsync();
+            donation.EarliestPickupTime = (h.LocalNow + TimeSpan.FromHours(2)).TimeOfDay;
+            await h.Db.SaveChangesAsync();
+            h.Fresh();
+
+            var result = await h.Engine.RunBatchAsync("Manual");
+
+            Assert.Equal(0, result.RoutesCreated);
+            Assert.Contains(result.FailedConstraints, f => f.Contains("זמינה לאיסוף רק מ-12:00"));
+            h.Fresh();
+            Assert.Empty(await h.Db.Matches.ToListAsync());
+            Assert.DoesNotContain(await h.Db.Notifications.ToListAsync(), n => n.UserId == h.AdminUser.Id);
+            Assert.Equal(DonationStatus.Pending, (await h.Db.Donations.SingleAsync()).Status);
+        }
+
+        // מוכנה ב-10:40 - בתוך אופק התכנון: נשלחת הצעה, והמתנדב (שנמצא ליד הספק) יוצא כך שיגיע כשהתרומה מוכנה
+        [Fact]
+        public async Task DonationAvailableSoon_IsOffered_AndThePickupIsNotBeforeItIsReady()
+        {
+            var (h, v, _) = await SetupAsync();
+            using var __ = h;
+            var readyLocal = h.LocalNow + TimeSpan.FromMinutes(40);
+            var donation = await h.Db.Donations.SingleAsync();
+            donation.EarliestPickupTime = readyLocal.TimeOfDay;
+            await h.Db.SaveChangesAsync();
+            h.Fresh();
+
+            var result = await h.Engine.RunBatchAsync("Manual");
+
+            Assert.Equal(1, result.RoutesCreated);
+            h.Fresh();
+            var match = await h.Db.Matches.SingleAsync();
+            Assert.Equal(v.Id, match.VolunteerId);
+            Assert.NotNull(match.EstimatedArrival);
+            Assert.True(match.EstimatedArrival!.Value >= LocalClock.ToUtc(readyLocal).AddSeconds(-1), "האיסוף מתוכנן לפני שהתרומה מוכנה.");
+
+            // לא יוצאים עכשיו כדי לחכות חצי שעה ליד הספק: היציאה נדחית
+            var route = await h.Db.VolunteerRoutes.SingleAsync();
+            Assert.True(route.ScheduledAt > h.NowUtc.AddMinutes(20), "היציאה הייתה צריכה להידחות עד סמוך ל-10:40.");
         }
 
         // ---------------- Matching Score ----------------

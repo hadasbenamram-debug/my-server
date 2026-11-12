@@ -39,5 +39,17 @@ namespace FoodRescue.Tests
             Assert.Contains(deliveryLog.GetIndexes(), i =>
                 i.Properties.Select(p => p.Name).SequenceEqual(new[] { nameof(DeliveryLog.VolunteerRouteId), nameof(DeliveryLog.Timestamp) }));
         }
+
+        // תיקון 43: העמודה "זמינה לאיסוף החל מ-" - עמודת זמן שאפשר להשאיר ריקה (תרומות קיימות = אפשר לאסוף מיד)
+        [Fact]
+        public void TheEarliestPickupTimeMigrationIsPartOfTheProject()
+        {
+            using var db = SqlServerModel();
+
+            Assert.Contains(db.Database.GetMigrations(), m => m.EndsWith("_DonationEarliestPickupTime"));
+            var column = db.Model.FindEntityType(typeof(Donation))!.FindProperty(nameof(Donation.EarliestPickupTime));
+            Assert.NotNull(column);
+            Assert.True(column!.IsNullable);
+        }
     }
 }

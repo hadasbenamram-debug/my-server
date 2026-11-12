@@ -32,6 +32,7 @@ namespace BLL.Services
         private readonly IMatchingPolicyProvider _policy;
         private readonly IConfiguration _configuration;
         private readonly ILogger<MatchCreationService> _logger;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public MatchCreationService(
             IMatchRepository matchRepository,
@@ -45,7 +46,8 @@ namespace BLL.Services
             IMatchingPolicyProvider policy,
             IConfiguration configuration,
             ILogger<MatchCreationService> logger,
-            IGoogleMapsDistanceService? google = null)
+            IGoogleMapsDistanceService? google = null,
+            TimeProvider? clock = null)
         {
             _matchRepository = matchRepository;
             _donationRepository = donationRepository;
@@ -59,6 +61,7 @@ namespace BLL.Services
             _configuration = configuration;
             _logger = logger;
             _google = google;
+            _clock = clock ?? TimeProvider.System;
         }
 
         /// <summary>
@@ -93,7 +96,7 @@ namespace BLL.Services
             // תוקן: ResponseDeadline לא מולא אף פעם, ולכן ה-Timeout לא הופעל. עכשיו הוא נקבע לכל שידוך.
             // תיקון 38: 5 הדקות נספרות מרגע ההקצאה למתנדב הזה - ולא מלפני הפנייה ל-Google (שיכולה לקחת כמה שניות),
             // כך שכל מתנדב, גם הבא בתור, מקבל חלון מלא וחדש משלו
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             var deadline = now.AddMinutes(Math.Max(1, policy.ResponseTimeoutMinutes));
 
             VolunteerRoute? route = null;

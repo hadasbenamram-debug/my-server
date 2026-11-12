@@ -42,6 +42,7 @@ namespace BLL.Services
         private readonly IMatchingPolicyProvider _policy;
         private readonly IMemoryCache _cache;
         private readonly IMapper _mapper;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public DeliveryTrackingService(
             IMatchService matchService,
@@ -49,7 +50,8 @@ namespace BLL.Services
             IGoogleMapsDistanceService distances,
             IMatchingPolicyProvider policy,
             IMemoryCache cache,
-            IMapper mapper)
+            IMapper mapper,
+            TimeProvider? clock = null)
         {
             _matchService = matchService;
             _logs = logs;
@@ -57,6 +59,7 @@ namespace BLL.Services
             _policy = policy;
             _cache = cache;
             _mapper = mapper;
+            _clock = clock ?? TimeProvider.System;
         }
 
         public async Task<RouteTrackingDto?> GetRouteTrackingAsync(int routeId, CurrentUserDto currentUser)
@@ -117,7 +120,7 @@ namespace BLL.Services
                 TotalStops = route.Stops.Count,
                 PickedUpStops = route.Stops.Count(s => PickedUp.Contains(s.Status)),
                 DeliveredStops = route.Stops.Count(s => s.Status == nameof(MatchStatus.Completed)),
-                GeneratedAt = DateTime.UtcNow
+                GeneratedAt = _clock.GetUtcNow().UtcDateTime
             };
 
             return tracking;
@@ -127,7 +130,7 @@ namespace BLL.Services
         private async Task FillEtaAsync(RouteTrackingDto tracking)
         {
             var route = tracking.Route;
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
 
             if (route.Status == nameof(RouteStatus.Planned))
             {

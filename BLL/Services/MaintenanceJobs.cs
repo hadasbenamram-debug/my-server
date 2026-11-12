@@ -21,6 +21,7 @@ namespace BLL.Services
         private readonly IUnitOfWork _unitOfWork;
         private readonly ILogger<MaintenanceJobs> _logger;
         private readonly IDeliveryLogRepository _deliveryLogRepository;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public MaintenanceJobs(
             IDonationRepository donationRepository,
@@ -29,7 +30,8 @@ namespace BLL.Services
             RouteWorkflowService workflow,
             IUnitOfWork unitOfWork,
             ILogger<MaintenanceJobs> logger,
-            IDeliveryLogRepository deliveryLogRepository)
+            IDeliveryLogRepository deliveryLogRepository,
+            TimeProvider? clock = null)
         {
             _deliveryLogRepository = deliveryLogRepository;
             _donationRepository = donationRepository;
@@ -38,6 +40,7 @@ namespace BLL.Services
             _workflow = workflow;
             _unitOfWork = unitOfWork;
             _logger = logger;
+            _clock = clock ?? TimeProvider.System;
         }
 
         // תוקן: תרומה שפג תוקפה נשארה Pending לנצח (והסטטוס Expired לא נקבע אף פעם).
@@ -46,7 +49,7 @@ namespace BLL.Services
         [AutomaticRetry(Attempts = 0)]
         public async Task<int> ExpireDonationsAsync()
         {
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             var expired = await _donationRepository.GetExpiredOpenAsync(now);
             int count = 0;
 
@@ -82,7 +85,7 @@ namespace BLL.Services
         [AutomaticRetry(Attempts = 0)]
         public async Task CleanupAsync()
         {
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             await _actionTokenRepository.DeleteExpiredAsync(now.AddDays(-7));
             await _loginAttemptRepository.DeleteOlderThanAsync(now.AddDays(-30));
 

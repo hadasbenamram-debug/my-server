@@ -26,19 +26,22 @@ namespace BLL.Services
         private readonly INotificationService _notifications;
         private readonly IMapper _mapper;
         private readonly ILogger<DeliveryTracker> _logger;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public DeliveryTracker(
             IDeliveryLogRepository logs,
             IVolunteerRouteRepository routes,
             INotificationService notifications,
             IMapper mapper,
-            ILogger<DeliveryTracker> logger)
+            ILogger<DeliveryTracker> logger,
+            TimeProvider? clock = null)
         {
             _logs = logs;
             _routes = routes;
             _notifications = notifications;
             _mapper = mapper;
             _logger = logger;
+            _clock = clock ?? TimeProvider.System;
         }
 
         // עדכון מיקום מהמתנדב. נרשם (ונשלח לצופים) רק כשהמתנדב באמצע מסלול שיצא אליו (InProgress):
@@ -64,7 +67,7 @@ namespace BLL.Services
                 return null;
             }
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             if (last != null && now - last.Timestamp < MinLocationInterval)
                 return null;
 
@@ -91,7 +94,7 @@ namespace BLL.Services
             if (routeId == null)
                 return;
 
-            var now = DateTime.UtcNow;
+            var now = _clock.GetUtcNow().UtcDateTime;
             bool fresh = volunteer?.LocationUpdatedAt != null && now - volunteer.LocationUpdatedAt.Value <= FreshLocationAge;
 
             await TrySaveAsync(new DeliveryLog

@@ -9,6 +9,10 @@ namespace BLL.Algorithms
     {
         public int DonationId { get; init; }
         public DateTime PickupDeadlineUtc { get; init; }
+
+        /// <summary>תיקון 43: "זמינה לאיסוף החל מ-" (null = אפשר לאסוף מיד). מתנדב שמגיע מוקדם יותר - מחכה.</summary>
+        public DateTime? EarliestPickupUtc { get; init; }
+
         public DateTime ExpirationUtc { get; init; }
         public double Value { get; init; }
         public double WeightKg { get; init; }
@@ -34,6 +38,12 @@ namespace BLL.Algorithms
         public double ServiceMinutes { get; init; }
         public double CapacityKg { get; init; } = double.MaxValue;
 
+        /// <summary>
+        /// תיקון 43: כמה דקות (בסך הכול) מותר למתנדב לחכות בתחנות לתרומות שעוד לא מוכנות ("זמינה החל מ-").
+        /// אינסוף = ללא הגבלה. בדרך כלל אין המתנה בכלל - היציאה נדחית כך שהמתנדב מגיע כשהתרומה מוכנה.
+        /// </summary>
+        public double MaxWaitMinutes { get; init; } = double.PositiveInfinity;
+
         /// <summary>הרגע המוקדם ביותר בטווח [from, to] שבו העמותה פתוחה (null = סגורה בכל הטווח).</summary>
         public Func<DateTime, DateTime, DateTime?> EarliestNgoOpen { get; init; } = (from, _) => from;
 
@@ -45,6 +55,8 @@ namespace BLL.Algorithms
     public sealed class PlannerResult
     {
         public IReadOnlyList<int> Order { get; init; } = Array.Empty<int>();          // אינדקסים ל-Stops לפי סדר הנסיעה
+
+        /// <summary>מתי מתחיל האיסוף בכל תחנה (תיקון 43: מתנדב שהגיע לפני "זמינה החל מ-" - אחרי ההמתנה).</summary>
         public IReadOnlyList<DateTime> ArrivalsUtc { get; init; } = Array.Empty<DateTime>();
         public DateTime DepartureUtc { get; init; }
         public DateTime NgoArrivalUtc { get; init; }
@@ -52,25 +64,33 @@ namespace BLL.Algorithms
         public double WeightKg { get; init; }
         public double DrivingMinutes { get; init; }
         public double DrivingKm { get; init; }
+
+        /// <summary>תיקון 43: סך ההמתנה בתחנות (דקות) לתרומות שעוד לא היו מוכנות.</summary>
+        public double WaitMinutes { get; init; }
     }
 
     /// <summary>
-    /// תיקונים 22, 23, 26 - תכנון מסלול מדויק: איזה תחנות, באיזה סדר, ומתי לצאת.
+    /// תיקונים 22, 23, 26, 43 - תכנון מסלול מדויק: איזה תחנות, באיזה סדר, ומתי לצאת.
     ///
     /// בעבר: סדר התחנות נקבע ב"שכן הקרוב" (חמדני, בלי הקטע האחרון לעמותה), תחנות שלא הספיקו "נשמטו" בשקט,
     /// ואם המסלול המלא חרג מזמינות המתנדב / משעות העמותה - כל המסלול נפסל, גם כשתת-קבוצה שלו הייתה תקינה.
     ///
     /// עכשיו: תכנון דינמי (Held-Karp) על כל תתי-הקבוצות של התחנות שכוללות את תרומת העוגן:
-    ///   arrive[S, j] = זמן ההגעה המוקדם ביותר לתחנה j, אחרי שביקרנו בדיוק בתחנות S, בלי לאחר לאף מועד איסוף.
-    ///   arrive[S ∪ {k}, k] = min over j ∈ S of ( arrive[S, j] + זמן שירות + נסיעה(j → k) ), רק אם ≤ מועד האיסוף של k.
+    ///   arrive[S, j] = הרגע המוקדם ביותר שבו אפשר להתחיל לאסוף בתחנה j, אחרי שביקרנו בדיוק בתחנות S, בלי לאחר לאף מועד איסוף.
+    ///   arrive[S ∪ {k}, k] = min over j ∈ S of max( arrive[S, j] + זמן שירות + נסיעה(j → k), "זמינה החל מ-" של k ),
+    ///   רק אם ≤ מועד האיסוף של k.
     /// לכל קבוצה S נבדקים כל אילוצי המסלול: הגעה לעמותה בשעות הקבלה, לפני התפוגה של כל התרומות, לפני סוף
     /// זמינות המתנדב, לא בשבת, וקיבולת הרכב. נבחרת הקבוצה עם הערך הגבוה ביותר (ובשוויון - ההגעה המוקדמת).
     ///
-    /// למה זה מדויק: לתחנות יש רק מועד אחרון (אין "לא לפני"), ולכן הגעה מוקדמת יותר לאותו מצב (S, j) תמיד
-    /// טובה לפחות כמו מאוחרת - מספיק לשמור את המוקדמת (עיקרון האופטימליות של DP).
+    /// למה זה מדויק: מותר להגיע לתחנה לפני שהתרומה מוכנה ולחכות (תיקון 43), ולכן הגעה מוקדמת יותר לאותו מצב (S, j)
+    /// תמיד טובה לפחות כמו מאוחרת - max ו-+ שומרים על הסדר - ומספיק לשמור את המוקדמת (עיקרון האופטימליות של DP).
     ///
-    /// עמותה שעדיין סגורה: אם אפשר לדחות את היציאה (בגבולות מועדי האיסוף, אופק התכנון וזמינות המתנדב)
-    /// כך שההגעה תהיה בשעות הקבלה - היציאה נדחית במקום לפסול את המסלול.
+    /// מתי לצאת (TryTiming): לכל מסלול מחושב בנוסחה סגורה טווח שעות היציאה שעומד באילוצים - מועדי האיסוף,
+    /// התפוגה, סוף המשמרת, אופק התכנון והמתנה של לכל היותר MaxWaitMinutes - ונבחרת היציאה הראשונה שבה העמותה
+    /// פתוחה בהגעה (עמותה שעדיין סגורה: היציאה נדחית במקום לפסול את המסלול). אם המתנדב עדיין היה מחכה לתרומה
+    /// שלא מוכנה, היציאה נדחית עוד, עד שאין המתנה - ההגעה לעמותה לא משתנה, והמתנדב לא מחכה סתם.
+    /// מגבלת ההמתנה נבדקת על המסלול המהיר ביותר של כל קבוצה (לכל תחנה אחרונה). היא נועדה לפסול צירופים שבהם
+    /// המתנדב היה מחכה הרבה (תחנה שצריך לאסוף מוקדם + תחנה שמוכנה רק מאוחר) - במקרה כזה נבחרת קבוצה אחרת.
     ///
     /// סיבוכיות: O(2^m · m²) זמן ו-O(2^m · m) זיכרון, m ≤ MaxExactStops (12 תחנות = פחות ממיליון צעדים).
     /// </summary>
@@ -99,24 +119,31 @@ namespace BLL.Algorithms
             int ngo = m + 1;
             int full = 1 << m;
             double service = Math.Max(0, input.ServiceMinutes);
+            double maxWait = double.IsNaN(input.MaxWaitMinutes) ? double.PositiveInfinity : Math.Max(0, input.MaxWaitMinutes);
 
-            // מועדי האיסוף והתפוגה - בדקות מרגע היציאה המוקדם ביותר
+            // מועדי האיסוף, "זמינה החל מ-" (תיקון 43) והתפוגה - בדקות מרגע היציאה המוקדם ביותר
             var deadline = new double[m];
+            var release = new double[m];
             var expiration = new double[m];
             for (int i = 0; i < m; i++)
             {
-                deadline[i] = (input.Stops[i].PickupDeadlineUtc - t0).TotalMinutes;
-                expiration[i] = (input.Stops[i].ExpirationUtc - t0).TotalMinutes;
+                var stop = input.Stops[i];
+                deadline[i] = (stop.PickupDeadlineUtc - t0).TotalMinutes;
+                release[i] = stop.EarliestPickupUtc.HasValue
+                    ? (stop.EarliestPickupUtc.Value - t0).TotalMinutes
+                    : double.NegativeInfinity;   // מוכנה מיד
+                expiration[i] = (stop.ExpirationUtc - t0).TotalMinutes;
             }
 
             // ---------------- DP על תתי-קבוצות (Held-Karp) ----------------
+            // arrive = תחילת האיסוף (אחרי המתנה, אם הגענו לפני שהתרומה מוכנה)
             var arrive = new double[full * m];
             var parent = new sbyte[full * m];
             Array.Fill(arrive, double.PositiveInfinity);
 
             for (int i = 0; i < m; i++)
             {
-                double a = input.Minutes[0, i + 1];
+                double a = Math.Max(input.Minutes[0, i + 1], release[i]);
                 if (a <= deadline[i] + Eps)
                 {
                     arrive[(1 << i) * m + i] = a;
@@ -137,7 +164,7 @@ namespace BLL.Algorithms
                     for (int k = 0; k < m; k++)
                     {
                         if ((mask & (1 << k)) != 0) continue;
-                        double a = leave + input.Minutes[j + 1, k + 1];
+                        double a = Math.Max(leave + input.Minutes[j + 1, k + 1], release[k]);   // מוקדם מדי - מחכים
                         if (a > deadline[k] + Eps) continue;   // מאחרים למועד האיסוף של k
 
                         int index = (mask | (1 << k)) * m + k;
@@ -171,6 +198,10 @@ namespace BLL.Algorithms
                 ? double.PositiveInfinity
                 : (input.AvailableUntilUtc - t0).TotalMinutes;
 
+            var path = new int[m];
+            var endOrder = new int[m];
+            var endArrival = new double[m];
+
             int bestMask = 0, bestEnd = -1;
             double bestValue = double.NegativeInfinity, bestArrival = double.PositiveInfinity, bestDelay = 0;
 
@@ -180,71 +211,73 @@ namespace BLL.Algorithms
                 if (weight[mask] > input.CapacityKg + Eps) continue;
                 if (value[mask] < bestValue - Eps) continue;   // לא יכולה לנצח
 
-                // התחנה האחרונה שממנה ההגעה לעמותה הכי מוקדמת
-                double arrival = double.PositiveInfinity;
-                int end = -1;
+                // התחנות האחרונות האפשריות, לפי ההגעה לעמותה בלי לדחות את היציאה (המוקדמת ראשונה; בשוויון - האינדקס הנמוך)
+                int ends = 0;
                 for (int j = 0; j < m; j++)
                 {
                     if ((mask & (1 << j)) == 0) continue;
                     double current = arrive[mask * m + j];
                     if (double.IsPositiveInfinity(current)) continue;
+
                     double a = current + service + input.Minutes[j + 1, ngo];
-                    if (a < arrival - Eps) { arrival = a; end = j; }
+                    int pos = ends++;
+                    while (pos > 0 && endArrival[pos - 1] > a + Eps)
+                    {
+                        endArrival[pos] = endArrival[pos - 1];
+                        endOrder[pos] = endOrder[pos - 1];
+                        pos--;
+                    }
+                    endArrival[pos] = a;
+                    endOrder[pos] = j;
                 }
-                if (end < 0) continue;
 
-                // אילוצים שדחיית היציאה רק מחמירה: תפוגה וזמינות המתנדב
-                if (arrival > minExpiration[mask] + Eps || arrival > availableMinutes + Eps) continue;
+                // התחנה האחרונה הראשונה (לפי הסדר הזה) שעומדת בכל האילוצים היא גם זו שמגיעה הכי מוקדם לעמותה:
+                // ההגעה הסופית היא שעת הפתיחה הראשונה בטווח [הגעה בלי דחייה, הגעה בדחייה המקסימלית], וכל טווח מתחיל
+                // אחרי תחילת הטווח של התחנות שלפניה. אם היא נפסלת (שבת, מרווח, המתנה) - בודקים את הבאה.
+                for (int e = 0; e < ends; e++)
+                {
+                    int end = endOrder[e];
+                    if (!TryTiming(input, parent, deadline, release, m, mask, end, service, maxWait,
+                                   Math.Min(minExpiration[mask], availableMinutes), maxDelayByDeparture, path,
+                                   out double delay, out double finalArrival))
+                        continue;
 
-                // כמה אפשר לדחות את היציאה: מרווח מועדי האיסוף במסלול, אופק התכנון, זמינות, תפוגה
-                double maxDelay = Math.Min(
-                    Math.Min(PathSlack(arrive, parent, deadline, m, mask, end), maxDelayByDeparture),
-                    Math.Min(availableMinutes - arrival, minExpiration[mask] - arrival));
-                if (maxDelay < 0) maxDelay = 0;
-                maxDelay = Math.Min(maxDelay, MaxDelayMinutes);
-
-                var arrivalUtc = t0.AddMinutes(arrival);
-                var open = input.EarliestNgoOpen(arrivalUtc, arrivalUtc.AddMinutes(maxDelay));
-                if (!open.HasValue) continue;   // העמותה סגורה בכל הטווח האפשרי
-
-                double delay = Math.Max(0, (open.Value - arrivalUtc).TotalMinutes);
-                double finalArrival = arrival + delay;
-                if (input.IsArrivalBlocked?.Invoke(t0.AddMinutes(finalArrival)) == true) continue;
-
-                bool better = value[mask] > bestValue + Eps ||
-                              (Math.Abs(value[mask] - bestValue) <= Eps && finalArrival < bestArrival - Eps);
-                if (!better) continue;
-
-                bestMask = mask;
-                bestEnd = end;
-                bestValue = value[mask];
-                bestArrival = finalArrival;
-                bestDelay = delay;
+                    bool better = value[mask] > bestValue + Eps ||
+                                  (Math.Abs(value[mask] - bestValue) <= Eps && finalArrival < bestArrival - Eps);
+                    if (better)
+                    {
+                        bestMask = mask;
+                        bestEnd = end;
+                        bestValue = value[mask];
+                        bestArrival = finalArrival;
+                        bestDelay = delay;
+                    }
+                    break;
+                }
             }
 
             if (bestEnd < 0) return null;
 
-            // ---------------- שחזור הסדר מהמצביעים ----------------
-            var order = new List<int>();
-            for (int state = bestMask, j = bestEnd; j >= 0;)
-            {
-                order.Add(j);
-                int previous = parent[state * m + j];
-                state ^= 1 << j;
-                j = previous;
-            }
-            order.Reverse();
+            // ---------------- שחזור הסדר מהמצביעים, וזמני המסלול לפי שעת היציאה שנבחרה ----------------
+            int count = ReconstructPath(parent, m, bestMask, bestEnd, path);
+            var order = new List<int>(count);
+            for (int k = 0; k < count; k++)
+                order.Add(path[k]);
 
             var departure = t0.AddMinutes(bestDelay);
-            var arrivals = new List<DateTime>(order.Count);
-            double drivingMinutes = 0, drivingKm = 0;
-            int from = 0, visited = 0;
+            var arrivals = new List<DateTime>(count);
+            double drivingMinutes = 0, drivingKm = 0, waitMinutes = 0;
+            double clock = bestDelay;   // דקות מ-t0
+            int from = 0;
             foreach (int stop in order)
             {
-                visited |= 1 << stop;
-                arrivals.Add(departure.AddMinutes(arrive[visited * m + stop]));
+                double reach = clock + input.Minutes[from, stop + 1];
+                double pickup = Math.Max(reach, release[stop]);   // הגענו לפני שהתרומה מוכנה - מחכים
+                waitMinutes += pickup - reach;
+                arrivals.Add(t0.AddMinutes(pickup));
                 drivingMinutes += input.Minutes[from, stop + 1];
                 drivingKm += input.Km[from, stop + 1];
+                clock = pickup + service;
                 from = stop + 1;
             }
             drivingMinutes += input.Minutes[from, ngo];
@@ -259,22 +292,96 @@ namespace BLL.Algorithms
                 Value = bestValue,
                 WeightKg = weight[bestMask],
                 DrivingMinutes = drivingMinutes,
-                DrivingKm = drivingKm
+                DrivingKm = drivingKm,
+                WaitMinutes = waitMinutes
             };
         }
 
-        // המרווח הקטן ביותר בין מועד איסוף לזמן ההגעה לאורך המסלול - כמה אפשר לדחות את כולו בלי לאחר
-        private static double PathSlack(double[] arrive, sbyte[] parent, double[] deadline, int m, int mask, int end)
+        /// <summary>
+        /// תיקון 43: מתי לצאת במסלול (mask, end), ומתי מגיעים לעמותה. false = אין שעת יציאה שעומדת בכל האילוצים.
+        ///
+        /// לכל תחנה i במסלול, תחילת האיסוף כפונקציה של הדחייה d ביציאה היא b_i(d) = max(d + T_i, F_i):
+        /// T_i = הנסיעה והשירות עד התחנה (בלי המתנות), F_i = הרגע המוקדם ביותר שמכתיבות שעות ה"זמינה החל מ-".
+        /// מכאן, בלי ניחושים:
+        ///   מועד האיסוף:   b_i(d) ≤ D_i                ⇔  d ≤ D_i - T_i
+        ///   המתנה כוללת:   max(0, F_n - T_n - d) ≤ W     ⇔  d ≥ F_n - T_n - W
+        ///   ההגעה לעמותה:  A(d) = max(d + T_ngo, F_ngo) - לא יורדת עם d, ולכן "עד שעה X" הוא חסם עליון על d.
+        /// בטווח המותר נבחרת היציאה הראשונה שבה העמותה פתוחה בהגעה. אם המתנדב עדיין היה מחכה, היציאה נדחית עד
+        /// שאין המתנה: כל עוד יש המתנה A(d) קבועה, ולכן ההגעה לעמותה (וכל האילוצים עליה) לא משתנה.
+        /// בלי שעות "זמינה החל מ-" זה בדיוק החישוב הקודם: הגעה A(0), ודחייה רק כשהעמותה עוד סגורה.
+        /// </summary>
+        private static bool TryTiming(
+            PlannerInput input, sbyte[] parent, double[] deadline, double[] release,
+            int m, int mask, int end, double service, double maxWait, double latestNgoArrival, double maxDelayByDeparture,
+            int[] path, out double delay, out double ngoArrival)
         {
-            double slack = double.PositiveInfinity;
+            delay = 0;
+            ngoArrival = double.PositiveInfinity;
+
+            int count = ReconstructPath(parent, m, mask, end, path);
+
+            // מעבר אחד קדימה: T, F, והמרווח של מועדי האיסוף (כמה אפשר לדחות את היציאה בלי לאחר לאף תחנה)
+            double T = 0, F = double.NegativeInfinity, maxDelay = double.PositiveInfinity;
+            int from = 0;
+            for (int k = 0; k < count; k++)
+            {
+                int stop = path[k];
+                double leg = input.Minutes[from, stop + 1];
+                if (k > 0) { T += service; F += service; }
+                T += leg;
+                F = Math.Max(F + leg, release[stop]);
+                maxDelay = Math.Min(maxDelay, deadline[stop] - T);
+                from = stop + 1;
+            }
+
+            double toNgo = service + input.Minutes[from, m + 1];
+            double tNgo = T + toNgo;
+            double fNgo = F + toNgo;   // אין במסלול "זמינה החל מ-" = מינוס אינסוף
+
+            // תפוגה וסוף המשמרת: A(d) ≤ X
+            if (fNgo > latestNgoArrival + Eps) return false;
+            maxDelay = Math.Min(maxDelay, latestNgoArrival - tNgo);
+            maxDelay = Math.Min(maxDelay, Math.Min(maxDelayByDeparture, MaxDelayMinutes));
+
+            double zeroWait = F - T;   // מהדחייה הזו ואילך המתנדב לא מחכה בכלל
+            double minDelay = Math.Max(0, zeroWait - maxWait);
+            if (maxDelay < minDelay - Eps) return false;
+            if (maxDelay < minDelay) maxDelay = minDelay;
+
+            var t0 = input.EarliestDepartureUtc;
+            double fromArrival = Math.Max(minDelay + tNgo, fNgo);
+            double toArrival = Math.Max(maxDelay + tNgo, fNgo);
+            var open = input.EarliestNgoOpen(t0.AddMinutes(fromArrival), t0.AddMinutes(toArrival));
+            if (!open.HasValue) return false;   // העמותה סגורה בכל הטווח האפשרי
+
+            double openAt = (open.Value - t0).TotalMinutes;
+            double d = openAt <= fromArrival + Eps
+                ? minDelay
+                : Math.Min(maxDelay, Math.Max(minDelay, openAt - tNgo));
+            if (d < zeroWait)
+                d = Math.Min(zeroWait, maxDelay);   // לא מחכים סתם: יוצאים מאוחר יותר ומגיעים לעמותה באותה שעה
+
+            double arrival = Math.Max(d + tNgo, fNgo);
+            if (input.IsArrivalBlocked?.Invoke(t0.AddMinutes(arrival)) == true) return false;
+
+            delay = d;
+            ngoArrival = arrival;
+            return true;
+        }
+
+        // הסדר של המסלול שמסתיים ב-end אחרי ביקור בתחנות mask (מהמצביעים), מההתחלה לסוף. מחזיר את מספר התחנות.
+        private static int ReconstructPath(sbyte[] parent, int m, int mask, int end, int[] path)
+        {
+            int count = 0;
             for (int state = mask, j = end; j >= 0;)
             {
-                slack = Math.Min(slack, deadline[j] - arrive[state * m + j]);
+                path[count++] = j;
                 int previous = parent[state * m + j];
                 state ^= 1 << j;
                 j = previous;
             }
-            return slack;
+            Array.Reverse(path, 0, count);
+            return count;
         }
     }
 }

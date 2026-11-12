@@ -237,6 +237,9 @@ namespace DAL.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<TimeSpan?>("EarliestPickupTime")
+                        .HasColumnType("time");
+
                     b.Property<DateTime>("ExpirationTime")
                         .HasColumnType("datetime2");
 
