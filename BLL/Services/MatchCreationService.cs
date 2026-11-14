@@ -68,7 +68,8 @@ namespace BLL.Services
         /// שומר מסלול ושידוכים לכל התחנות שלו. מחזיר null אם אחת התרומות כבר שובצה במקביל
         /// (ואז שום דבר לא נשמר).
         /// </summary>
-        public async Task<VolunteerRoute?> CreateRouteAsync(Volunteer volunteer, Ngo ngo, RoutePlan plan, double matchScore)
+        // תיקון 75: decisionJson - הסבר ההחלטה (נשמר במסלול; null = בלי הסבר)
+        public async Task<VolunteerRoute?> CreateRouteAsync(Volunteer volunteer, Ngo ngo, RoutePlan plan, double matchScore, string? decisionJson = null)
         {
             if (volunteer == null) throw new ArgumentNullException(nameof(volunteer));
             if (ngo == null) throw new ArgumentNullException(nameof(ngo));
@@ -121,7 +122,8 @@ namespace BLL.Services
                             ? plan.TotalDurationMinutes
                             : encoded?.DurationMinutes > 0 ? encoded.DurationMinutes : (double?)null,
                         EstimatedTotalDistanceKm = encoded?.DistanceKm > 0 ? encoded.DistanceKm : plan.TotalDistanceKm,
-                        MatchScore = Math.Round(matchScore, 2)
+                        MatchScore = Math.Round(matchScore, 2),
+                        DecisionJson = decisionJson
                     };
                     await _routeRepository.AddAsync(route);
 

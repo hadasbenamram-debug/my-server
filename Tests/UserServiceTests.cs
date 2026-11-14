@@ -319,6 +319,74 @@ namespace FoodRescue.Tests
                 new PasswordHasherWithLegacySupport().VerifyHashedPassword(updated, updated.PasswordHash, "brand-new-pass1"));
         }
 
+        // ---------------- תיקון 67: איפוס סיסמה בקוד לטלפון ----------------
+
+        [Fact]
+        public async Task ResetByPhone_CodeGoesToTheVerifiedPhone_IsSingleUse_AndRotatesTheStamp()
+        {
+            var user = await AddUserAsync();
+            user.IsPhoneVerified = true;
+            user.IsEmailVerified = false;
+            await Db.SaveChangesAsync();
+            var oldStamp = user.SecurityStamp;
+
+            Assert.Equal(VerificationResult.Success,
+                await Create().SendPasswordResetCodeAsync("A@B.com", PhoneVerificationMethod.Sms));
+
+            // הקוד נשלח במסרון (בתור, מוצפן) - מוציאים אותו מהטקסט
+            _h.Fresh();
+            var sms = await Db.Notifications.SingleAsync(n => n.UserId == user.Id && n.Channel == NotificationChannel.Sms);
+            var code = System.Text.RegularExpressions.Regex.Match(_h.Protector.Unprotect(sms.ProtectedPayload!), @"\d{6}").Value;
+            Assert.Equal(6, code.Length);
+
+            var wrong = code == "000000" ? "111111" : "000000";
+            Assert.Equal(VerificationResult.InvalidCode, await Create().ResetPasswordByPhoneAsync(
+                new ResetPasswordPhoneDto { Email = "a@b.com", Code = wrong, NewPassword = "brand-new-pass1" }));
+            Assert.Equal(VerificationResult.Success, await Create().ResetPasswordByPhoneAsync(
+                new ResetPasswordPhoneDto { Email = "a@b.com", Code = code, NewPassword = "brand-new-pass1" }));
+            Assert.Equal(VerificationResult.InvalidCode, await Create().ResetPasswordByPhoneAsync(
+                new ResetPasswordPhoneDto { Email = "a@b.com", Code = code, NewPassword = "another-pass1" }));
+
+            _h.Fresh();
+            var updated = await Db.Users.SingleAsync(u => u.Id == user.Id);
+            Assert.NotEqual(oldStamp, updated.SecurityStamp);
+            Assert.False(updated.IsEmailVerified);   // הקוד הגיע לטלפון - המייל לא אומת בדרך הזו
+            Assert.NotEqual(Microsoft.AspNetCore.Identity.PasswordVerificationResult.Failed,
+                new PasswordHasherWithLegacySupport().VerifyHashedPassword(updated, updated.PasswordHash, "brand-new-pass1"));
+        }
+
+        [Fact]
+        public async Task ResetByPhone_UnknownEmailOrUnverifiedPhone_LooksTheSame_AndSendsNothing()
+        {
+            var user = await AddUserAsync();
+            user.IsPhoneVerified = false;
+            await Db.SaveChangesAsync();
+
+            Assert.Equal(VerificationResult.Success,
+                await Create().SendPasswordResetCodeAsync("a@b.com", PhoneVerificationMethod.Sms));
+            Assert.Equal(VerificationResult.Success,
+                await Create().SendPasswordResetCodeAsync("nobody@b.com", PhoneVerificationMethod.Sms));
+
+            Assert.Empty(await Db.Notifications.Where(n => n.Channel == NotificationChannel.Sms).ToListAsync());
+            Assert.Equal(VerificationResult.InvalidCode, await Create().ResetPasswordByPhoneAsync(
+                new ResetPasswordPhoneDto { Email = "a@b.com", Code = "123456", NewPassword = "brand-new-pass1" }));
+        }
+
+        [Fact]
+        public async Task ResetByPhone_WithoutAnSmsProvider_SaysSo()
+        {
+            var user = await AddUserAsync();
+            user.IsPhoneVerified = true;
+            await Db.SaveChangesAsync();
+            _sms.Mode = SmsMode.NotConfigured;
+
+            Assert.Equal(VerificationResult.SmsNotConfigured,
+                await Create().SendPasswordResetCodeAsync("a@b.com", PhoneVerificationMethod.Sms));
+            Assert.Equal(VerificationResult.SmsNotConfigured,          // FakeSms לא מתקשר (VoiceMode = NotConfigured)
+                await Create().SendPasswordResetCodeAsync("a@b.com", PhoneVerificationMethod.VoiceCall));
+            Assert.Empty(await Db.Notifications.Where(n => n.Channel == NotificationChannel.Sms).ToListAsync());
+        }
+
         [Fact]
         public async Task ChangePassword_RotatesStamp_ClearsTemporaryFlag_AndReturnsNewToken()
         {

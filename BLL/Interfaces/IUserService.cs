@@ -104,6 +104,13 @@ namespace BLL.Interfaces
         /// <summary>Returns false when the reset token is wrong, used or expired.</summary>
         Task<bool> ResetPasswordAsync(ResetPasswordDto dto);
 
+        // תיקון 67: איפוס סיסמה בקוד לטלפון המאומת. Success גם כשהחשבון לא קיים / הטלפון לא מאומת
+        // (כדי לא לחשוף אילו מיילים רשומים). SmsNotConfigured = אין בשרת ספק שיכול לשלוח בשיטה הזו.
+        Task<VerificationResult> SendPasswordResetCodeAsync(string email, PhoneVerificationMethod method);
+
+        /// <summary>Success / InvalidCode / TooManyAttempts / SendFailed (the code could not be checked right now).</summary>
+        Task<VerificationResult> ResetPasswordByPhoneAsync(ResetPasswordPhoneDto dto);
+
         Task<VerificationResult> SendEmailVerificationAsync(int userId);
         Task<VerificationResult> VerifyEmailAsync(int userId, string code);
 

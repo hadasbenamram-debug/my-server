@@ -17,5 +17,11 @@ namespace DAL.Interfaces
 
         // כל המסלולים שמתנדבים נמצאים בהם עכשיו בדרך (InProgress), עם אותם פרטים כמו GetWithDetailsAsync - למפה החיה של המנהל
         Task<List<VolunteerRoute>> GetInProgressWithDetailsAsync();
+
+        // תיקון 75: המסלולים האחרונים שנשמר להם הסבר החלטה (עם המתנדב, השידוכים והעמותה)
+        Task<List<VolunteerRoute>> GetRecentWithDecisionAsync(int take);
+
+        // תיקון 75: המסלול האחרון של תרומה שנשמר לו הסבר החלטה (null = אין)
+        Task<int?> GetLatestDecisionRouteIdForDonationAsync(int donationId);
     }
 }

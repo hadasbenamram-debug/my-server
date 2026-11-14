@@ -25,6 +25,10 @@ namespace DAL.Classes
         // ציון ההתאמה (Matching Score) של המסלול כולו
         public double MatchScore { get; set; }
 
+        // תיקון 75: "למה המנוע החליט כך" - צילום ההחלטה (JSON) ברגע יצירת המסלול: המועמדים, פירוק הציון,
+        // למה האחרים לא נבחרו, והבחירה הגלובלית. null = מסלול שנוצר לפני התיקון.
+        public string? DecisionJson { get; set; }
+
         public DateTime? StartedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
 

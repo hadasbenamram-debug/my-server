@@ -254,5 +254,51 @@ namespace FoodRescue.Tests
             var result = await h.MatchService.AssignDonationToVolunteerAsync(donationId, volunteer.Id, ignoreSchedule: false);
             Assert.True(result.Matched, result.Message);
         }
+
+        // ---------------- תיקון 66: הסיבה המדויקת כשאין מסלול ----------------
+
+        [Fact]
+        public async Task Assign_NoRoute_TellsThatTheNgoIsClosed_AndWhenItOpens()
+        {
+            // יום שני 15:40. העמותה מקבלת עד 15:47 - אפשר היה להגיע "על הנייר", אבל אחרי 5 דקות לתגובה,
+            // איסוף ונסיעה המתנדב מגיע אחרי הסגירה. התרומה צריכה להיאסף עד 16:40, ולכן אי אפשר לחכות למחר.
+            using var h = new EngineHarness(localNow: new DateTime(2026, 10, 19, 15, 40, 0));
+            await h.SeedBasicsAsync();
+            h.Ngo.SunToThuOpenTime = new TimeSpan(8, 0, 0);
+            h.Ngo.SunToThuCloseTime = new TimeSpan(15, 47, 0);
+            await h.Db.SaveChangesAsync();
+            // תפוגה רחוקה: העמותה עוברת את הסינון המוקדם (פתוחה מחר לפני התפוגה) - הבעיה רק בשעת האיסוף האחרונה
+            var donation = await h.AddDonationAsync(pickupIn: TimeSpan.FromHours(1), expiresIn: TimeSpan.FromHours(24));
+            var volunteer = await h.AddVolunteerAsync("closed-ngo@test");
+
+            var result = await h.MatchService.AssignDonationToVolunteerAsync(donation.Id, volunteer.Id, ignoreSchedule: true);
+
+            Assert.False(result.Matched);
+            Assert.Contains("עמותת בדיקה", result.Message);
+            Assert.Contains("סגורה", result.Message);
+            Assert.Contains("08:00 (מחר)", result.Message);
+            Assert.Contains("16:40", result.Message);
+            Assert.Empty(await h.Db.Matches.ToListAsync());
+        }
+
+        [Fact]
+        public async Task Assign_NoRoute_TellsThatTheVolunteerArrivesAfterTheLatestPickup()
+        {
+            // המתנדב רחוק (כ-25 ק"מ) והתרומה צריכה להיאסף בעוד 20 דקות
+            using var h = new EngineHarness();
+            await h.SeedBasicsAsync();
+            var donation = await h.AddDonationAsync(pickupIn: TimeSpan.FromMinutes(20));
+            var volunteer = await h.AddVolunteerAsync("far-away@test");
+            volunteer.CurrentLatitude = 31.85;
+            volunteer.CurrentLongitude = 34.70;
+            await h.Db.SaveChangesAsync();
+            h.Fresh();
+
+            var result = await h.MatchService.AssignDonationToVolunteerAsync(donation.Id, volunteer.Id, ignoreSchedule: true);
+
+            Assert.False(result.Matched);
+            Assert.Contains("לנקודת האיסוף", result.Message);
+            Assert.Contains("10:20", result.Message);   // שעת האיסוף האחרונה
+        }
     }
 }

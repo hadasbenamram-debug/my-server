@@ -102,6 +102,40 @@ namespace FoodRescue.Controllers
             return Message("הסיסמה אופסה בהצלחה. אפשר להתחבר עם הסיסמה החדשה.");
         }
 
+        // תיקון 67: איפוס סיסמה בקוד לטלפון המאומת - { "email": "...", "method": "sms" | "call" }.
+        // כמו במייל: אותה תשובה גם כשהחשבון לא קיים או שהטלפון שלו לא מאומת.
+        [HttpPost("forgot-password-phone")]
+        [AllowAnonymous]
+        [EnableRateLimiting("auth")]
+        public async Task<IActionResult> ForgotPasswordPhone([FromBody] ForgotPasswordPhoneDto dto)
+        {
+            var byCall = string.Equals(dto.Method, "call", System.StringComparison.OrdinalIgnoreCase);
+            var result = await _userService.SendPasswordResetCodeAsync(dto.Email,
+                byCall ? PhoneVerificationMethod.VoiceCall : PhoneVerificationMethod.Sms);
+
+            if (result == VerificationResult.SmsNotConfigured)
+                return StatusCode(503, Error(503, byCall
+                    ? "שיחות קוליות עדיין לא הוגדרו במערכת. אפשר לנסות במסרון או לאפס דרך המייל."
+                    : "שליחת מסרונים עדיין לא הוגדרה במערכת. אפשר לאפס את הסיסמה דרך המייל.",
+                    byCall ? "VoiceNotConfigured" : "SmsNotConfigured"));
+
+            return Message(byCall
+                ? "אם קיים חשבון עם כתובת האימייל הזו ומספר טלפון מאומת, נתקשר אליו ונקריא קוד לאיפוס הסיסמה. הקוד תקף ל-10 דקות."
+                : "אם קיים חשבון עם כתובת האימייל הזו ומספר טלפון מאומת, נשלח אליו מסרון עם קוד לאיפוס הסיסמה. הקוד תקף ל-10 דקות.");
+        }
+
+        [HttpPost("reset-password-phone")]
+        [AllowAnonymous]
+        [EnableRateLimiting("auth")]
+        public async Task<IActionResult> ResetPasswordPhone([FromBody] ResetPasswordPhoneDto dto) =>
+            (await _userService.ResetPasswordByPhoneAsync(dto)) switch
+            {
+                VerificationResult.Success => Message("הסיסמה אופסה בהצלחה. אפשר להתחבר עם הסיסמה החדשה."),
+                VerificationResult.TooManyAttempts => BadRequest(Error(400, "בוצעו יותר מדי ניסיונות שגויים. יש לבקש קוד חדש.")),
+                VerificationResult.SendFailed => StatusCode(503, Error(503, "לא ניתן לבדוק את הקוד כרגע. נסו שוב בעוד רגע.")),
+                _ => BadRequest(Error(400, "הקוד שגוי או שפג תוקפו."))
+            };
+
         // החלפת סיסמה ע"י משתמש מחובר. כל הטוקנים הקודמים מפסיקים לעבוד, ולכן מוחזר טוקן חדש.
         [HttpPost("change-password")]
         [Authorize]

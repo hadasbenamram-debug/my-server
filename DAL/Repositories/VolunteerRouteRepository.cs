@@ -57,5 +57,28 @@ namespace DAL.Repositories
                 .AsSplitQuery()
                 .ToListAsync();
         }
+
+        // תיקון 75
+        public async Task<List<VolunteerRoute>> GetRecentWithDecisionAsync(int take)
+        {
+            return await _context.VolunteerRoutes
+                .Where(r => r.DecisionJson != null)
+                .OrderByDescending(r => r.Id)
+                .Take(take)
+                .Include(r => r.Volunteer).ThenInclude(v => v.User)
+                .Include(r => r.Matches).ThenInclude(m => m.Ngo)
+                .AsSplitQuery()
+                .AsNoTracking()
+                .ToListAsync();
+        }
+
+        public async Task<int?> GetLatestDecisionRouteIdForDonationAsync(int donationId)
+        {
+            return await _context.Matches
+                .Where(m => m.DonationId == donationId && m.VolunteerRouteId != null && m.VolunteerRoute.DecisionJson != null)
+                .OrderByDescending(m => m.Id)
+                .Select(m => m.VolunteerRouteId)
+                .FirstOrDefaultAsync();
+        }
     }
 }

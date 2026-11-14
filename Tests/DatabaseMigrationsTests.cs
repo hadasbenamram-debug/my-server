@@ -51,5 +51,17 @@ namespace FoodRescue.Tests
             Assert.NotNull(column);
             Assert.True(column!.IsNullable);
         }
+
+        // תיקון 75: הסבר ההחלטה של כל מסלול (JSON) - עמודה שאפשר להשאיר ריקה (מסלולים ישנים = בלי הסבר)
+        [Fact]
+        public void TheRouteDecisionMigrationIsPartOfTheProject()
+        {
+            using var db = SqlServerModel();
+
+            Assert.Contains(db.Database.GetMigrations(), m => m.EndsWith("_RouteDecisionExplanation"));
+            var column = db.Model.FindEntityType(typeof(VolunteerRoute))!.FindProperty(nameof(VolunteerRoute.DecisionJson));
+            Assert.NotNull(column);
+            Assert.True(column!.IsNullable);
+        }
     }
 }

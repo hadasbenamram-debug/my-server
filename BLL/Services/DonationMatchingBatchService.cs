@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Dto = FoodRescue.DTOs;   // תיקון 75: ה-DTO של הסבר ההחלטה (בכינוי - בלי התנגשות שמות)
 
 namespace BLL.Algorithms
 {
@@ -131,7 +132,26 @@ namespace BLL.Algorithms
             public string? Reason { get; set; }
             public bool Escalate { get; set; } = true;
             public bool HasLaterAvailability { get; set; }
+
+            // תיקון 75: מה המנוע ראה בדרך (משפך המועמדים, הדירוג, מי נבדק) - להסבר ההחלטה
+            public DecisionTrace? Trace { get; set; }
         }
+
+        // תיקון 75: "למה המנוע החליט כך" - נאסף בזמן בניית המסלולים, ונשמר רק למסלול שנוצר בפועל
+        private sealed class DecisionTrace
+        {
+            public List<Dto.DecisionFunnelStepDto> Funnel { get; } = new();
+
+            /// <summary>המתנדבים לפי הדירוג (Merge Sort), כל מתנדב פעם אחת (החלון הטוב ביותר שלו)</summary>
+            public List<VolunteerCandidate> Ranked { get; set; } = new();
+
+            /// <summary>מתנדבים שהמנוע ניסה לבנות להם מסלול</summary>
+            public HashSet<int> Evaluated { get; } = new();
+            public List<NgoOption> NgoOptions { get; init; } = new();
+            public int ClusterSize { get; set; }
+        }
+
+        private const int DecisionCandidatesShown = 8;
 
         public sealed record DonationMatchOutcome(bool Matched, int? RouteId, int? MatchId, string Message, IReadOnlyList<int> DonationIds);
 
@@ -222,11 +242,32 @@ namespace BLL.Algorithms
                     selection.TotalValue, selection.GreedyValue, selection.UpperBound, selection.OptimalityGapPercent,
                     selection.NodesVisited, selection.ProvedOptimal);
 
+                // תיקון 75: נתוני הבחירה הגלובלית - חלק מההסבר של כל מסלול שנבחר בריצה הזו
+                var globalSelection = new Dto.DecisionGlobalDto
+                {
+                    DonationsInRun = candidates.Count,
+                    CandidateRoutes = candidates.Sum(c => c.Routes.Count),
+                    RoutesSelected = selection.Routes.Count,
+                    TotalValue = Math.Round(selection.TotalValue, 1),
+                    GreedyValue = Math.Round(selection.GreedyValue, 1),
+                    UpperBound = Math.Round(selection.UpperBound, 1),
+                    GapPercent = Math.Round(selection.OptimalityGapPercent, 2),
+                    Nodes = selection.NodesVisited,
+                    ProvedOptimal = selection.ProvedOptimal
+                };
+                var candidatesByDonation = candidates.GroupBy(c => c.Donation.Id).ToDictionary(g => g.Key, g => g.First());
+                var selectedAnchorByVolunteer = selection.Routes
+                    .GroupBy(r => r.Candidate.Volunteer.Id)
+                    .ToDictionary(g => g.Key, g => g.First().AnchorDonationId);
+
                 foreach (var route in selection.Routes)
                 {
                     try
                     {
-                        var created = await TryCreateAsync(route, ctx);
+                        string? decision = candidatesByDonation.TryGetValue(route.AnchorDonationId, out var decisionEntry)
+                            ? await DecisionJsonAsync(decisionEntry, route, ctx, "Auto", globalSelection, selectedAnchorByVolunteer)
+                            : null;
+                        var created = await TryCreateAsync(route, ctx, decision);
                         if (created != null)
                         {
                             result.RoutesCreated++;
@@ -474,12 +515,13 @@ namespace BLL.Algorithms
             }
 
             RouteCandidate? best = null;
+            var requests = new List<RouteRequest>(attempts.Count);   // תיקון 66: נשמרות כדי להסביר למה אין מסלול
             foreach (var (window, ngo) in attempts)
             {
                 var start = ResolveStartLocation(new VolunteerAvailability(volunteer, window), ctx)
                             ?? new GeoCoordinate { Latitude = donation.Latitude, Longitude = donation.Longitude };
 
-                var plan = await _orchestrator.PlanAsync(new RouteRequest
+                var request = new RouteRequest
                 {
                     Volunteer = volunteer,
                     Anchor = donation,
@@ -492,7 +534,10 @@ namespace BLL.Algorithms
                     // אפשר לצאת גם מאוחר יותר מהריצה הבאה - העיקר להגיע לפני שעת האיסוף האחרונה
                     LatestDepartureUtc = deadline > ctx.LatestDepartureUtc ? deadline : ctx.LatestDepartureUtc,
                     NgoRemainingKg = ctx.NgoRemainingKg.TryGetValue(ngo.Id, out var left) ? left : double.PositiveInfinity
-                });
+                };
+                requests.Add(request);
+
+                var plan = await _orchestrator.PlanAsync(request);
                 if (plan == null || (best != null && !DonationMatchingOrchestrator.IsBetter(plan, best.Plan)))
                     continue;
 
@@ -508,12 +553,18 @@ namespace BLL.Algorithms
             }
 
             if (best == null)
-                return NotMatched(donation,
-                    "לא נמצא מסלול שעומד בכל האילוצים: שעת האיסוף האחרונה, תפוגת המזון, שעות הקבלה והקיבולת בעמותה וכניסת השבת" +
-                    (ignoreSchedule ? "." : ", וגם משמרת הזמינות של המתנדב."));
+                return NotMatched(donation, await ExplainNoManualRouteAsync(requests, ignoreSchedule));
 
             ScoreRoutes(new[] { best });
-            var created = await TryCreateAsync(best, ctx);
+
+            // תיקון 75: גם לשיבוץ ידני נשמר הסבר - פירוק הציון של המתנדב שהמנהל בחר והמסלול שנבנה לו
+            var manualEntry = new DonationCandidates { Donation = donation };
+            manualEntry.Routes.Add(best);
+            var decision = await DecisionJsonAsync(manualEntry, best, ctx, "Manual", null, null,
+                ignoreSchedule
+                    ? "המנהל שיבץ את התרומה ידנית, בתיאום עם המתנדב - גם מחוץ למשמרת הזמינות שלו."
+                    : "המנהל שיבץ את התרומה ידנית למתנדב הזה.");
+            var created = await TryCreateAsync(best, ctx, decision);
             if (created == null)
                 return NotMatched(donation, "התרומה או המתנדב שובצו במקביל בתהליך אחר. רעננו את העמוד ונסו שוב.");
 
@@ -643,6 +694,11 @@ namespace BLL.Algorithms
                 return result;
             }
 
+            // תיקון 75: משפך המועמדים - כמה מתנדבים נשארים אחרי כל שלב
+            var trace = new DecisionTrace { NgoOptions = ngoOptions };
+            result.Trace = trace;
+            trace.Funnel.Add(Step("מתנדבים מאושרים עם רישיון בתוקף", "סינון בסיסי", ctx.Volunteers.Count));
+
             // ---------- מתנדבים: Hard Constraints ----------
             // מתנדב שכבר דחה את התרומה / לא ענה בזמן / לא הגיע - לא מקבל אותה שוב (ולא "מתחיל מחדש" 5 דקות)
             double weightKg = donation.TotalWeightKg();
@@ -650,11 +706,13 @@ namespace BLL.Algorithms
                 .Where(v => !ctx.BusyVolunteerIds.Contains(v.Id) && !ctx.FailedPairs.Contains((v.Id, donation.Id)))
                 .Where(v => v.MaxCapacityKg >= weightKg)
                 .ToList();
+            trace.Funnel.Add(Step("בלי הצעה פתוחה, ועם קיבולת לתרומה", "אילוצים קשים", pool.Count));
 
             // תיקון 24: חלונות זמינות שמתחילים עד הריצה הבאה (או עד מועד האיסוף, אם הוא מוקדם יותר)
             var windowEnd = deadline < ctx.LatestDepartureUtc ? deadline : ctx.LatestDepartureUtc;
             var availability = _regionMatcher.FindAvailability(
                 donation, ngoOptions.Select(o => o.Ngo).ToList(), pool, ctx.Now, ctx.EarliestDepartureUtc, windowEnd);
+            trace.Funnel.Add(Step("במשמרת שמתאימה (יום, שעה ואזור)", "זמינות שבועית", availability.Select(a => a.Volunteer.Id).Distinct().Count()));
 
             if (availability.Count == 0)
                 return NoRoute(result, "אין מתנדב זמין עם זמינות מתאימה (יום, שעה, אזור וכיוון נסיעה).", ngoOptions, ctx);
@@ -670,6 +728,7 @@ namespace BLL.Algorithms
             var startIndex = new GeoKdTree<(VolunteerAvailability Availability, GeoCoordinate Start)>(
                 starts, s => s.Start.Latitude, s => s.Start.Longitude);
             var nearby = startIndex.WithinRadius(donation.Latitude, donation.Longitude, policy.MaxSearchRadiusKm);
+            trace.Funnel.Add(Step($"עד {policy.MaxSearchRadiusKm:0.#} ק\"מ בקו אווירי", "עץ KD", nearby.Select(n => n.Availability.Volunteer.Id).Distinct().Count()));
 
             // ---------- מרחק נסיעה (Google, עם מטמון) מנקודת היציאה של כל מתנדב ----------
             var scored = new List<VolunteerCandidate>(nearby.Count);
@@ -681,6 +740,7 @@ namespace BLL.Algorithms
                 double score = _rankingService.Score(a.Volunteer, donation, km, policy.MaxSearchRadiusKm, ctx.Now);
                 scored.Add(new VolunteerCandidate(a.Volunteer, km, score, start, a.Window));
             }
+            trace.Funnel.Add(Step($"עד {policy.MaxSearchRadiusKm:0.#} ק\"מ נסיעה בכביש", "Google Distance Matrix", scored.Select(c => c.Volunteer.Id).Distinct().Count()));
 
             if (scored.Count == 0)
                 return NoRoute(result, "כל המתנדבים הזמינים נמצאים מחוץ לטווח החיפוש.", ngoOptions, ctx);
@@ -693,12 +753,14 @@ namespace BLL.Algorithms
                 int byDistance = x.DistanceKm.CompareTo(y.DistanceKm);
                 return byDistance != 0 ? byDistance : x.Volunteer.Id.CompareTo(y.Volunteer.Id);
             });
+            trace.Ranked = ranked.GroupBy(c => c.Volunteer.Id).Select(g => g.First()).ToList();
 
             // ---------- תרומות נוספות אפשריות סביב העוגן (KD-Tree) ----------
             var cluster = ctx.DonationIndex
                 .WithinRadius(donation.Latitude, donation.Longitude, policy.ClusterRadiusKm)
                 .Where(d => d.Id != donation.Id && !ctx.AssignedDonationIds.Contains(d.Id) && IsReadyThisRun(d, ctx))
                 .ToList();
+            trace.ClusterSize = cluster.Count;
 
             // ---------- Backtracking: מסלול לכל מתנדב לפי הדירוג, עם חלופה כשנכשל ----------
             var volunteersWithRoute = new HashSet<int>();
@@ -708,11 +770,14 @@ namespace BLL.Algorithms
                 policy.MaxRoutesEvaluatedPerDonation,
                 async c =>
                 {
+                    trace.Evaluated.Add(c.Volunteer.Id);
                     if (volunteersWithRoute.Contains(c.Volunteer.Id)) return null;   // כבר יש לו מסלול (מחלון זמינות אחר)
                     var route = await BestRouteForAsync(c, donation, cluster, ngoOptions, ctx);
                     if (route != null) volunteersWithRoute.Add(c.Volunteer.Id);
                     return route;
                 });
+
+            trace.Funnel.Add(Step("עם מסלול שעומד בכל האילוצים", "Knapsack + Held-Karp", volunteersWithRoute.Count));
 
             if (routes.Count == 0)
                 return NoRoute(result,
@@ -777,7 +842,8 @@ namespace BLL.Algorithms
 
             foreach (var route in candidates.Routes.OrderByDescending(r => r.Value))
             {
-                var created = await TryCreateAsync(route, ctx);
+                // תיקון 75: ההסבר נשמר במסלול
+                var created = await TryCreateAsync(route, ctx, await DecisionJsonAsync(candidates, route, ctx, "Single", null, null));
                 if (created == null)
                     continue;   // אחת התרומות שובצה במקביל - מנסים את המסלול הבא
 
@@ -842,14 +908,15 @@ namespace BLL.Algorithms
         }
 
         // שמירת מסלול שנבחר. null = לא נשמר (מתנדב / תרומה כבר נלקחו, או שינוי מקביל במסד).
-        private async Task<VolunteerRoute?> TryCreateAsync(RouteCandidate route, RunContext ctx)
+        // תיקון 75: decisionJson - הסבר ההחלטה שנשמר במסלול
+        private async Task<VolunteerRoute?> TryCreateAsync(RouteCandidate route, RunContext ctx, string? decisionJson = null)
         {
             var volunteer = route.Candidate.Volunteer;
             if (ctx.BusyVolunteerIds.Contains(volunteer.Id) ||
                 route.Plan.Stops.Any(s => ctx.AssignedDonationIds.Contains(s.DonationId)))
                 return null;
 
-            var created = await _matchCreationService.CreateRouteAsync(volunteer, route.Ngo, route.Plan, route.Score);
+            var created = await _matchCreationService.CreateRouteAsync(volunteer, route.Ngo, route.Plan, route.Score, decisionJson);
             if (created == null)
                 return null;
 
@@ -865,6 +932,227 @@ namespace BLL.Algorithms
                 LocalClock.ToLocal(route.Plan.StartTime), volunteer.Id, route.Ngo.Id);
 
             return created;
+        }
+
+        // תיקון 66: שיבוץ ידני שנכשל - הסיבה המדויקת לכל עמותה שנבדקה (המשמרת הראשונה שלה), במקום רשימת כל האילוצים
+        private async Task<string> ExplainNoManualRouteAsync(IReadOnlyList<RouteRequest> requests, bool ignoreSchedule)
+        {
+            var reasons = new List<(Ngo Ngo, string Reason)>();
+            foreach (var group in requests.GroupBy(r => r.Ngo.Id))
+            {
+                var first = group.First();
+                var reason = await _orchestrator.ExplainNoRouteAsync(first);
+                if (reason != null)
+                    reasons.Add((first.Ngo, reason));
+            }
+
+            if (reasons.Count == 0)
+                return "לא נמצא מסלול שעומד בכל האילוצים: שעת האיסוף האחרונה, תפוגת המזון, שעות הקבלה והקיבולת בעמותה וכניסת השבת" +
+                       (ignoreSchedule ? "." : ", וגם משמרת הזמינות של המתנדב.");
+
+            int ngoCount = requests.Select(r => r.Ngo.Id).Distinct().Count();
+            if (ngoCount == 1)
+                return $"לא נמצא מסלול לעמותה {reasons[0].Ngo.NgoName}: {reasons[0].Reason}";
+
+            var distinct = reasons.Select(r => r.Reason).Distinct().ToList();
+            if (distinct.Count == 1 && reasons.Count == ngoCount)
+                return $"לא נמצא מסלול לאף אחת מ-{ngoCount} העמותות שנבדקו: {distinct[0]}";
+
+            return "לא נמצא מסלול לאף אחת מהעמותות שנבדקו. " +
+                   string.Join(" ", reasons.Select(r => $"{r.Ngo.NgoName}: {r.Reason}"));
+        }
+
+        // =========================================================
+        // תיקון 75: "למה המנוע החליט כך" - צילום ההחלטה (JSON) למסלול שנוצר
+        // =========================================================
+
+        private static Dto.DecisionFunnelStepDto Step(string label, string algorithm, int count) =>
+            new() { Label = label, Algorithm = algorithm, Count = count };
+
+        // Mode: Auto (בחירה גלובלית בריצה) · Single (תרומה אחת) · Manual (המנהל בחר מתנדב)
+        private async Task<string?> DecisionJsonAsync(
+            DonationCandidates entry,
+            RouteCandidate chosen,
+            RunContext ctx,
+            string mode,
+            Dto.DecisionGlobalDto? globalSelection,
+            IReadOnlyDictionary<int, int>? selectedAnchorByVolunteer,
+            string? note = null)
+        {
+            try
+            {
+                var policy = ctx.Policy;
+                var anchor = entry.Donation;
+                var trace = entry.Trace;
+                int chosenId = chosen.Candidate.Volunteer.Id;
+                double totalWeight = Math.Max(1e-9, policy.DistanceWeight + policy.UrgencyWeight + policy.CapacityWeight + policy.ReliabilityWeight);
+                static double R(double value) => Math.Round(value, 4);
+
+                var decision = new Dto.RouteDecisionDto
+                {
+                    Mode = mode,
+                    DecidedAt = ctx.Now,
+                    AnchorDonationId = anchor.Id,
+                    AnchorWeightKg = Math.Round(anchor.TotalWeightKg(), 1),
+                    AnchorUrgency = Math.Round(PriorityCalculator.Calculate(anchor, ctx.Now, policy.UrgencyTimeConstantMinutes), 1),
+                    Note = note,
+                    MaxSearchRadiusKm = policy.MaxSearchRadiusKm,
+                    Weights = new Dto.DecisionWeightsDto
+                    {
+                        Distance = R(policy.DistanceWeight / totalWeight),
+                        Urgency = R(policy.UrgencyWeight / totalWeight),
+                        Capacity = R(policy.CapacityWeight / totalWeight),
+                        Reliability = R(policy.ReliabilityWeight / totalWeight)
+                    },
+                    Global = globalSelection
+                };
+
+                if (trace != null)
+                {
+                    decision.Funnel.AddRange(trace.Funnel);
+                    decision.Funnel.Add(Step("נבחר", globalSelection != null ? "Branch & Bound" : "הערך הגבוה ביותר", 1));
+                }
+
+                // ---- המועמדים: הראשונים בדירוג, והנבחר תמיד ביניהם ----
+                var ranked = trace?.Ranked ?? new List<VolunteerCandidate>();
+                var shown = ranked.Take(DecisionCandidatesShown).ToList();
+                if (!shown.Any(c => c.Volunteer.Id == chosenId))
+                    shown.Add(ranked.FirstOrDefault(c => c.Volunteer.Id == chosenId) ?? chosen.Candidate);
+
+                var routeByVolunteer = entry.Routes
+                    .GroupBy(r => r.Candidate.Volunteer.Id)
+                    .ToDictionary(g => g.Key, g => g.OrderByDescending(r => r.Value).First());
+
+                foreach (var c in shown)
+                {
+                    int id = c.Volunteer.Id;
+                    int rankIndex = ranked.FindIndex(r => r.Volunteer.Id == id);
+                    var b = _rankingService.Breakdown(c.Volunteer, anchor, c.DistanceKm, policy.MaxSearchRadiusKm, ctx.Now);
+                    var item = new Dto.DecisionCandidateDto
+                    {
+                        VolunteerId = id,
+                        Name = c.Volunteer.User?.Name ?? $"מתנדב #{id}",
+                        Rank = rankIndex >= 0 ? rankIndex + 1 : 1,
+                        DistanceKm = Math.Round(c.DistanceKm, 1),
+                        Score = new Dto.DecisionScoreDto
+                        {
+                            Distance = R(b.Distance),
+                            Urgency = R(b.Urgency),
+                            Capacity = R(b.Capacity),
+                            Reliability = R(b.Reliability),
+                            Total = R(b.Total)
+                        }
+                    };
+
+                    if (id == chosenId)
+                    {
+                        item.Outcome = "Chosen";
+                        item.Reason = mode == "Manual"
+                            ? "המנהל בחר במתנדב הזה."
+                            : globalSelection != null
+                                ? "המסלול שלו נבחר בבחירה הגלובלית - כך הריצה מצילה הכי הרבה מזון."
+                                : "למסלול שלו הערך הגבוה ביותר.";
+                        SetRoute(item, chosen);
+                    }
+                    else if (routeByVolunteer.TryGetValue(id, out var own))
+                    {
+                        SetRoute(item, own);
+                        if (selectedAnchorByVolunteer != null && selectedAnchorByVolunteer.TryGetValue(id, out var otherAnchor) && otherAnchor != anchor.Id)
+                        {
+                            item.Outcome = "TakenByOtherRoute";
+                            item.Reason = $"שובץ בריצה הזו למסלול של תרומה #{otherAnchor} - בסך הכול כך ניצל יותר מזון.";
+                        }
+                        else if (ctx.BusyVolunteerIds.Contains(id))
+                        {
+                            item.Outcome = "TakenByOtherRoute";
+                            item.Reason = "קיבל בינתיים מסלול אחר בריצה הזו.";
+                        }
+                        else
+                        {
+                            item.Outcome = "LowerValue";
+                            item.Reason = $"גם לו נמצא מסלול, אבל בערך נמוך יותר ({own.Value:0.#} לעומת {chosen.Value:0.#}).";
+                        }
+                    }
+                    else if (trace != null && trace.Evaluated.Contains(id))
+                    {
+                        item.Outcome = "NoRoute";
+                        item.Reason = await NoRouteReasonAsync(c, anchor, trace.NgoOptions, ctx) ?? "לא נמצא מסלול שעומד בכל האילוצים.";
+                    }
+                    else
+                    {
+                        item.Outcome = "NotEvaluated";
+                        item.Reason = $"לא נבדק - כבר נמצאו {Math.Max(1, policy.MaxRoutesEvaluatedPerDonation)} מסלולים למתנדבים שמדורגים לפניו.";
+                    }
+
+                    decision.Candidates.Add(item);
+                }
+
+                // ---- המסלול שנבנה: Knapsack (מה לאסוף) + Held-Karp (סדר וזמנים) ----
+                var plan = chosen.Plan;
+                decision.Route = new Dto.DecisionRouteDto
+                {
+                    NgoName = chosen.Ngo.NgoName,
+                    Departure = plan.StartTime,
+                    NgoArrival = plan.NgoArrival,
+                    DistanceKm = Math.Round(plan.TotalDistanceKm, 1),
+                    DurationMinutes = Math.Round(plan.TotalDurationMinutes),
+                    WeightKg = Math.Round(plan.TotalWeightKg, 1),
+                    KnapsackValue = Math.Round(plan.KnapsackValue, 1),
+                    KnapsackOptimal = plan.ProvenOptimal,
+                    MatchScore = Math.Round(chosen.Score, 1),
+                    Value = Math.Round(chosen.Value, 1),
+                    NgosConsidered = trace?.NgoOptions.Count ?? 1,
+                    ExtraDonationsConsidered = trace?.ClusterSize ?? 0,
+                    Stops = plan.Stops.Select((s, i) => new Dto.DecisionStopDto
+                    {
+                        Order = i + 1,
+                        DonationId = s.DonationId,
+                        IsAnchor = s.DonationId == anchor.Id,
+                        WeightKg = Math.Round(ctx.Donations.FirstOrDefault(d => d.Id == s.DonationId)?.TotalWeightKg() ?? 0, 1),
+                        EstimatedArrival = s.EstimatedArrival
+                    }).ToList()
+                };
+
+                return RouteDecisionJson.Serialize(decision);
+            }
+            catch (Exception ex)
+            {
+                // ההסבר לא עוצר את השיבוץ
+                _logger.LogWarning(ex, "Could not build the decision explanation for donation {DonationId}.", entry.Donation.Id);
+                return null;
+            }
+
+            static void SetRoute(Dto.DecisionCandidateDto item, RouteCandidate route)
+            {
+                item.RouteValue = Math.Round(route.Value, 1);
+                item.RouteScore = Math.Round(route.Score, 1);
+                item.Stops = route.Plan.Stops.Count;
+            }
+        }
+
+        // למה לא נבנה מסלול למתנדב שנבדק - אותו הסבר כמו בשיבוץ ידני (תיקון 66), לעמותה הראשונה שהמשמרת שלו משרתת
+        private async Task<string?> NoRouteReasonAsync(VolunteerCandidate candidate, Donation anchor, List<NgoOption> ngoOptions, RunContext ctx)
+        {
+            if (candidate.Window.Slot == null)
+                return null;
+
+            var option = ngoOptions.FirstOrDefault(o => AvailabilityHelper.SlotServesRoute(candidate.Window.Slot, new[] { anchor.RegionId }, o.Ngo.RegionId));
+            if (option == null)
+                return "המשמרת שלו לא מתאימה לנסיעה לאף אחת מהעמותות שיכולות לקבל את התרומה.";
+
+            return await _orchestrator.ExplainNoRouteAsync(new RouteRequest
+            {
+                Volunteer = candidate.Volunteer,
+                Anchor = anchor,
+                Pool = Array.Empty<Donation>(),
+                Ngo = option.Ngo,
+                Window = candidate.Window,
+                Start = candidate.StartLocation,
+                OfferTimeUtc = ctx.Now,
+                EarliestDepartureUtc = ctx.EarliestDepartureUtc,
+                LatestDepartureUtc = ctx.LatestDepartureUtc,
+                NgoRemainingKg = ctx.NgoRemainingKg.TryGetValue(option.Ngo.Id, out var left) ? left : double.PositiveInfinity
+            });
         }
 
         private static string CreatedMessage(RouteCandidate route, RunContext ctx)

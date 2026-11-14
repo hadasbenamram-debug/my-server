@@ -40,6 +40,18 @@ namespace BLL.Algorithms
             double distanceKm,
             double maxSearchRadiusKm,
             DateTime? asOfUtc = null,
+            double? urgencyTimeConstantMinutes = null) =>
+            CalculateBreakdown(volunteer, donation, distanceKm, maxSearchRadiusKm, asOfUtc, urgencyTimeConstantMinutes).Total;
+
+        /// <summary>
+        /// תיקון 75: אותו חישוב בדיוק, עם כל רכיב בנפרד (0-1, לפני שקלול) - בשביל ההסבר "למה המנוע החליט כך".
+        /// </summary>
+        public ScoreBreakdown CalculateBreakdown(
+            Volunteer volunteer,
+            Donation donation,
+            double distanceKm,
+            double maxSearchRadiusKm,
+            DateTime? asOfUtc = null,
             double? urgencyTimeConstantMinutes = null)
         {
             if (volunteer == null) throw new ArgumentNullException(nameof(volunteer));
@@ -62,12 +74,17 @@ namespace BLL.Algorithms
             // נורמליזציה של ציון האמינות לפי סקאלה של 1 עד 5
             double normalizedReliability = Math.Clamp(volunteer.ReliabilityScore / 5.0, 0, 1);
 
-            return ((normalizedDistance * p.DistanceWeight)
+            double total = ((normalizedDistance * p.DistanceWeight)
                  + (normalizedUrgency * p.UrgencyWeight)
                  + (capacityRatio * p.CapacityWeight)
                  + (normalizedReliability * p.ReliabilityWeight)) / totalWeight;
+
+            return new ScoreBreakdown(normalizedDistance, normalizedUrgency, capacityRatio, normalizedReliability, total);
         }
     }
+
+    /// <summary>תיקון 75: רכיבי ציון ההתאמה (כל אחד 0-1) והציון המשוקלל (0-1)</summary>
+    public sealed record ScoreBreakdown(double Distance, double Urgency, double Capacity, double Reliability, double Total);
 
     /// <summary>
     /// מימוש עצמאי (לא שימוש ב-List.Sort המובנה) של Merge Sort ו-Quick Sort,
@@ -179,6 +196,10 @@ namespace BLL.Algorithms
 
         public double Score(Volunteer volunteer, Donation donation, double distanceKm, double maxSearchRadiusKm, DateTime? asOfUtc = null) =>
             _scorer.CalculateScore(volunteer, donation, distanceKm, maxSearchRadiusKm, asOfUtc);
+
+        // תיקון 75: הציון מפורק לרכיבים (להסבר ההחלטה)
+        public ScoreBreakdown Breakdown(Volunteer volunteer, Donation donation, double distanceKm, double maxSearchRadiusKm, DateTime? asOfUtc = null) =>
+            _scorer.CalculateBreakdown(volunteer, donation, distanceKm, maxSearchRadiusKm, asOfUtc);
 
         public List<Volunteer> RankVolunteers(
             List<Volunteer> availableVolunteers,

@@ -21,6 +21,35 @@ namespace FoodRescue.DTOs
         public string NewPassword { get; set; } = string.Empty;
     }
 
+    // תיקון 67: איפוס סיסמה בקוד לטלפון. מזהים את החשבון לפי המייל, והקוד נשלח למספר הטלפון המאומת שלו.
+    public class ForgotPasswordPhoneDto
+    {
+        [Required(ErrorMessage = "יש לספק כתובת אימייל.")]
+        [StringLength(254)]
+        public string Email { get; set; } = string.Empty;
+
+        // "sms" (ברירת מחדל) או "call" - שיחה קולית שמקריאה את הקוד
+        [RegularExpression("^(?i)(sms|call)$", ErrorMessage = "שיטת שליחה לא מוכרת.")]
+        public string? Method { get; set; }
+    }
+
+    // תיקון 67: הקוד שהגיע לטלפון + הסיסמה החדשה
+    public class ResetPasswordPhoneDto
+    {
+        [Required(ErrorMessage = "יש לספק כתובת אימייל.")]
+        [StringLength(254)]
+        public string Email { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "יש לספק את הקוד שהגיע לטלפון.")]
+        [StringLength(20)]
+        public string Code { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "יש לספק סיסמה חדשה.")]
+        [MinLength(8, ErrorMessage = "הסיסמה חייבת להכיל לפחות 8 תווים.")]
+        [StringLength(100, ErrorMessage = "הסיסמה יכולה להכיל עד 100 תווים.")]
+        public string NewPassword { get; set; } = string.Empty;
+    }
+
     // החלפת סיסמה ע"י משתמש מחובר (מאמת את הסיסמה הנוכחית)
     public class ChangePasswordDto
     {

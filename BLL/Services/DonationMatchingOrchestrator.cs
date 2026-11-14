@@ -254,6 +254,117 @@ namespace BLL.Algorithms
             return IsBetter(plan2, plan) ? plan2 : plan;
         }
 
+        /// <summary>
+        /// תיקון 66: למה אין מסלול לתרומה אחת (שיבוץ ידני של המנהל) - הסיבה המדויקת, עם השעות.
+        /// עובר על אותם אילוצים כמו PlanAsync + RoutePlanner, באותו סדר, למסלול של תחנה אחת:
+        /// משמרת המתנדב, תפוגה, שעת האיסוף האחרונה, קיבולת העמותה, ההגעה לאיסוף, ההגעה לעמותה, שעות הקבלה והשבת.
+        /// null = לא נמצאה סיבה אחת ברורה (המקרה הכללי - ההודעה הכללית נשארת).
+        /// </summary>
+        public async Task<string?> ExplainNoRouteAsync(RouteRequest request)
+        {
+            if (request?.Anchor == null || request.Ngo == null || request.Window.Slot == null)
+                return null;
+
+            var policy = _policy.Current;
+            var anchor = request.Anchor;
+            var ngo = request.Ngo;
+            var now = request.OfferTimeUtc;
+            string When(DateTime utc) => FormatWhen(utc, now);
+
+            var deadline = NgoAvailabilityHelper.GetPickupDateTime(anchor);
+            var earliest = Max(request.EarliestDepartureUtc, request.Window.StartUtc);
+            var latest = Min(request.LatestDepartureUtc, request.Window.EndUtc);
+
+            if (earliest > latest)
+                return $"משמרת הזמינות של המתנדב מסתיימת ב-{When(request.Window.EndUtc)}, לפני שאפשר לצאת לדרך.";
+            if (anchor.ExpirationTime <= earliest)
+                return $"המזון פג תוקף ב-{When(anchor.ExpirationTime)}, והמתנדב יכול לצאת לכל המוקדם ב-{When(earliest)}.";
+            if (deadline < earliest)
+                return $"שעת האיסוף האחרונה ({When(deadline)}) עוברת לפני שהמתנדב יכול לצאת ({When(earliest)}" +
+                       (earliest == request.EarliestDepartureUtc ? $", אחרי {policy.ResponseTimeoutMinutes} דקות לתגובה)." : ").");
+
+            double weightKg = anchor.TotalWeightKg();
+            if (weightKg > request.Volunteer.MaxCapacityKg + 1e-9)
+                return $"קיבולת הרכב של המתנדב ({request.Volunteer.MaxCapacityKg:0.#} ק\"ג) קטנה ממשקל התרומה ({weightKg:0.#} ק\"ג).";
+            if (weightKg > request.NgoRemainingKg + 1e-9)
+                return $"לעמותה נשארו היום רק {Math.Max(0, request.NgoRemainingKg):0.#} ק\"ג מהקיבולת היומית, והתרומה שוקלת {weightKg:0.#} ק\"ג.";
+
+            // זמני הנסיעה - מאותו שירות כמו המתכנן (Google עם מטמון, ואם אין - הערכה)
+            var donationPoint = new GeoCoordinate { Latitude = anchor.Latitude, Longitude = anchor.Longitude };
+            var ngoPoint = new GeoCoordinate { Latitude = ngo.Latitude, Longitude = ngo.Longitude };
+            var (_, toDonation) = await _routeOptimizationService.EstimateLegAsync(request.Start, donationPoint);
+            var (_, toNgo) = await _routeOptimizationService.EstimateLegAsync(donationPoint, ngoPoint);
+            toDonation = Math.Max(0, toDonation);
+            toNgo = Math.Max(0, toNgo);
+            double service = Math.Max(0, policy.StopServiceMinutes);
+
+            // בלי לדחות את היציאה: מתי מגיעים לאיסוף, ומתי אפשר להתחיל לאסוף ("זמינה החל מ-")
+            var reach = earliest.AddMinutes(toDonation);
+            DateTime? ready = anchor.EarliestPickupTime.HasValue ? NgoAvailabilityHelper.GetEarliestPickupDateTime(anchor) : null;
+            var pickup = ready.HasValue && ready.Value > reach ? ready.Value : reach;
+            if (pickup > deadline)
+                return ready.HasValue && ready.Value > reach
+                    ? $"התרומה זמינה לאיסוף רק מ-{When(ready.Value)}, אחרי שעת האיסוף האחרונה ({When(deadline)})."
+                    : $"המתנדב יגיע לנקודת האיסוף לכל המוקדם ב-{When(reach)} ({toDonation:0} דקות נסיעה), אחרי שעת האיסוף האחרונה ({When(deadline)}).";
+
+            var arrivalNoDelay = pickup.AddMinutes(service + toNgo);
+            if (arrivalNoDelay > anchor.ExpirationTime)
+                return $"ההגעה לעמותה תהיה לכל המוקדם ב-{When(arrivalNoDelay)}, אחרי תפוגת המזון ({When(anchor.ExpirationTime)}).";
+            if (arrivalNoDelay > request.Window.EndUtc)
+                return $"ההגעה לעמותה תהיה לכל המוקדם ב-{When(arrivalNoDelay)}, אחרי סוף משמרת הזמינות של המתנדב ({When(request.Window.EndUtc)}).";
+
+            // כמו RoutePlanner.TryTiming: עד כמה אפשר לדחות את היציאה (מועד האיסוף, אופק התכנון, תפוגה וסוף המשמרת)
+            double T = toDonation;
+            double F = (pickup - earliest).TotalMinutes;
+            double tNgo = T + service + toNgo;
+            double fNgo = F + service + toNgo;
+            var latestNgoArrival = Min(anchor.ExpirationTime, request.Window.EndUtc);
+            double maxDelay = Math.Min((deadline - earliest).TotalMinutes - T,
+                              Math.Min((latest - earliest).TotalMinutes, (latestNgoArrival - earliest).TotalMinutes - tNgo));
+            double maxWait = Math.Max(0, policy.MaxPickupWaitMinutes);
+            double minDelay = Math.Max(0, (F - T) - maxWait);
+            if (maxDelay < minDelay - 1e-9)
+                return $"התרומה זמינה לאיסוף רק מ-{When(ready ?? pickup)}, והמתנדב היה צריך לחכות שם יותר מ-{maxWait} דקות.";
+
+            var fromArrival = earliest.AddMinutes(Math.Max(minDelay + tNgo, fNgo));
+            var toArrival = earliest.AddMinutes(Math.Max(Math.Max(maxDelay, minDelay) + tNgo, fNgo));
+            var open = NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, fromArrival, toArrival);
+            if (!open.HasValue)
+            {
+                var range = (toArrival - fromArrival).TotalMinutes < 1
+                    ? When(fromArrival)
+                    : $"{When(fromArrival)}–{When(toArrival)}";
+                var next = NgoAvailabilityHelper.EarliestOpenAtOrAfter(ngo, fromArrival, fromArrival.AddDays(7));
+                return $"העמותה סגורה בשעות שבהן המתנדב יכול להגיע אליה ({range})" +
+                       (next.HasValue ? $" - היא נפתחת שוב ב-{When(next.Value)}" : " - אין לה שעות קבלה בשבוע הקרוב") +
+                       $", והתרומה צריכה להיאסף עד {When(deadline)}.";
+            }
+
+            var arrival = open.Value > fromArrival ? open.Value : fromArrival;
+            if (ShabbatClock.Overlaps(now, arrival, policy))
+            {
+                var shabbat = ShabbatClock.CurrentOrNext(now, policy);
+                return now >= shabbat.StartUtc
+                    ? $"עכשיו שבת - לא משבצים עד צאת השבת ({When(shabbat.EndUtc)})."
+                    : $"המסלול נכנס לשבת: ההגעה לעמותה תהיה ב-{When(arrival)}, והשבת נכנסת ב-{When(shabbat.StartUtc)}.";
+            }
+
+            return null;
+        }
+
+        private static readonly string[] HebrewDays = { "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת" };
+
+        // תיקון 66: שעה מקומית; ביום אחר - עם היום ("00:05 (מחר)", "08:00 (יום ראשון)")
+        private static string FormatWhen(DateTime utc, DateTime nowUtc)
+        {
+            var local = LocalClock.ToLocal(utc);
+            var today = LocalClock.ToLocal(nowUtc).Date;
+            var time = local.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+            if (local.Date == today) return time;
+            if (local.Date == today.AddDays(1)) return $"{time} (מחר)";
+            return $"{time} (יום {HebrewDays[(int)local.DayOfWeek]})";
+        }
+
         // מסלול א' עדיף על ב': ערך גבוה יותר; בשוויון - מגיע לעמותה מוקדם יותר
         public static bool IsBetter(RoutePlan? candidate, RoutePlan? current)
         {

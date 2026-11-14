@@ -271,6 +271,8 @@ builder.Services.AddScoped<ISupplierService, SupplierService>();
 builder.Services.AddScoped<INgoService, NgoService>();
 builder.Services.AddScoped<IVolunteerService, VolunteerService>();
 builder.Services.AddScoped<IMatchService, MatchService>();
+// תיקון 75: "למה המנוע החליט כך" - ההסברים שנשמרו למסלולים
+builder.Services.AddScoped<IRouteDecisionService, RouteDecisionService>();
 builder.Services.AddScoped<IApprovalRequestService, ApprovalRequestService>();
 builder.Services.AddScoped<ICommentService, CommentService>();
 builder.Services.AddScoped<CommentTreeService>();

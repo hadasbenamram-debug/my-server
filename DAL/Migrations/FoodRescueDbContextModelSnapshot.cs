@@ -819,6 +819,9 @@ namespace DAL.Migrations
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("DecisionJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<double?>("EstimatedTotalDistanceKm")
                         .HasColumnType("float");
 

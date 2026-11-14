@@ -373,6 +373,109 @@ namespace BLL.Services
         }
 
         // =====================================================
+        // תיקון 67: איפוס סיסמה בקוד לטלפון (מסרון או שיחה קולית)
+        // רק למספר שאומת - מספר שלא אומת יכול להיות של מישהו אחר.
+        // עם Twilio Verify: Twilio יוצרת, שולחת ובודקת את הקוד. בלי: קוד בן 6 ספרות שלנו, דרך ISmsSender.
+        // =====================================================
+
+        private static readonly TimeSpan PhoneResetCodeLifetime = TimeSpan.FromMinutes(10);   // כמו הקוד של Twilio Verify
+
+        public async Task<VerificationResult> SendPasswordResetCodeAsync(string email, PhoneVerificationMethod method)
+        {
+            var byCall = method == PhoneVerificationMethod.VoiceCall;
+            var verifier = _phoneVerifier is { IsConfigured: true } v ? v : null;
+
+            // בדיקת ההגדרות לפני חיפוש המשתמש - התשובה לא תלויה בקיום החשבון
+            if (verifier == null && (byCall ? _sms.VoiceMode : _sms.Mode) == SmsMode.NotConfigured)
+            {
+                _logger.LogWarning("Password reset by phone requested ({Method}) but it is not configured (Sms:Provider).", method);
+                return VerificationResult.SmsNotConfigured;
+            }
+
+            var user = await _userRepository.GetByEmailAsync(EmailNormalizer.Normalize(email ?? string.Empty));
+            if (user == null || !user.IsPhoneVerified || string.IsNullOrWhiteSpace(user.Phone))
+                return VerificationResult.Success;
+
+            if (await InCooldownAsync(user.Id, ActionTokenPurpose.PasswordResetPhone))
+                return VerificationResult.Success;
+
+            if (verifier != null)
+            {
+                var started = await verifier.StartAsync(user.Phone, byCall);
+                if (started != PhoneVerifyStart.Sent)
+                {
+                    _logger.LogWarning("Password reset code was not sent to user {UserId} ({Method}): {Result}.", user.Id, method, started);
+                    return VerificationResult.Success;
+                }
+
+                // רישום הבקשה: להגבלה של דקה בין שליחות, וכדי שבאיפוס יתקבל רק קוד שנשלח לאיפוס
+                await _actionTokens.CreateCodeAsync(user.Id, ActionTokenPurpose.PasswordResetPhone, PhoneResetCodeLifetime);
+                return VerificationResult.Success;
+            }
+
+            string code = await _actionTokens.CreateCodeAsync(user.Id, ActionTokenPurpose.PasswordResetPhone, PhoneResetCodeLifetime);
+            if (byCall)
+                await _notifications.QueueVoiceCallAsync(
+                    user.Id,
+                    user.Phone,
+                    $"שלום, כאן לתת באהבה. קוד איפוס הסיסמה שלך הוא: {string.Join<char>(", ", code)}. הקוד תקף לעשר דקות.",
+                    summary: "שיחה קולית עם קוד לאיפוס סיסמה");
+            else
+                await _notifications.QueueSmsAsync(
+                    user.Id,
+                    user.Phone,
+                    $"לתת באהבה: קוד איפוס הסיסמה שלך הוא {code}. תקף ל-10 דקות. אם לא ביקשת - אפשר להתעלם.",
+                    summary: "נשלח קוד לאיפוס סיסמה לטלפון");
+
+            return VerificationResult.Success;
+        }
+
+        public async Task<VerificationResult> ResetPasswordByPhoneAsync(ResetPasswordPhoneDto dto)
+        {
+            var user = await _userRepository.GetByEmailAsync(EmailNormalizer.Normalize(dto.Email ?? string.Empty));
+            if (user == null || !user.IsPhoneVerified || string.IsNullOrWhiteSpace(user.Phone))
+                return VerificationResult.InvalidCode;
+
+            var code = (dto.Code ?? string.Empty).Trim();
+
+            if (_phoneVerifier is { IsConfigured: true } verifier)
+            {
+                // רק אחרי בקשת איפוס בעשר הדקות האחרונות (ולא קוד שנשלח לאימות הטלפון בפרופיל)
+                var requested = await _actionTokens.GetLastIssuedAtAsync(user.Id, ActionTokenPurpose.PasswordResetPhone);
+                if (!requested.HasValue || DateTime.UtcNow - requested.Value > PhoneResetCodeLifetime)
+                    return VerificationResult.InvalidCode;
+
+                var verdict = await verifier.CheckAsync(user.Phone, code);
+                if (verdict != PhoneVerifyCheck.Approved)
+                {
+                    return verdict switch
+                    {
+                        PhoneVerifyCheck.TooManyAttempts => VerificationResult.TooManyAttempts,
+                        PhoneVerifyCheck.Failed => VerificationResult.SendFailed,
+                        _ => VerificationResult.InvalidCode
+                    };
+                }
+            }
+            else
+            {
+                var check = await _actionTokens.VerifyCodeAsync(user.Id, ActionTokenPurpose.PasswordResetPhone, code, MaxVerificationAttempts);
+                if (check != CodeCheckResult.Valid)
+                    return ToVerificationResult(check);
+            }
+
+            user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
+            user.MustChangePassword = false;
+            user.SecurityStamp = NewStamp();          // כל הטוקנים שהונפקו לפני האיפוס מפסיקים לעבוד
+            await _userRepository.UpdateAsync(user);   // המייל לא מסומן כמאומת - הקוד הגיע לטלפון, לא למייל
+
+            await _actionTokens.RevokeAsync(user.Id, ActionTokenPurpose.PasswordResetPhone);
+            await _actionTokens.RevokeAsync(user.Id, ActionTokenPurpose.PasswordReset);
+
+            _logger.LogInformation("Password of user {UserId} was reset with a code sent to the verified phone.", user.Id);
+            return VerificationResult.Success;
+        }
+
+        // =====================================================
         // Email / phone verification - קוד בן 6 ספרות במסד, עד 5 ניסיונות
         // =====================================================
 
