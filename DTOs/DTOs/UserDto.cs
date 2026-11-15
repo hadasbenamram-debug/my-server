@@ -17,6 +17,10 @@ namespace FoodRescue.DTOs
         public bool IsEmailVerified { get; set; }
         public bool IsPhoneVerified { get; set; }
         public DateTime CreatedAt { get; set; }
+
+        // תיקון 77: חשבון שנמחק (מחיקה רכה) - המנהל רואה שהוא לא פעיל ומתי נמחק
+        public bool IsActive { get; set; } = true;
+        public DateTime? DeactivatedAt { get; set; }
     }
 
     // תיקון 51: מנהל מסמן ידנית שהמייל / הטלפון של משתמש אומתו (למשל אחרי שיחה איתו), או מבטל אימות.

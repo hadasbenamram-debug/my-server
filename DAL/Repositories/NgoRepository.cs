@@ -28,7 +28,8 @@ namespace DAL.Repositories
         public async Task<List<Ngo>> GetApprovedAsync()
         {
             return await _context.Ngos
-                .Where(n => n.ApprovalStatus == ApprovalStatus.Approved)
+                // תיקון 77: עמותה שהחשבון שלה נמחק לא מקבלת תרומות
+                .Where(n => n.ApprovalStatus == ApprovalStatus.Approved && n.User.IsActive)
                 .ToListAsync();
         }
 

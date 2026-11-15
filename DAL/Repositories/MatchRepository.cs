@@ -311,5 +311,15 @@ namespace DAL.Repositories
                 .Where(t => t >= TimeSpan.Zero)
                 .ToList();
         }
+
+        // תיקון 77: תרומה בדרך לעמותה - שידוך פעיל, והתרומה עוד לא הושלמה / פגה / בוטלה
+        public async Task<bool> HasOpenForNgoAsync(int ngoId)
+        {
+            return await _context.Matches.AnyAsync(m => m.NgoId == ngoId
+                && m.IsActive
+                && (m.Donation.Status == DonationStatus.Matched
+                    || m.Donation.Status == DonationStatus.PickedUp
+                    || m.Donation.Status == DonationStatus.Delivered));
+        }
     }
 }

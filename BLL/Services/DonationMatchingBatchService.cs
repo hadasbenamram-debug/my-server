@@ -428,7 +428,8 @@ namespace BLL.Algorithms
                 string? note = busy ? "יש לו כבר הצעה פתוחה או מסלול פעיל"
                              : !capacityOk ? $"קיבולת הרכב ({v.MaxCapacityKg:0.#} ק\"ג) קטנה ממשקל התרומה ({weightKg:0.#} ק\"ג)"
                              : failed ? "כבר דחה את התרומה הזו, לא ענה בזמן או לא הגיע אליה"
-                             : !bySchedule ? "אין לו משמרת זמינות מתאימה - רק בתיאום איתו"
+                             // תיקון 81: למה המשמרת לא מתאימה (שעות / אזור התרומה / אזור העמותה)
+                             : !bySchedule ? $"{ExplainShift(v, donation, ngoRegions, ctx.Regions, ctx.Now, until) ?? "אין לו משמרת זמינות מתאימה"} - רק בתיאום איתו"
                              : null;
 
                 options.Add(new ManualVolunteerOption(v, km, fresh, bySchedule, failed, !busy && capacityOk, note));
@@ -691,6 +692,10 @@ namespace BLL.Algorithms
             if (ngoOptions.Count == 0)
             {
                 result.Reason = "אין עמותה מאושרת שיכולה לקבל את התרומה בזמן (שעות קבלה / קיבולת יומית בק\"ג).";
+                // תיקון 81: אם הסיבה היא קיבולת יומית שהתמלאה - אומרים איזו עמותה וכמה כבר קיבלה
+                var fullNgos = ExplainFullNgos(donation, ngoOptions, ctx);
+                if (fullNgos != null)
+                    result.Reason += " " + fullNgos;
                 return result;
             }
 
@@ -714,8 +719,10 @@ namespace BLL.Algorithms
                 donation, ngoOptions.Select(o => o.Ngo).ToList(), pool, ctx.Now, ctx.EarliestDepartureUtc, windowEnd);
             trace.Funnel.Add(Step("במשמרת שמתאימה (יום, שעה ואזור)", "זמינות שבועית", availability.Select(a => a.Volunteer.Id).Distinct().Count()));
 
+            // תיקון 81: במקום הודעה כללית - הסיבה המדויקת לכל מתנדב (תפוס, קיבולת, אין משמרת בשעות האלה,
+            // משמרת באזור אחר מהתרומה / מהעמותה), וגם עמותה שהגיעה היום לקיבולת היומית
             if (availability.Count == 0)
-                return NoRoute(result, "אין מתנדב זמין עם זמינות מתאימה (יום, שעה, אזור וכיוון נסיעה).", ngoOptions, ctx);
+                return NoRoute(result, ExplainNoVolunteer(donation, ngoOptions, ctx, ctx.EarliestDepartureUtc, windowEnd), ngoOptions, ctx);
 
             // ---------- תיקון 30: נקודת יציאה + סינון בקו אווירי (KD-Tree) לפני כל פנייה ל-Google ----------
             var starts = new List<(VolunteerAvailability Availability, GeoCoordinate Start)>();
@@ -1220,5 +1227,131 @@ namespace BLL.Algorithms
 
         private static DonationMatchOutcome NotMatched(Donation donation, string reason) =>
             new(false, null, null, reason, Array.Empty<int>());
+
+        // =====================================================================
+        // תיקון 81: הסבר מדויק כשאין מתנדב לתרומה
+        // =====================================================================
+
+        private const int ExplainMaxVolunteers = 3;
+
+        /// <summary>
+        /// הסיבה שאף מתנדב לא נמצא לתרומה: לכל מתנדב (עד 3) - למה הוא לא מתאים, ובנוסף עמותות
+        /// שהגיעו היום לקיבולת היומית. למשל: "עדן זכריהו: המשמרת שלו באזור תל אביב והמרכז, אבל העמותה
+        /// שיכולה לקבל את התרומה באזור השרון (צריך משמרת עם 'נוסע/ת לאזור: השרון')."
+        /// </summary>
+        private static string ExplainNoVolunteer(Donation donation, List<NgoOption> ngoOptions, RunContext ctx,
+            DateTime windowFromUtc, DateTime windowToUtc)
+        {
+            var parts = new List<string>();
+
+            if (ctx.Volunteers.Count == 0)
+            {
+                parts.Add("אין כרגע מתנדבים מאושרים וזמינים עם רישיון נהיגה בתוקף.");
+            }
+            else
+            {
+                double weightKg = donation.TotalWeightKg();
+                var ngoRegions = ngoOptions.Select(o => o.Ngo.RegionId).Distinct().ToList();
+
+                var reasons = ctx.Volunteers
+                    .Select(v => (Volunteer: v, Reason: ExplainVolunteer(v, donation, weightKg, ngoRegions, ctx, windowFromUtc, windowToUtc)))
+                    .ToList();
+
+                var shown = reasons.Take(ExplainMaxVolunteers)
+                    .Select(r => $"{VolunteerName(r.Volunteer)}: {r.Reason}");
+                var text = "אין מתנדב שיכול לקחת את התרומה - " + string.Join("; ", shown);
+                if (reasons.Count > ExplainMaxVolunteers)
+                    text += $"; ועוד {reasons.Count - ExplainMaxVolunteers} מתנדבים";
+                parts.Add(text + ".");
+            }
+
+            var full = ExplainFullNgos(donation, ngoOptions, ctx);
+            if (full != null)
+                parts.Add(full);
+
+            return string.Join(" ", parts);
+        }
+
+        // למה מתנדב אחד לא מתאים לתרומה. אותו סדר בדיקות כמו במנוע.
+        private static string ExplainVolunteer(Volunteer v, Donation donation, double weightKg, IReadOnlyCollection<int> ngoRegions,
+            RunContext ctx, DateTime windowFromUtc, DateTime windowToUtc)
+        {
+            if (ctx.BusyVolunteerIds.Contains(v.Id))
+                return "כבר יש לו הצעה פתוחה או מסלול פעיל";
+            if (ctx.FailedPairs.Contains((v.Id, donation.Id)))
+                return "כבר דחה את התרומה הזו, לא ענה בזמן או לא הגיע אליה";
+            if (v.MaxCapacityKg < weightKg)
+                return $"קיבולת הרכב ({v.MaxCapacityKg:0.#} ק\"ג) קטנה ממשקל התרומה ({weightKg:0.#} ק\"ג)";
+
+            // יש לו משמרת מתאימה, ובכל זאת לא נבחר: גם בנסיעה הכי מהירה לא יגיע לפני שעת האיסוף האחרונה
+            return ExplainShift(v, donation, ngoRegions, ctx.Regions, windowFromUtc, windowToUtc)
+                   ?? "גם בנסיעה הכי מהירה מהמיקום שלו לא יספיק להגיע לפני שעת האיסוף האחרונה";
+        }
+
+        /// <summary>
+        /// למה המשמרות של המתנדב לא מתאימות לתרומה בחלון הזמן: אין משבצות, אין משמרת בשעות האלה,
+        /// או שהמשמרת באזור אחר מהתרומה / מהעמותות. null - יש לו משמרת מתאימה.
+        /// </summary>
+        private static string? ExplainShift(Volunteer v, Donation donation, IReadOnlyCollection<int> ngoRegions,
+            IReadOnlyDictionary<int, Region> regions, DateTime windowFromUtc, DateTime windowToUtc)
+        {
+            if (v.AvailabilitySlots == null || v.AvailabilitySlots.Count == 0)
+                return "אין לו משבצות בזמינות השבועית";
+
+            if (ngoRegions.Count == 0)
+                return "אין עמותה שיכולה לקבל את התרומה בזמן";
+
+            var windows = AvailabilityHelper.GetWindows(v, windowFromUtc, windowToUtc)
+                .Where(w => w.EndUtc > windowFromUtc && w.StartUtc <= windowToUtc)
+                .ToList();
+            if (windows.Count == 0)
+                return $"אין לו משמרת היום בין {LocalClock.ToLocal(windowFromUtc):HH:mm} ל-{LocalClock.ToLocal(windowToUtc):HH:mm}";
+
+            var donationRegion = new[] { donation.RegionId };
+            if (windows.Any(w => ngoRegions.Any(r => AvailabilityHelper.SlotServesRoute(w.Slot, donationRegion, r))))
+                return null;
+
+            // המשמרת בשעות הנכונות - אבל באזור אחר
+            string RegionName(int id) => regions.TryGetValue(id, out var r) ? r.RegionName : $"#{id}";
+            var slot = windows[0].Slot;
+            string slotText = RegionName(slot.RegionId) +
+                              (slot.ToRegionId is int to && to != slot.RegionId ? $" (נוסע/ת ל{RegionName(to)})" : "");
+            string ngoText = string.Join(", ", ngoRegions.Select(RegionName).Distinct());
+            string donationText = RegionName(donation.RegionId);
+
+            bool donationOutside = donation.RegionId != slot.RegionId && donation.RegionId != slot.ToRegionId;
+            if (donationOutside)
+                return $"המשמרת שלו באזור {slotText}, אבל התרומה נמצאת באזור {donationText}";
+
+            var target = ngoRegions.Select(RegionName).First();
+            return $"המשמרת שלו באזור {slotText}, אבל העמותות שיכולות לקבל את התרומה נמצאות באזור {ngoText} " +
+                   $"(צריך משמרת עם 'נוסע/ת לאזור: {target}')";
+        }
+
+        // עמותות מאושרות שהיו יכולות לקבל את התרומה, אבל הגיעו היום לקיבולת היומית שלהן (עד 2)
+        private static string? ExplainFullNgos(Donation donation, List<NgoOption> ngoOptions, RunContext ctx)
+        {
+            double weightKg = donation.TotalWeightKg();
+            var optionIds = ngoOptions.Select(o => o.Ngo.Id).ToHashSet();
+
+            var full = ctx.Ngos
+                .Where(n => !optionIds.Contains(n.Id)
+                            && ctx.NgoRemainingKg.TryGetValue(n.Id, out var left) && left < weightKg)
+                .Take(2)
+                .Select(n =>
+                {
+                    double left = ctx.NgoRemainingKg[n.Id];
+                    double used = Math.Max(0, n.DailyCapacity - left);
+                    return used > 0
+                        ? $"העמותה {n.NgoName} כבר קיבלה היום {used:0.#} מתוך {n.DailyCapacity:0.#} ק\"ג (הקיבולת היומית שלה), ונשאר לה מקום רק ל-{left:0.#} ק\"ג"
+                        : $"הקיבולת היומית של העמותה {n.NgoName} ({n.DailyCapacity:0.#} ק\"ג) קטנה ממשקל התרומה ({weightKg:0.#} ק\"ג)";
+                })
+                .ToList();
+
+            return full.Count == 0 ? null : string.Join("; ", full) + ".";
+        }
+
+        private static string VolunteerName(Volunteer v) =>
+            string.IsNullOrWhiteSpace(v.User?.Name) ? $"מתנדב #{v.Id}" : v.User.Name;
     }
 }

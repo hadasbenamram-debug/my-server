@@ -63,5 +63,17 @@ namespace FoodRescue.Tests
             Assert.NotNull(column);
             Assert.True(column!.IsNullable);
         }
+
+        // תיקון 77: מחיקת חשבון רכה - IsActive (חובה) ותאריך המחיקה (אופציונלי)
+        [Fact]
+        public void TheUserSoftDeleteMigrationIsPartOfTheProject()
+        {
+            using var db = SqlServerModel();
+
+            Assert.Contains(db.Database.GetMigrations(), m => m.EndsWith("_UserSoftDelete"));
+            var user = db.Model.FindEntityType(typeof(User))!;
+            Assert.False(user.FindProperty(nameof(User.IsActive))!.IsNullable);
+            Assert.True(user.FindProperty(nameof(User.DeactivatedAt))!.IsNullable);
+        }
     }
 }

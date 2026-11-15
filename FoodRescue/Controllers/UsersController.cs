@@ -13,10 +13,12 @@ namespace FoodRescue.Controllers
     public class UsersController : ApiControllerBase
     {
         private readonly IUserService _userService;
+        private readonly IAccountDeletionService _accountDeletion;
 
-        public UsersController(IUserService userService)
+        public UsersController(IUserService userService, IAccountDeletionService accountDeletion)
         {
             _userService = userService;
+            _accountDeletion = accountDeletion;
         }
 
         // כל המשתמשים - מנהלים בלבד, בעימוד (?page=1&pageSize=100; הסך בכותרת X-Total-Count)
@@ -36,6 +38,16 @@ namespace FoodRescue.Controllers
         public async Task<ActionResult<UserDto>> SetVerification(int id, [FromBody] UpdateVerificationDto dto) =>
             Ok(await _userService.SetVerificationAsync(id, dto) ?? throw new NotFoundException("המשתמש לא נמצא."));
 
+        // תיקון 78: POST api/users/{id}/restore - מנהל משחזר חשבון שהמשתמש מחק. מחזיר את המשתמש המעודכן.
+        // 404 - אין משתמש כזה; 409 - החשבון פעיל (לא נמחק).
+        [HttpPost("{id:int}/restore")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<UserDto>> RestoreAccount(int id)
+        {
+            await _accountDeletion.RestoreAccountAsync(id);
+            return Ok(await _userService.GetByIdAsync(id) ?? throw new NotFoundException("המשתמש לא נמצא."));
+        }
+
         // GET api/users/me - הפרופיל של המשתמש המחובר (כל תפקיד)
         [HttpGet("me")]
         public async Task<ActionResult<MyProfileDto>> GetMe() =>
@@ -45,5 +57,14 @@ namespace FoodRescue.Controllers
         [HttpPut("me")]
         public async Task<ActionResult<MyProfileDto>> UpdateMe([FromBody] UpdateMyProfileDto dto) =>
             Ok(await _userService.UpdateMyProfileAsync(RequireUserId(), dto) ?? throw new UnauthorizedException("המשתמש לא נמצא."));
+
+        // תיקון 77: DELETE api/users/me - מחיקת החשבון (מחיקה רכה), אחרי אימות הסיסמה.
+        // 204 - נמחק; 400 - סיסמה שגויה; 403 - חשבון מנהל; 409 - יש עבודה פתוחה (מסלול / תרומות).
+        [HttpDelete("me")]
+        public async Task<IActionResult> DeleteMe([FromBody] DeleteAccountDto dto)
+        {
+            await _accountDeletion.DeleteMyAccountAsync(RequireUserId(), dto);
+            return NoContent();
+        }
     }
 }

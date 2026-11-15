@@ -130,6 +130,16 @@ namespace DAL.Repositories
             return await _context.Donations.AnyAsync(d => d.Id == donationId && d.SupplierId == supplierId);
         }
 
+        // תיקון 77: תרומה "בטיפול" - כל סטטוס שעוד לא הסתיים (הושלמה / פגה / בוטלה)
+        public async Task<bool> HasOpenForSupplierAsync(int supplierId)
+        {
+            return await _context.Donations.AnyAsync(d => d.SupplierId == supplierId
+                && (d.Status == DonationStatus.Pending
+                    || d.Status == DonationStatus.Matched
+                    || d.Status == DonationStatus.PickedUp
+                    || d.Status == DonationStatus.Delivered));
+        }
+
         public async Task<bool> AnyInRegionAsync(int regionId)
         {
             return await _context.Donations.AnyAsync(d => d.RegionId == regionId);

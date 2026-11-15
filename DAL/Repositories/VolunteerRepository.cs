@@ -22,6 +22,7 @@ namespace DAL.Repositories
             return await _context.Volunteers
                 .Where(v => v.IsAvailable
                          && v.ApprovalStatus == ApprovalStatus.Approved
+                         && v.User.IsActive          // תיקון 77: חשבון שנמחק לא משובץ
                          && v.DriverLicenseExpiry != null
                          && v.DriverLicenseExpiry >= day)
                 .Include(v => v.AvailabilitySlots)

@@ -36,6 +36,9 @@ namespace DAL.Interfaces
 
         Task<bool> ExistsAsync(int id);
         Task<bool> ExistsForSupplierAsync(int donationId, int supplierId);
+
+        // תיקון 77: האם לספק יש תרומה שעדיין בטיפול (ממתינה, שובצה, נאספה או נמסרה וממתינה לאישור קבלה)
+        Task<bool> HasOpenForSupplierAsync(int supplierId);
         Task<bool> AnyInRegionAsync(int regionId);
         Task<int> CountByStatusAsync(DonationStatus status);
 

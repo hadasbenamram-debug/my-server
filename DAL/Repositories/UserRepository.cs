@@ -38,7 +38,8 @@ namespace DAL.Repositories
         public async Task<UserAuthState?> GetAuthStateAsync(int userId)
         {
             return await _context.Users
-                .Where(u => u.Id == userId)
+                // תיקון 77: חשבון שנמחק (לא פעיל) - אין מצב התחברות, ולכן כל טוקן שלו נדחה
+                .Where(u => u.Id == userId && u.IsActive)
                 .Select(u => new UserAuthState(u.SecurityStamp, u.MustChangePassword, u.Role))
                 .FirstOrDefaultAsync();
         }

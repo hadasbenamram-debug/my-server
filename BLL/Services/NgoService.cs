@@ -117,6 +117,7 @@ namespace BLL.Services
             // המיקום המדויק לפי הכתובת (Google Maps) - לפני הטרנזקציה, כדי לא להחזיק אותה פתוחה בזמן הפנייה ל-Google.
             // נבדק לפני בדיקת המייל, כך שגם כתובת שגויה לא מגלה אם המייל רשום.
             var location = await _geocoding.GeocodeAsync(dto.Address);
+            var regionId = await RegionForLocationAsync(location, dto.RegionId);   // תיקון 82: האזור לפי הכתובת
 
             // הרשמה אנונימית לא מצרפת פרופיל לחשבון קיים.
             // תוקן: בעבר נזרקה כאן ConflictException שחשפה שהמייל רשום. עכשיו - אותה תשובה, ומייל לבעל החשבון.
@@ -151,7 +152,7 @@ namespace BLL.Services
                     return;
                 }
 
-                await _ngoRepository.AddAsync(NewNgo(user.Id, dto, location));
+                await _ngoRepository.AddAsync(NewNgo(user.Id, dto, location, regionId));
                 await _approvals.AddPendingAsync(user.Id, FoodRescue.DTOs.RequestedRole.Ngo, true, "הוגשה בקשת הצטרפות של עמותה.");
 
                 await _notifications.QueueEmailAsync(
@@ -197,10 +198,11 @@ namespace BLL.Services
 
             await ValidateProfileAsync(dto);
             var location = await _geocoding.GeocodeAsync(dto.Address);
+            var regionId = await RegionForLocationAsync(location, dto.RegionId);   // תיקון 82: האזור לפי הכתובת
 
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
-                await _ngoRepository.AddAsync(NewNgo(userId, dto, location));
+                await _ngoRepository.AddAsync(NewNgo(userId, dto, location, regionId));
                 await _approvals.AddPendingAsync(userId, FoodRescue.DTOs.RequestedRole.Ngo, true, "הוגשה בקשת הצטרפות של עמותה (תפקיד נוסף לחשבון קיים).");
                 await _registrationNotices.NotifyRoleRequestReceivedAsync(user, RoleTitle);
             });
@@ -219,7 +221,17 @@ namespace BLL.Services
             ValidateSaturdayNightHours(dto.ReceivesOnSaturdayNight, dto.SaturdayNightOpenTime, dto.SaturdayNightCloseTime);
         }
 
-        private static Ngo NewNgo(int userId, INgoProfileFields dto, GeocodeResult location) => new()
+        // תיקון 82: אזור העמותה נקבע לפי המיקום של הכתובת (האזור שהמרכז שלו הכי קרוב), כמו אזור של תרומה.
+        // בעבר האזור נבחר ידנית בהרשמה, וברירת המחדל הייתה האזור הראשון ברשימה ("ירושלים והסביבה") -
+        // כך עמותה בפתח תקווה נרשמה בירושלים, ומתנדבים מהמרכז לא שובצו אליה.
+        // fallbackRegionId - רק אם אין אזורים במערכת (לא אמור לקרות).
+        private async Task<int> RegionForLocationAsync(GeocodeResult location, int fallbackRegionId)
+        {
+            var region = RegionLocator.Locate(await _regionRepository.GetAllAsync(), location.Latitude, location.Longitude);
+            return region?.Id ?? fallbackRegionId;
+        }
+
+        private static Ngo NewNgo(int userId, INgoProfileFields dto, GeocodeResult location, int regionId) => new()
         {
             UserId = userId,
             NgoName = dto.NgoName.Trim(),
@@ -229,7 +241,7 @@ namespace BLL.Services
             Latitude = location.Latitude,
             Longitude = location.Longitude,
             RegistrationNumber = dto.RegistrationNumber.Trim(),
-            RegionId = dto.RegionId,
+            RegionId = regionId,                    // תיקון 82: לפי הכתובת
             SunToThuOpenTime = dto.SunToThuOpenTime ?? DefaultOpen,
             SunToThuCloseTime = dto.SunToThuCloseTime ?? DefaultClose,
             ReceivesOnFriday = dto.ReceivesOnFriday,
@@ -258,6 +270,8 @@ namespace BLL.Services
             ngo.Address = dto.Address.Trim();
             ngo.Latitude = location.Latitude;
             ngo.Longitude = location.Longitude;
+            // תיקון 82: גם האזור מתעדכן לפי הכתובת (כך עמותה שנרשמה באזור שגוי מתתקנת בשמירה הבאה)
+            ngo.RegionId = await RegionForLocationAsync(location, ngo.RegionId);
             ngo.GooglePlaceId = location.PlaceId;
             ngo.SunToThuOpenTime = open;
             ngo.SunToThuCloseTime = close;

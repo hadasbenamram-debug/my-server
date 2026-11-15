@@ -22,6 +22,9 @@ namespace BLL.Services
     public sealed class UserService : IUserService
     {
         private const string InvalidCredentialsMessage = "שם משתמש או סיסמה שגויים.";
+        // תיקון 77: חשבון שהמשתמש מחק
+        private const string AccountDeletedMessage =
+            "החשבון הזה נמחק. רוצים לשחזר אותו? כתבו לנו בדף צור קשר, ומנהל המערכת ישחזר אותו.";   // תיקון 78
         private const string InvalidLoginLinkMessage =
             "קישור הכניסה אינו בתוקף (פג תוקפו או שכבר השתמשו בו). אפשר להתחבר כרגיל עם המייל והסיסמה.";
         private const int MaxVerificationAttempts = 5;
@@ -170,6 +173,11 @@ namespace BLL.Services
                 await _userRepository.UpdateAsync(user);
             }
 
+            // תיקון 77: חשבון שנמחק. כמו סטטוס האישור - נבדק רק אחרי שהסיסמה נכונה,
+            // כך שמי שלא יודע את הסיסמה לא לומד שהחשבון קיים או נמחק.
+            if (!user.IsActive)
+                return AuthResult.Fail(AuthError.AccountDeleted, AccountDeletedMessage);
+
             // --- approval status for NGOs, suppliers and volunteers ---
             // (נבדק רק אחרי שהסיסמה נכונה, כך שמי שלא יודע את הסיסמה לא לומד מה מצב החשבון)
             var roles = await GetHeldRolesAsync(user);
@@ -261,7 +269,7 @@ namespace BLL.Services
                 return new LinkLoginOutcome(LinkLoginStatus.InvalidLink, Message: InvalidLoginLinkMessage);
 
             var user = await _userRepository.GetByIdAsync(token.UserId.Value);
-            if (user == null)
+            if (user == null || !user.IsActive)          // תיקון 77: חשבון שנמחק
                 return new LinkLoginOutcome(LinkLoginStatus.InvalidLink, Message: InvalidLoginLinkMessage);
 
             var roles = await GetHeldRolesAsync(user);
@@ -319,7 +327,7 @@ namespace BLL.Services
         public async Task ForgotPasswordAsync(ForgotPasswordDto dto)
         {
             var user = await _userRepository.GetByEmailAsync(EmailNormalizer.Normalize(dto.Email));
-            if (user == null)
+            if (user == null || !user.IsActive)          // תיקון 77: לחשבון שנמחק לא שולחים קישור איפוס
                 return;
 
             var lastIssued = await _actionTokens.GetLastIssuedAtAsync(user.Id, ActionTokenPurpose.PasswordReset);
@@ -357,7 +365,7 @@ namespace BLL.Services
                 return false;
 
             var user = await _userRepository.GetByIdAsync(token.UserId.Value);
-            if (user == null)
+            if (user == null || !user.IsActive)          // תיקון 77: חשבון שנמחק
                 return false;
 
             user.PasswordHash = _passwordHasher.HashPassword(user, dto.NewPassword);
@@ -393,7 +401,8 @@ namespace BLL.Services
             }
 
             var user = await _userRepository.GetByEmailAsync(EmailNormalizer.Normalize(email ?? string.Empty));
-            if (user == null || !user.IsPhoneVerified || string.IsNullOrWhiteSpace(user.Phone))
+            // תיקון 77: גם לחשבון שנמחק לא שולחים קוד (והתשובה זהה, כדי לא לחשוף את מצב החשבון)
+            if (user == null || !user.IsActive || !user.IsPhoneVerified || string.IsNullOrWhiteSpace(user.Phone))
                 return VerificationResult.Success;
 
             if (await InCooldownAsync(user.Id, ActionTokenPurpose.PasswordResetPhone))
@@ -433,7 +442,7 @@ namespace BLL.Services
         public async Task<VerificationResult> ResetPasswordByPhoneAsync(ResetPasswordPhoneDto dto)
         {
             var user = await _userRepository.GetByEmailAsync(EmailNormalizer.Normalize(dto.Email ?? string.Empty));
-            if (user == null || !user.IsPhoneVerified || string.IsNullOrWhiteSpace(user.Phone))
+            if (user == null || !user.IsActive || !user.IsPhoneVerified || string.IsNullOrWhiteSpace(user.Phone))   // תיקון 77
                 return VerificationResult.InvalidCode;
 
             var code = (dto.Code ?? string.Empty).Trim();
@@ -710,7 +719,7 @@ namespace BLL.Services
         public async Task<AuthResponseDto?> CreateLinkSessionAsync(int userId, FoodRescue.DTOs.RequestedRole role)
         {
             var user = await _userRepository.GetByIdAsync(userId);
-            if (user == null || user.MustChangePassword)
+            if (user == null || !user.IsActive || user.MustChangePassword)   // תיקון 77: חשבון שנמחק
                 return null;
 
             var roles = await GetHeldRolesAsync(user);

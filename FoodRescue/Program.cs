@@ -273,6 +273,7 @@ builder.Services.AddScoped<IVolunteerService, VolunteerService>();
 builder.Services.AddScoped<IMatchService, MatchService>();
 // תיקון 75: "למה המנוע החליט כך" - ההסברים שנשמרו למסלולים
 builder.Services.AddScoped<IRouteDecisionService, RouteDecisionService>();
+builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();   // תיקון 77: מחיקת חשבון
 builder.Services.AddScoped<IApprovalRequestService, ApprovalRequestService>();
 builder.Services.AddScoped<ICommentService, CommentService>();
 builder.Services.AddScoped<CommentTreeService>();

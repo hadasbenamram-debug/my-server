@@ -15,7 +15,9 @@ namespace BLL.Interfaces
         SupplierRejected,
         // מתנדב שנרשם לא נכנס למערכת עד שמנהל מאשר אותו (כמו ספק ועמותה)
         VolunteerPendingApproval,
-        VolunteerRejected
+        VolunteerRejected,
+        // תיקון 77: החשבון נמחק על ידי המשתמש (IsActive = false)
+        AccountDeleted
     }
 
     // תוצאת שליחת קוד אימות / אימות מייל או טלפון. הקונטרולר ממיר אותה לקוד HTTP ולהודעה.
