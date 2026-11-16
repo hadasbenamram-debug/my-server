@@ -26,19 +26,22 @@ namespace BLL.Services
         private readonly IDonationRepository _donationRepository;
         private readonly IMatchRepository _matchRepository;
         private readonly IMapper _mapper;
+        private readonly TimeProvider _clock;   // שעון אחד לכל המערכת (בבדיקות - שעון קבוע)
 
         public AdminReportService(
             IVolunteerRepository volunteerRepository,
             IApprovalRequestService approvals,
             IDonationRepository donationRepository,
             IMatchRepository matchRepository,
-            IMapper mapper)
+            IMapper mapper,
+            TimeProvider? clock = null)
         {
             _volunteerRepository = volunteerRepository;
             _approvals = approvals;
             _donationRepository = donationRepository;
             _matchRepository = matchRepository;
             _mapper = mapper;
+            _clock = clock ?? TimeProvider.System;
         }
 
         // תיקון 17: בעבר "מובילי ביצועי מתנדבים" הציג את 5 המתנדבים עם ציון האמינות הגבוה, וכולם עם 0 משלוחים
@@ -77,6 +80,20 @@ namespace BLL.Services
             };
         }
 
+        // תיקון 70: "התראות No-Show" בלוח הבקרה = רק מקרים שעדיין אפשר לטפל בהם (ראו NoShowHandling).
+        // מקרה שפג תוקפו / שובץ מחדש / שעת האיסוף שלו עברה לא נספר (אבל נשאר במסך הטיפול באי-הגעה).
+        // תרומה שסומנה בה No-Show יותר מפעם אחת נספרת פעם אחת - זה מקרה אחד לטיפול.
+        private async Task<int> CountNoShowsToHandleAsync()
+        {
+            var now = _clock.GetUtcNow().UtcDateTime;
+            var noShows = await _matchRepository.GetNoShowsWithDonationSinceAsync(now.AddDays(-7));
+            return noShows
+                .Where(m => NoShowHandling.CanBeHandled(m.Donation, now))
+                .Select(m => m.DonationId)
+                .Distinct()
+                .Count();
+        }
+
         public async Task<DashboardStatsDto> GetDashboardStatsAsync()
         {
             return new DashboardStatsDto
@@ -84,7 +101,7 @@ namespace BLL.Services
                 OpenDonations = await _donationRepository.CountByStatusAsync(DonationStatus.Pending),
                 AvailableVolunteers = await _volunteerRepository.CountAvailableAsync(),
                 ActiveAssignments = await _matchRepository.CountActiveAsync(),
-                NoShowAlerts = await _matchRepository.CountByStatusSinceAsync(MatchStatus.NoShow, DateTime.UtcNow.AddDays(-7))
+                NoShowAlerts = await CountNoShowsToHandleAsync()
             };
         }
 

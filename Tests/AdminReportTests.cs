@@ -16,7 +16,7 @@ namespace FoodRescue.Tests
     {
         // GetSystemReportAsync לא משתמש בבקשות ההצטרפות - לכן null
         private static AdminReportService Reports(EngineHarness h) =>
-            new(h.Volunteers, null!, h.Donations, h.Matches, TestDb.Mapper);
+            new(h.Volunteers, null!, h.Donations, h.Matches, TestDb.Mapper, h.Clock);
 
         private static CurrentUserDto As(User user) => new() { UserId = user.Id };
 
@@ -125,6 +125,43 @@ namespace FoodRescue.Tests
             Assert.Equal("3.0", report.AverageResponseTime);
             Assert.Equal("75%", report.SuccessRate);          // 3 נמסרו מתוך 4 שהסתיימו
             Assert.Equal(19, report.TotalDonationsVolume);    // 19.2 ק"ג
+        }
+
+        // תיקון 70: המונה "התראות No-Show" בלוח הבקרה סופר רק מקרים שעדיין אפשר לטפל בהם
+        [Fact]
+        public async Task DashboardNoShowCounter_CountsOnlyCasesThatCanStillBeHandled()
+        {
+            using var h = new EngineHarness();
+            await h.SeedBasicsAsync();
+            var v = await h.AddVolunteerAsync("vol@test");
+
+            var open = await AddDonationAsync(h, DonationStatus.Pending);                // ממתינה, האיסוף עוד לא עבר - אפשר לטפל
+            var expired = await AddDonationAsync(h, DonationStatus.Expired);             // פג תוקף
+            var reassigned = await AddDonationAsync(h, DonationStatus.Matched);          // כבר שובצה למתנדב אחר
+            var tooLate = await h.AddDonationAsync(pickupIn: TimeSpan.FromMinutes(-30)); // שעת האיסוף האחרונה כבר עברה
+
+            foreach (var donation in new[] { open, expired, reassigned, tooLate })
+                await AddMatchAsync(h, v, donation, MatchStatus.NoShow);
+            await AddMatchAsync(h, v, open, MatchStatus.NoShow);   // אותה תרומה בפעם השנייה - מקרה אחד לטיפול
+            h.Fresh();
+
+            var stats = await Reports(h).GetDashboardStatsAsync();
+
+            Assert.Equal(1, stats.NoShowAlerts);
+            // המקרים שלא נספרים לא נמחקו
+            Assert.Equal(5, await h.Db.Matches.CountAsync(m => m.Status == MatchStatus.NoShow));
+        }
+
+        [Fact]
+        public async Task DashboardNoShowCounter_ShowsZero_WhenTheOnlyNoShowExpired()
+        {
+            using var h = new EngineHarness();
+            await h.SeedBasicsAsync();
+            var v = await h.AddVolunteerAsync("vol@test");
+            await AddMatchAsync(h, v, await AddDonationAsync(h, DonationStatus.Expired), MatchStatus.NoShow);
+            h.Fresh();
+
+            Assert.Equal(0, (await Reports(h).GetDashboardStatsAsync()).NoShowAlerts);
         }
 
         [Fact]

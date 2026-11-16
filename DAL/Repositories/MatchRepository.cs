@@ -277,6 +277,15 @@ namespace DAL.Repositories
             return await _context.Matches.CountAsync(m => m.Status == status && m.AssignedAt >= sinceUtc);
         }
 
+        public async Task<List<Match>> GetNoShowsWithDonationSinceAsync(DateTime sinceUtc)
+        {
+            return await _context.Matches
+                .Include(m => m.Donation)
+                .Where(m => m.Status == MatchStatus.NoShow && m.AssignedAt >= sinceUtc)
+                .AsNoTracking()
+                .ToListAsync();
+        }
+
         public async Task<int> CountCreatedSinceAsync(DateTime sinceUtc)
         {
             return await _context.Matches.CountAsync(m => m.AssignedAt >= sinceUtc);

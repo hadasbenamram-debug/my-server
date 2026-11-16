@@ -260,7 +260,6 @@ namespace BLL.Services
         public async Task<NoShowBoardDto> GetNoShowBoardAsync()
         {
             var now = Now;
-            var localToday = LocalClock.ToLocal(now).Date;
 
             // מסלולים שאושרו ויש בהם תחנה שעוד לא נאספה (Confirmed / InPickup) - מועמדים ל-No-Show
             var active = await _matchRepository.GetActiveMatchesAsync();
@@ -313,10 +312,7 @@ namespace BLL.Services
                 // המצב העדכני של התרומה מהשידוך הנוכחי שלה (ה-Include של אירוע ישן יכול להיות מאותה טעינה)
                 var donation = current?.Donation ?? m.Donation;
                 bool reassigned = current != null && current.Id != m.Id && current.IsActive;
-                bool canAssign = donation != null &&
-                                 donation.Status == DonationStatus.Pending &&
-                                 NgoAvailabilityHelper.GetPickupDateTime(donation) > now &&
-                                 LocalClock.ToLocal(donation.CreatedAt).Date == localToday;
+                bool canAssign = NoShowHandling.CanBeHandled(donation, now);   // תיקון 70: אותה הגדרה כמו במונה של לוח הבקרה
 
                 events.Add(new NoShowEventDto
                 {

@@ -74,6 +74,9 @@ namespace DAL.Interfaces
 
         Task<int> CountActiveAsync();
         Task<int> CountByStatusSinceAsync(MatchStatus status, DateTime sinceUtc);
+
+        // תיקון 70: אירועי No-Show מאז מועד מסוים, יחד עם התרומה (כדי לספור רק את מה שאפשר עדיין לטפל בו)
+        Task<List<Match>> GetNoShowsWithDonationSinceAsync(DateTime sinceUtc);
         Task<int> CountCreatedSinceAsync(DateTime sinceUtc);
 
         // תיקון 17: המתנדבים עם הכי הרבה משלוחים שהושלמו (Completed), מהמוביל ומטה. רק מי שהשלים לפחות משלוח אחד.
